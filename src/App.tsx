@@ -30,14 +30,11 @@ export default function App() {
     return unsub;
   }, []);
 
-  if (authLoading) return null;
-  if (!user) return <LoginScreen onLoginSuccess={() => {}} />;
-
   const reload = useCallback(() => {
     setBlocks(loadBlocks());
   }, []);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { if (user) reload(); }, [user, reload]);
 
   const handleBlockUpdated = useCallback((updated: Block) => {
     saveBlock(updated);
@@ -77,6 +74,9 @@ export default function App() {
     reload();
     navigateToBlock(newBlock, true);
   }, [reload, navigateToBlock]);
+
+  if (authLoading) return null;
+  if (!user) return <LoginScreen onLoginSuccess={() => {}} />;
 
   return (
     <>
