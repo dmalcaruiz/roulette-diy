@@ -1,0 +1,18 @@
+PRIVACY POLICY
+Last updated: April 8, 2026
+
+Roulette Maker ("we", "us", or "our") operates roulette.diy.
+
+INFORMATION WE COLLECT
+When you sign in with Google, we receive your name and email address from Google. We use this to identify your account and sync your data across devices.
+
+HOW WE USE YOUR INFORMATION
+- To provide and maintain the service
+- To sync your roulette blocks and settings across devices
+- We do not sell or share your data with third parties
+
+DATA STORAGE
+Your wheel configurations are stored in Firebase (Google Cloud). We do not store payment information.
+
+CONTACT
+For questions about this privacy policy, contact: dmalcaruiz@gmail.com
