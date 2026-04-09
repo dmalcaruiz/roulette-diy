@@ -157,13 +157,13 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
     const textColor = isExpanded ? ON_SURFACE : '#FFFFFF';
 
     const card = (
-      <div key={segment.id} style={{ marginBottom: 8 }}>
+      <div key={segment.id} style={{ marginBottom: 8, paddingBottom: 6.5 }}>
         {/* 3D Card */}
         <div style={{ position: 'relative' }}>
           {/* Bottom face */}
           <div style={{
             position: 'absolute',
-            left: 0, right: 0, top: 6.5, bottom: 0,
+            left: 0, right: 0, top: 6.5, bottom: -6.5,
             borderRadius: 21,
             backgroundColor: bottomColor,
             border: `2.5px solid ${oklchShadow(isExpanded ? segment.color : segment.color, 0.16)}`,
@@ -171,7 +171,6 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
           {/* Top face */}
           <div style={{
             position: 'relative',
-            marginBottom: 6.5,
             borderRadius: 21,
             backgroundColor: bgColor,
             border: `${isExpanded ? 3 : 2.5}px solid ${borderColor}`,
