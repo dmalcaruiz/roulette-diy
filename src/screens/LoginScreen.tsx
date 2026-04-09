@@ -36,7 +36,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         textAlign: 'center',
         margin: '0 0 8px',
       }}>
-        Welcome to Roulette
+        Roulette Maker
       </h1>
       <p style={{
         fontSize: 16,
