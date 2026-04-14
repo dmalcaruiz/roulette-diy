@@ -67,6 +67,10 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState(0);
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
+  const [dragState, setDragState] = useState<{ from: number; to: number } | null>(null);
+  const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
 
   const previewTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -106,6 +110,82 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
       previewTimerRef.current = setTimeout(() => triggerPreview(segs), 150);
     }
   }, [triggerPreview]);
+
+  const reorderSegments = useCallback((fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || toIndex === fromIndex + 1) return;
+    const adjustedTo = toIndex > fromIndex ? toIndex - 1 : toIndex;
+    if (fromIndex === adjustedTo) return;
+    const newSegs = [...segmentsRef.current];
+    const [moved] = newSegs.splice(fromIndex, 1);
+    newSegs.splice(adjustedTo, 0, moved);
+    setSegments(newSegs);
+    setExpandedIndex(null);
+    updatePreview(true, newSegs);
+  }, [updatePreview]);
+
+  const handleGripPointerDown = useCallback((index: number, e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragActivated = false;
+    let decided = false;
+    let currentDropIndex = index;
+
+    const onMove = (me: PointerEvent) => {
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+
+      if (!decided) {
+        if (Math.abs(dy) > 8) {
+          decided = true;
+          dragActivated = true;
+          setDragState({ from: index, to: index });
+        } else if (Math.abs(dx) > 8) {
+          decided = true;
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          return;
+        }
+        return;
+      }
+
+      if (!dragActivated) return;
+
+      let target = segmentsRef.current.length;
+      const els = segmentElsRef.current;
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (me.clientY < rect.top + rect.height / 2) {
+          target = i;
+          break;
+        }
+      }
+      target = Math.max(0, Math.min(target, segmentsRef.current.length));
+      currentDropIndex = target;
+      setDragState({ from: index, to: target });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+
+      if (dragActivated) {
+        reorderSegments(index, currentDropIndex);
+      }
+      setDragState(null);
+
+      if (!decided) {
+        setExpandedIndex(prev => prev === index ? null : index);
+      }
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, [reorderSegments]);
 
   // Initial preview
   useEffect(() => {
@@ -187,10 +267,17 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
                 cursor: 'pointer',
               }}
             >
-              <div style={{ padding: '0 14px' }}>
+              <div
+                style={{ padding: '0 14px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
+                onPointerDown={isExpanded ? undefined : (e) => handleGripPointerDown(index, e)}
+              >
                 <GripVertical size={22} color={isExpanded ? withAlpha(ON_SURFACE, 0.3) : 'rgba(255,255,255,0.6)'} />
               </div>
-              <div style={{ flex: 1 }}>
+              <div
+                style={{ flex: 1 }}
+                onClick={isExpanded ? (e) => e.stopPropagation() : undefined}
+                onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
+              >
                 {isExpanded ? (
                   <InsetTextField
                     value={segment.text}
@@ -515,7 +602,21 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
       {/* Tab content */}
       {selectedTab === 1 ? renderStyleTab() : (
         <>
-          {segments.map((seg, i) => renderSegmentCard(seg, i))}
+          {segments.map((seg, i) => (
+            <div
+              key={seg.id}
+              ref={el => { segmentElsRef.current[i] = el; }}
+              style={{ opacity: dragState?.from === i ? 0.4 : 1, transition: 'opacity 0.15s' }}
+            >
+              {dragState && dragState.to === i && dragState.from !== i && dragState.to !== dragState.from + 1 && (
+                <div style={{ height: 3, backgroundColor: PRIMARY, borderRadius: 2, margin: '2px 16px' }} />
+              )}
+              {renderSegmentCard(seg, i)}
+            </div>
+          ))}
+          {dragState && dragState.to === segments.length && dragState.to !== dragState.from + 1 && (
+            <div style={{ height: 3, backgroundColor: PRIMARY, borderRadius: 2, margin: '2px 16px' }} />
+          )}
           <div style={{ height: 12 }} />
           <PushDownButton color={ON_SURFACE} onTap={addSegment}>
             <div style={{

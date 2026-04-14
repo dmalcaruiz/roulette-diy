@@ -27,21 +27,47 @@ export default function SwipeableActionCell({
   const [offset, setOffset] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef(0);
+  const startYRef = useRef(0);
   const startOffsetRef = useRef(0);
+  const isPendingRef = useRef(false);
   const isDraggingRef = useRef(false);
+  const didSwipeRef = useRef(false);
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    isDraggingRef.current = true;
+    isPendingRef.current = true;
+    isDraggingRef.current = false;
+    didSwipeRef.current = false;
     startXRef.current = e.clientX;
+    startYRef.current = e.clientY;
     startOffsetRef.current = offset;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isDraggingRef.current) return;
-    const dx = e.clientX - startXRef.current;
-    let newOffset = startOffsetRef.current + dx;
+    if (!isPendingRef.current && !isDraggingRef.current) return;
 
+    const dx = e.clientX - startXRef.current;
+    const dy = e.clientY - startYRef.current;
+
+    if (isPendingRef.current) {
+      if (Math.abs(dx) > 10) {
+        // Horizontal movement — start swiping
+        isPendingRef.current = false;
+        isDraggingRef.current = true;
+        didSwipeRef.current = true;
+        // Fall through to process offset
+      } else if (Math.abs(dy) > 10) {
+        // Vertical movement — not a swipe, cancel
+        isPendingRef.current = false;
+        return;
+      } else {
+        return; // Still pending direction
+      }
+    }
+
+    if (!isDraggingRef.current) return;
+
+    let newOffset = startOffsetRef.current + dx;
     const maxRight = leadingActions.length > 0 ? 300 : 0;
     const maxLeft = trailingActions.length > 0 ? 300 : 0;
     newOffset = Math.max(-maxLeft, Math.min(maxRight, newOffset));
@@ -49,6 +75,8 @@ export default function SwipeableActionCell({
   };
 
   const handlePointerUp = () => {
+    isPendingRef.current = false;
+
     if (!isDraggingRef.current) return;
     isDraggingRef.current = false;
 
@@ -88,6 +116,13 @@ export default function SwipeableActionCell({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onClickCapture={(e) => {
+        if (didSwipeRef.current) {
+          e.stopPropagation();
+          e.preventDefault();
+          didSwipeRef.current = false;
+        }
+      }}
     >
       {/* Action buttons behind */}
       {offset !== 0 && (
