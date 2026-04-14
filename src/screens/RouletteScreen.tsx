@@ -61,9 +61,9 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
   const grabbingHeight = 30;
   const midSnap = 460;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
-  const wheelPadding = 140 - 80 * spacerProgress;
+  const wheelPadding = 140 - 110 * spacerProgress;
   const availableForWheel = isMobile
-    ? screenHeight - sheetHeight - grabbingHeight - bottomControlsHeight + 45
+    ? screenHeight - Math.max(sheetHeight, bottomControlsHeight)
     : screenHeight - 100;
   const maxWheelSize = Math.min(availableForWheel - wheelPadding, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
@@ -156,7 +156,8 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
           top: 0,
           left: 0,
           right: 0,
-          bottom: isMobile ? sheetHeight + bottomControlsHeight + grabbingHeight : bottomControlsHeight,
+          bottom: isMobile ? Math.max(sheetHeight, bottomControlsHeight) : bottomControlsHeight,
+          paddingTop: isMobile ? 16 * spacerProgress : 0,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -181,6 +182,8 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             headerTextColor={textColor}
             overlayColor={overlayColor}
             showWinAnimation={showWinAnimation}
+            headerOpacity={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
+            headerSizeProgress={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
           />
         </div>
 
@@ -190,7 +193,7 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             visible={showEditor}
             snapPositions={[0, 460, screenHeight - 80]}
             initialSnap={1}
-            bottomOffset={bottomControlsHeight}
+            bottomOffset={0}
             onCollapsed={() => { setShowEditor(false); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
           >

@@ -408,11 +408,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       {/* Segment header */}
       <div style={{
         opacity: headerOpacity,
+        transform: `scale(${headerSizeProgress})`,
+        transformOrigin: 'center bottom',
         height: (headerFontSize + 16) * headerSizeProgress,
-        overflow: 'hidden',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        willChange: 'transform, height, opacity',
       }}>
         <div style={{
           opacity: segmentHeaderOpacity,

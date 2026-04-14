@@ -121,7 +121,7 @@ export default function SnappingSheet({
         right: 0,
         bottom: bottomOffset,
         height: Math.max(0, displayHeight),
-        zIndex: 50,
+        zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
         transition: dragging ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
