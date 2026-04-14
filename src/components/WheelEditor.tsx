@@ -67,7 +67,7 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState(0);
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
-  const [dragState, setDragState] = useState<{ from: number; to: number } | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
@@ -111,27 +111,16 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
     }
   }, [triggerPreview]);
 
-  const reorderSegments = useCallback((fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex || toIndex === fromIndex + 1) return;
-    const adjustedTo = toIndex > fromIndex ? toIndex - 1 : toIndex;
-    if (fromIndex === adjustedTo) return;
-    const newSegs = [...segmentsRef.current];
-    const [moved] = newSegs.splice(fromIndex, 1);
-    newSegs.splice(adjustedTo, 0, moved);
-    setSegments(newSegs);
-    setExpandedIndex(null);
-    updatePreview(true, newSegs);
-  }, [updatePreview]);
-
   const handleGripPointerDown = useCallback((index: number, e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
 
     const startX = e.clientX;
     const startY = e.clientY;
+    const dragId = segmentsRef.current[index].id;
     let dragActivated = false;
     let decided = false;
-    let currentDropIndex = index;
+    let currentIndex = index;
 
     const onMove = (me: PointerEvent) => {
       const dx = me.clientX - startX;
@@ -141,7 +130,8 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
         if (Math.abs(dy) > 8) {
           decided = true;
           dragActivated = true;
-          setDragState({ from: index, to: index });
+          setDraggingId(dragId);
+          setExpandedIndex(null);
         } else if (Math.abs(dx) > 8) {
           decided = true;
           window.removeEventListener('pointermove', onMove);
@@ -153,7 +143,8 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
       if (!dragActivated) return;
 
-      let target = segmentsRef.current.length;
+      // Find which position the pointer is over
+      let target = segmentsRef.current.length - 1;
       const els = segmentElsRef.current;
       for (let i = 0; i < els.length; i++) {
         const el = els[i];
@@ -164,9 +155,16 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
           break;
         }
       }
-      target = Math.max(0, Math.min(target, segmentsRef.current.length));
-      currentDropIndex = target;
-      setDragState({ from: index, to: target });
+      target = Math.max(0, Math.min(target, segmentsRef.current.length - 1));
+
+      // Live swap if target changed
+      if (target !== currentIndex) {
+        const newSegs = [...segmentsRef.current];
+        const [moved] = newSegs.splice(currentIndex, 1);
+        newSegs.splice(target, 0, moved);
+        setSegments(newSegs);
+        currentIndex = target;
+      }
     };
 
     const onUp = () => {
@@ -174,9 +172,9 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
       window.removeEventListener('pointerup', onUp);
 
       if (dragActivated) {
-        reorderSegments(index, currentDropIndex);
+        setDraggingId(null);
+        updatePreview(true, segmentsRef.current);
       }
-      setDragState(null);
 
       if (!decided) {
         setExpandedIndex(prev => prev === index ? null : index);
@@ -185,7 +183,7 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-  }, [reorderSegments]);
+  }, [updatePreview]);
 
   // Initial preview
   useEffect(() => {
@@ -606,17 +604,11 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
             <div
               key={seg.id}
               ref={el => { segmentElsRef.current[i] = el; }}
-              style={{ opacity: dragState?.from === i ? 0.4 : 1, transition: 'opacity 0.15s' }}
+              style={{ opacity: draggingId === seg.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
             >
-              {dragState && dragState.to === i && dragState.from !== i && dragState.to !== dragState.from + 1 && (
-                <div style={{ height: 3, backgroundColor: PRIMARY, borderRadius: 2, margin: '2px 16px' }} />
-              )}
               {renderSegmentCard(seg, i)}
             </div>
           ))}
-          {dragState && dragState.to === segments.length && dragState.to !== dragState.from + 1 && (
-            <div style={{ height: 3, backgroundColor: PRIMARY, borderRadius: 2, margin: '2px 16px' }} />
-          )}
           <div style={{ height: 12 }} />
           <PushDownButton color={ON_SURFACE} onTap={addSegment}>
             <div style={{
