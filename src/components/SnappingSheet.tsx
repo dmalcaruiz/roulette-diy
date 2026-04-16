@@ -30,14 +30,27 @@ export default function SnappingSheet({
   const startYRef = useRef(0);
   const startHeightRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
 
+  // Scroll-to-drag handoff state
+  const isScrollDraggingRef = useRef(false);
+  const scrollDragStartYRef = useRef(0);
+  const scrollDragPointerIdRef = useRef<number | null>(null);
+  const [scrollDragOffset, setScrollDragOffset] = useState(0);
+  const scrollDragActiveRef = useRef(false); // true once we've committed to dragging
+  const returnToScrollRef = useRef(false);
+
   const targetHeight = visible ? snapPositions[currentSnap] ?? snapPositions[0] : 0;
-  const displayHeight = dragging ? startHeightRef.current - dragOffset : targetHeight;
+  const displayHeight = dragging
+    ? startHeightRef.current - dragOffset
+    : isScrollDraggingRef.current
+      ? targetHeight - scrollDragOffset
+      : targetHeight;
 
   // During drag, report directly
   useEffect(() => {
-    if (dragging) {
+    if (dragging || isScrollDraggingRef.current) {
       onHeightChange?.(displayHeight);
     }
   }, [dragging, displayHeight, onHeightChange]);
@@ -72,6 +85,7 @@ export default function SnappingSheet({
     requestAnimationFrame(() => startAnimationTracking());
   }, [visible, initialSnap, startAnimationTracking]);
 
+  // ── Handle grab bar drag ──────────────────────────────────────────
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     startYRef.current = e.clientY;
     startHeightRef.current = targetHeight;
@@ -87,10 +101,72 @@ export default function SnappingSheet({
   const onPointerUp = useCallback(() => {
     if (!dragging) return;
     setDragging(false);
+    snapToNearest(startHeightRef.current - dragOffset);
+  }, [dragging, dragOffset]);
 
-    const finalHeight = startHeightRef.current - dragOffset;
+  // ── Scroll-to-drag handoff on content area ────────────────────────
+  const onScrollPointerDown = useCallback((e: React.PointerEvent) => {
+    scrollDragStartYRef.current = e.clientY;
+    scrollDragPointerIdRef.current = e.pointerId;
+    scrollDragActiveRef.current = false;
+    returnToScrollRef.current = false;
+    isScrollDraggingRef.current = false;
+    setScrollDragOffset(0);
+  }, []);
 
-    // Find nearest snap position
+  const onScrollPointerMove = useCallback((e: React.PointerEvent) => {
+    if (scrollDragPointerIdRef.current !== e.pointerId) return;
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+
+    const dy = e.clientY - scrollDragStartYRef.current;
+    const atTop = scrollEl.scrollTop <= 0;
+
+    if (isScrollDraggingRef.current) {
+      // Currently in drag mode
+      if (dy <= 0 && scrollDragActiveRef.current) {
+        // User reversed direction back up — return to scroll
+        isScrollDraggingRef.current = false;
+        scrollDragActiveRef.current = false;
+        returnToScrollRef.current = true;
+        setScrollDragOffset(0);
+        // Reset the start Y so future movements scroll naturally
+        scrollDragStartYRef.current = e.clientY;
+        return;
+      }
+      const offset = Math.max(0, dy);
+      setScrollDragOffset(offset);
+      e.preventDefault();
+    } else if (!returnToScrollRef.current && atTop && dy > 5) {
+      // At scroll top, pulling down — switch to sheet drag
+      isScrollDraggingRef.current = true;
+      scrollDragActiveRef.current = true;
+      scrollDragStartYRef.current = e.clientY;
+      scrollEl.style.overflowY = 'hidden';
+      setScrollDragOffset(0);
+      e.preventDefault();
+    }
+  }, []);
+
+  const onScrollPointerUp = useCallback(() => {
+    const scrollEl = scrollRef.current;
+
+    if (isScrollDraggingRef.current) {
+      isScrollDraggingRef.current = false;
+      scrollDragActiveRef.current = false;
+      if (scrollEl) scrollEl.style.overflowY = 'auto';
+      snapToNearest(targetHeight - scrollDragOffset);
+      setScrollDragOffset(0);
+    } else {
+      if (scrollEl) scrollEl.style.overflowY = 'auto';
+    }
+
+    scrollDragPointerIdRef.current = null;
+    returnToScrollRef.current = false;
+  }, [targetHeight, scrollDragOffset]);
+
+  // ── Shared snap logic ─────────────────────────────────────────────
+  const snapToNearest = useCallback((finalHeight: number) => {
     let bestIndex = 0;
     let bestDist = Infinity;
     for (let i = 0; i < snapPositions.length; i++) {
@@ -108,7 +184,7 @@ export default function SnappingSheet({
     if (bestIndex === 0) {
       onCollapsed?.();
     }
-  }, [dragging, dragOffset, snapPositions, onCollapsed, startAnimationTracking]);
+  }, [snapPositions, onCollapsed, startAnimationTracking]);
 
   if (!visible && displayHeight <= 0) return null;
 
@@ -124,7 +200,7 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: dragging ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
+        transition: (dragging || isScrollDraggingRef.current) ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
         overflow: 'hidden',
       }}
     >
@@ -161,7 +237,19 @@ export default function SnappingSheet({
         </div>
 
         {/* Scrollable content */}
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div
+          ref={scrollRef}
+          onPointerDown={onScrollPointerDown}
+          onPointerMove={onScrollPointerMove}
+          onPointerUp={onScrollPointerUp}
+          onPointerCancel={onScrollPointerUp}
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overscrollBehavior: 'none',
+            touchAction: 'pan-y',
+          }}
+        >
           {children}
         </div>
       </div>

@@ -9,6 +9,7 @@ import {
   Copy, LayoutList, Paintbrush, X, CheckCircle, Circle, Settings,
 } from 'lucide-react';
 import SwipeableActionCell from './SwipeableActionCell';
+import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
   id: string;
@@ -19,8 +20,23 @@ interface SegmentData {
   iconName?: string | null;
 }
 
+export interface EditorState {
+  segments: SegmentData[];
+  name: string;
+  textSize: number;
+  headerTextSize: number;
+  imageSize: number;
+  cornerRadius: number;
+  strokeWidth: number;
+  showBackgroundCircle: boolean;
+  centerMarkerSize: number;
+  innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
+  centerInset: number;
+}
+
 interface WheelEditorProps {
   initialConfig?: WheelConfig | null;
+  history: HistoryControls<EditorState>;
   onPreview?: (config: WheelConfig) => void;
   onClose?: () => void;
 }
@@ -31,39 +47,66 @@ function getNextColor(segments: SegmentData[]): string {
   return SEGMENT_COLORS[(segments.length - 1 + SEGMENT_COLORS.length) % SEGMENT_COLORS.length];
 }
 
-export default function WheelEditor({ initialConfig, onPreview, onClose }: WheelEditorProps) {
-  const [name, setName] = useState(initialConfig?.name ?? 'New Wheel');
-  const [segments, setSegments] = useState<SegmentData[]>(() => {
-    if (initialConfig) {
-      return initialConfig.items.map(item => ({
+export function buildInitialState(config?: WheelConfig | null): EditorState {
+  const segments: SegmentData[] = config
+    ? config.items.map(item => ({
         id: `${segmentIdCounter++}`,
         text: item.text,
         color: item.color,
         weight: item.weight,
         imagePath: item.imagePath,
         iconName: item.iconName,
-      }));
-    }
-    const id1 = `${segmentIdCounter++}`;
-    const id2 = `${segmentIdCounter++}`;
-    return [
-      { id: id1, text: 'Option 1', color: SEGMENT_COLORS[9], weight: 1 },
-      { id: id2, text: 'Option 2', color: SEGMENT_COLORS[0], weight: 1 },
-    ];
-  });
+      }))
+    : [
+        { id: `${segmentIdCounter++}`, text: 'Option 1', color: SEGMENT_COLORS[9], weight: 1 },
+        { id: `${segmentIdCounter++}`, text: 'Option 2', color: SEGMENT_COLORS[0], weight: 1 },
+      ];
 
-  const [textSize, setTextSize] = useState(initialConfig?.textSize ?? 1);
-  const [headerTextSize, setHeaderTextSize] = useState(initialConfig?.headerTextSize ?? 1);
-  const [imageSize, setImageSize] = useState(initialConfig?.imageSize ?? 60);
-  const [cornerRadius, setCornerRadius] = useState(initialConfig?.cornerRadius ?? 8);
-  const [strokeWidth, setStrokeWidth] = useState(initialConfig?.strokeWidth ?? 3);
-  const [showBackgroundCircle, setShowBackgroundCircle] = useState(initialConfig?.showBackgroundCircle ?? true);
-  const [centerMarkerSize, setCenterMarkerSize] = useState(initialConfig?.centerMarkerSize ?? 200);
-  const [innerCornerStyle, setInnerCornerStyle] = useState<'none' | 'rounded' | 'circular' | 'straight'>(
-    initialConfig?.innerCornerStyle ?? 'none'
-  );
-  const [centerInset, setCenterInset] = useState(initialConfig?.centerInset ?? 50);
+  return {
+    segments,
+    name: config?.name ?? 'New Wheel',
+    textSize: config?.textSize ?? 1,
+    headerTextSize: config?.headerTextSize ?? 1,
+    imageSize: config?.imageSize ?? 60,
+    cornerRadius: config?.cornerRadius ?? 8,
+    strokeWidth: config?.strokeWidth ?? 3,
+    showBackgroundCircle: config?.showBackgroundCircle ?? true,
+    centerMarkerSize: config?.centerMarkerSize ?? 200,
+    innerCornerStyle: config?.innerCornerStyle ?? 'none',
+    centerInset: config?.centerInset ?? 50,
+  };
+}
 
+export function stateToConfig(state: EditorState, id: string): WheelConfig {
+  return {
+    id,
+    name: state.name.trim(),
+    items: state.segments.map(seg => ({
+      text: seg.text,
+      color: seg.color,
+      weight: seg.weight,
+      imagePath: seg.imagePath,
+      iconName: seg.iconName,
+    })),
+    textSize: state.textSize,
+    headerTextSize: state.headerTextSize,
+    imageSize: state.imageSize,
+    cornerRadius: state.cornerRadius,
+    imageCornerRadius: state.cornerRadius,
+    strokeWidth: state.strokeWidth,
+    showBackgroundCircle: state.showBackgroundCircle,
+    centerMarkerSize: state.centerMarkerSize,
+    innerCornerStyle: state.innerCornerStyle,
+    centerInset: state.centerInset,
+  };
+}
+
+export default function WheelEditor({ initialConfig, history, onPreview, onClose }: WheelEditorProps) {
+  const configId = initialConfig?.id ?? Date.now().toString();
+  const { state, set, patch, commit, undo, redo } = history;
+  const { segments, name } = state;
+
+  // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState(0);
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
@@ -72,44 +115,57 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
 
-  const previewTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Keep a ref to current state for use in pointer handlers
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
-  const triggerPreview = useCallback((segs?: SegmentData[]) => {
-    const s = segs ?? segments;
-    if (!onPreview || !name.trim()) return;
-    const config: WheelConfig = {
-      id: initialConfig?.id ?? Date.now().toString(),
-      name: name.trim(),
-      items: s.map(seg => ({
-        text: seg.text,
-        color: seg.color,
-        weight: seg.weight,
-        imagePath: seg.imagePath,
-        iconName: seg.iconName,
-      })),
-      textSize,
-      headerTextSize,
-      imageSize,
-      cornerRadius,
-      imageCornerRadius: cornerRadius,
-      strokeWidth,
-      showBackgroundCircle,
-      centerMarkerSize,
-      innerCornerStyle,
-      centerInset,
-    };
-    onPreview(config);
-  }, [segments, name, textSize, headerTextSize, imageSize, cornerRadius, strokeWidth,
-      showBackgroundCircle, centerMarkerSize, innerCornerStyle, centerInset, onPreview, initialConfig]);
+  // Initial preview
+  useEffect(() => {
+    if (!onPreview || !state.name.trim()) return;
+    onPreview(stateToConfig(state, configId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const updatePreview = useCallback((immediate = false, segs?: SegmentData[]) => {
-    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-    if (immediate) {
-      triggerPreview(segs);
-    } else {
-      previewTimerRef.current = setTimeout(() => triggerPreview(segs), 150);
-    }
-  }, [triggerPreview]);
+  // --- Discrete actions (push to history) ---
+
+  const addSegment = () => {
+    const id = `${segmentIdCounter++}`;
+    set({
+      ...stateRef.current,
+      segments: [...stateRef.current.segments, {
+        id,
+        text: `Option ${stateRef.current.segments.length + 1}`,
+        color: getNextColor(stateRef.current.segments),
+        weight: 1,
+      }],
+    });
+  };
+
+  const removeSegment = (index: number) => {
+    if (stateRef.current.segments.length <= 2) return;
+    set({
+      ...stateRef.current,
+      segments: stateRef.current.segments.filter((_, i) => i !== index),
+    });
+    setExpandedIndex(null);
+  };
+
+  const duplicateSegment = (index: number) => {
+    const original = stateRef.current.segments[index];
+    const id = `${segmentIdCounter++}`;
+    const newSegs = [...stateRef.current.segments];
+    newSegs.splice(index + 1, 0, { ...original, id });
+    set({ ...stateRef.current, segments: newSegs });
+  };
+
+  // --- Continuous actions (patch, commit on end) ---
+
+  const patchSegment = (index: number, updates: Partial<SegmentData>) => {
+    const newSegs = state.segments.map((s, i) => i === index ? { ...s, ...updates } : s);
+    patch({ segments: newSegs });
+  };
+
+  // --- Drag reorder ---
 
   const handleGripPointerDown = useCallback((index: number, e: React.PointerEvent) => {
     e.stopPropagation();
@@ -143,7 +199,6 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
       if (!dragActivated) return;
 
-      // Find which position the pointer is over
       let target = segmentsRef.current.length - 1;
       const els = segmentElsRef.current;
       for (let i = 0; i < els.length; i++) {
@@ -157,12 +212,12 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
       }
       target = Math.max(0, Math.min(target, segmentsRef.current.length - 1));
 
-      // Live swap if target changed
       if (target !== currentIndex) {
         const newSegs = [...segmentsRef.current];
         const [moved] = newSegs.splice(currentIndex, 1);
         newSegs.splice(target, 0, moved);
-        setSegments(newSegs);
+        // Use patch for live visual feedback during drag
+        patch({ segments: newSegs });
         currentIndex = target;
       }
     };
@@ -173,7 +228,8 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
       if (dragActivated) {
         setDraggingId(null);
-        updatePreview(true, segmentsRef.current);
+        // Commit the reorder as a discrete action
+        commit();
       }
 
       if (!decided) {
@@ -183,48 +239,27 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-  }, [updatePreview]);
+  }, [patch, commit]);
 
-  // Initial preview
+  // --- Keyboard shortcut ---
   useEffect(() => {
-    updatePreview(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const addSegment = () => {
-    const id = `${segmentIdCounter++}`;
-    const newSegs = [...segments, {
-      id,
-      text: `Option ${segments.length + 1}`,
-      color: getNextColor(segments),
-      weight: 1,
-    }];
-    setSegments(newSegs);
-    updatePreview(true, newSegs);
-  };
-
-  const removeSegment = (index: number) => {
-    if (segments.length <= 2) return;
-    const newSegs = segments.filter((_, i) => i !== index);
-    setSegments(newSegs);
-    setExpandedIndex(null);
-    updatePreview(true, newSegs);
-  };
-
-  const duplicateSegment = (index: number) => {
-    const original = segments[index];
-    const id = `${segmentIdCounter++}`;
-    const newSegs = [...segments];
-    newSegs.splice(index + 1, 0, { ...original, id });
-    setSegments(newSegs);
-    updatePreview(true, newSegs);
-  };
-
-  const updateSegment = (index: number, updates: Partial<SegmentData>) => {
-    const newSegs = segments.map((s, i) => i === index ? { ...s, ...updates } : s);
-    setSegments(newSegs);
-    updatePreview(false, newSegs);
-  };
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [undo, redo]);
 
   // Render segment card
   const renderSegmentCard = (segment: SegmentData, index: number) => {
@@ -279,7 +314,8 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
                 {isExpanded ? (
                   <InsetTextField
                     value={segment.text}
-                    onChange={v => updateSegment(index, { text: v })}
+                    onChange={v => patchSegment(index, { text: v })}
+                    onBlur={commit}
                     placeholder="Segment name"
                     inputStyle={{ fontWeight: 600, fontSize: 16, color: ON_SURFACE }}
                   />
@@ -319,7 +355,12 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
                     borderRadius={10}
                     height={36}
                     bottomBorderWidth={3}
-                    onTap={() => updateSegment(index, { weight: Math.max(0.1, segment.weight - 0.1) })}
+                    onTap={() => {
+                      const newSegs = state.segments.map((s, i) =>
+                        i === index ? { ...s, weight: Math.max(0.1, s.weight - 0.1) } : s
+                      );
+                      set({ ...state, segments: newSegs });
+                    }}
                     style={{ width: 36 }}
                   >
                     <Minus size={16} color={ON_SURFACE} />
@@ -332,7 +373,12 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
                     borderRadius={10}
                     height={36}
                     bottomBorderWidth={3}
-                    onTap={() => updateSegment(index, { weight: Math.min(10, segment.weight + 0.1) })}
+                    onTap={() => {
+                      const newSegs = state.segments.map((s, i) =>
+                        i === index ? { ...s, weight: Math.min(10, s.weight + 0.1) } : s
+                      );
+                      set({ ...state, segments: newSegs });
+                    }}
                     style={{ width: 36 }}
                   >
                     <Plus size={16} color={ON_SURFACE} />
@@ -373,29 +419,46 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
                   <div style={{ marginTop: 12 }}>
                     <HexColorPicker
                       color={segment.color}
-                      onChange={c => updateSegment(index, { color: c })}
+                      onChange={c => patchSegment(index, { color: c })}
                       style={{ width: '100%' }}
                     />
-                    <input
-                      type="text"
-                      value={colorToHex(segment.color)}
-                      onChange={e => {
-                        const c = hexStringToColor(e.target.value);
-                        if (c) updateSegment(index, { color: c });
-                      }}
-                      maxLength={6}
-                      style={{
-                        marginTop: 8,
-                        width: '100%',
-                        padding: '8px 12px',
-                        borderRadius: 10,
-                        border: `1.5px solid ${BORDER}`,
-                        fontSize: 14,
-                        fontWeight: 600,
-                        fontFamily: 'inherit',
-                        outline: 'none',
-                      }}
-                    />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <input
+                        type="text"
+                        value={colorToHex(segment.color)}
+                        onChange={e => {
+                          const c = hexStringToColor(e.target.value);
+                          if (c) patchSegment(index, { color: c });
+                        }}
+                        onBlur={commit}
+                        maxLength={6}
+                        style={{
+                          flex: 1,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          border: `1.5px solid ${BORDER}`,
+                          fontSize: 14,
+                          fontWeight: 600,
+                          fontFamily: 'inherit',
+                          outline: 'none',
+                        }}
+                      />
+                      <button
+                        onClick={() => { commit(); setColorPickerSegment(null); }}
+                        style={{
+                          padding: '8px 16px',
+                          borderRadius: 10,
+                          backgroundColor: ON_SURFACE,
+                          color: '#FFFFFF',
+                          border: 'none',
+                          fontWeight: 700,
+                          fontSize: 13,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Done
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -431,25 +494,22 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
   // Render style tab
   const renderStyleTab = () => (
     <div style={{ paddingTop: 16 }}>
-      <SettingSlider label="Segment Text" value={textSize} min={0.05} max={1.5} step={0.05}
-        onChange={v => { setTextSize(v); updatePreview(); }} />
-      <SettingSlider label="Header Text" value={headerTextSize} min={0.05} max={2} step={0.01}
-        onChange={v => { setHeaderTextSize(v); updatePreview(); }} />
-      <SettingSlider label="Image Size" value={imageSize} min={20} max={150} step={1}
-        onChange={v => { setImageSize(v); updatePreview(); }} />
-      <SettingSlider label="Corner Radius" value={cornerRadius} min={0} max={100} step={2.5}
-        onChange={v => { setCornerRadius(v); updatePreview(); }} />
+      <SettingSlider label="Segment Text" value={state.textSize} min={0.05} max={1.5} step={0.05}
+        onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
+      <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
+        onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
+      <SettingSlider label="Image Size" value={state.imageSize} min={20} max={150} step={1}
+        onChange={v => patch({ imageSize: v })} onChangeEnd={commit} />
+      <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
+        onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
 
       {/* Inner corners dropdown */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '4px', marginBottom: 12 }}>
         <span style={{ fontWeight: 600, fontSize: 14, color: '#71717A', width: 100 }}>Inner Corners</span>
         <div style={{ flex: 1 }} />
         <select
-          value={innerCornerStyle}
-          onChange={e => {
-            setInnerCornerStyle(e.target.value as typeof innerCornerStyle);
-            updatePreview();
-          }}
+          value={state.innerCornerStyle}
+          onChange={e => set({ ...state, innerCornerStyle: e.target.value as EditorState['innerCornerStyle'] })}
           style={{
             padding: '6px 12px',
             borderRadius: 10,
@@ -469,31 +529,31 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
         </select>
       </div>
 
-      {innerCornerStyle !== 'none' && (
-        <SettingSlider label="Center Inset" value={centerInset} min={0} max={150} step={1.5}
-          onChange={v => { setCenterInset(v); updatePreview(); }} />
+      {state.innerCornerStyle !== 'none' && (
+        <SettingSlider label="Center Inset" value={state.centerInset} min={0} max={150} step={1.5}
+          onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
       )}
 
-      <SettingSlider label="Stroke Width" value={strokeWidth} min={0} max={10} step={0.1}
-        onChange={v => { setStrokeWidth(v); updatePreview(); }} />
-      <SettingSlider label="Center Marker" value={centerMarkerSize} min={100} max={250} step={1}
-        onChange={v => { setCenterMarkerSize(v); updatePreview(); }} />
+      <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={10} step={0.1}
+        onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
+      <SettingSlider label="Center Marker" value={state.centerMarkerSize} min={100} max={250} step={1}
+        onChange={v => patch({ centerMarkerSize: v })} onChangeEnd={commit} />
 
       {/* Background circle toggle */}
       <div
-        onClick={() => { setShowBackgroundCircle(!showBackgroundCircle); updatePreview(); }}
+        onClick={() => set({ ...state, showBackgroundCircle: !state.showBackgroundCircle })}
         style={{
           display: 'flex',
           alignItems: 'center',
           padding: '12px 16px',
           borderRadius: 14,
-          backgroundColor: showBackgroundCircle ? withAlpha(PRIMARY, 0.12) : '#F4F4F5',
-          border: `1.5px solid ${showBackgroundCircle ? PRIMARY : BORDER}`,
+          backgroundColor: state.showBackgroundCircle ? withAlpha(PRIMARY, 0.12) : '#F4F4F5',
+          border: `1.5px solid ${state.showBackgroundCircle ? PRIMARY : BORDER}`,
           cursor: 'pointer',
           marginTop: 8,
         }}
       >
-        {showBackgroundCircle
+        {state.showBackgroundCircle
           ? <CheckCircle size={22} color={PRIMARY} />
           : <Circle size={22} color={BORDER} />
         }
@@ -501,7 +561,7 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
           marginLeft: 12,
           fontWeight: 600,
           fontSize: 15,
-          color: showBackgroundCircle ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
+          color: state.showBackgroundCircle ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
         }}>
           Background Circle
         </span>
@@ -539,7 +599,8 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
       <input
         type="text"
         value={name}
-        onChange={e => { setName(e.target.value); updatePreview(); }}
+        onChange={e => patch({ name: e.target.value })}
+        onBlur={commit}
         style={{
           width: '100%',
           padding: '14px 16px',
@@ -631,13 +692,14 @@ export default function WheelEditor({ initialConfig, onPreview, onClose }: Wheel
 
 // ── Setting Slider ────────────────────────────────────────────────────────
 
-function SettingSlider({ label, value, min, max, step, onChange }: {
+function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: {
   label: string;
   value: number;
   min: number;
   max: number;
   step: number;
   onChange: (v: number) => void;
+  onChangeEnd?: () => void;
 }) {
   return (
     <div style={{
@@ -653,6 +715,8 @@ function SettingSlider({ label, value, min, max, step, onChange }: {
         step={step}
         value={value}
         onChange={e => onChange(parseFloat(e.target.value))}
+        onPointerUp={onChangeEnd}
+        onTouchEnd={onChangeEnd}
         style={{ flex: 1, accentColor: ON_SURFACE }}
       />
       <span style={{ width: 44, textAlign: 'right', fontWeight: 700, fontSize: 13 }}>

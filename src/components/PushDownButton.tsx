@@ -82,6 +82,7 @@ export function PushDownButton({
 interface InsetTextFieldProps {
   value: string;
   onChange: (value: string) => void;
+  onBlur?: () => void;
   placeholder?: string;
   color?: string;
   borderRadius?: number;
@@ -93,6 +94,7 @@ interface InsetTextFieldProps {
 export function InsetTextField({
   value,
   onChange,
+  onBlur,
   placeholder,
   color = '#F8F8F9',
   borderRadius = 14,
@@ -127,6 +129,7 @@ export function InsetTextField({
           type="text"
           value={value}
           onChange={e => onChange(e.target.value)}
+          onBlur={onBlur}
           placeholder={placeholder}
           style={{
             width: '100%',

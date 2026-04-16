@@ -39,7 +39,8 @@ export function paintWheel(
           centerInset, overlayOpacity, winningIndex, fromItems, transition } = config;
 
   const center = { x: width / 2, y: height / 2 };
-  const radius = Math.min(width, height) / 2;
+  const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
+  const radius = Math.min(width, height) / 2 - strokeInset;
   const scale = radius / 350;
 
   ctx.clearRect(0, 0, width, height);

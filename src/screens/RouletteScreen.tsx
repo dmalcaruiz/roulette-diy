@@ -2,13 +2,14 @@ import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel';
-import WheelEditor from '../components/WheelEditor';
+import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY } from '../utils/constants';
-import { ArrowLeft, Settings, Pencil, RotateCcw, Shuffle, Sparkles, Palette } from 'lucide-react';
+import { ArrowLeft, Settings, Pencil, Shuffle, Sparkles, Play, X, Undo2, Redo2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
+import { useHistory } from '../hooks/useHistory';
 
 interface RouletteScreenProps {
   block: Block;
@@ -30,9 +31,9 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
   const [showWinAnimation, setShowWinAnimation] = useState(true);
   const [showEditor, setShowEditor] = useState(editMode);
   const [showGearMenu, setShowGearMenu] = useState(false);
+  const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
   const activeConfig = previewConfig ?? currentConfig;
   const screenWidth = window.innerWidth;
   const screenHeight = window.innerHeight;
@@ -55,6 +56,13 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
       onBlockUpdated?.(updated);
     }, 500);
   }, [block, onBlockUpdated]);
+
+  const configId = block.wheelConfig?.id ?? Date.now().toString();
+  const handleHistoryChange = useCallback((s: EditorState) => {
+    if (!s.name.trim()) return;
+    handleWheelPreview(stateToConfig(s, configId));
+  }, [handleWheelPreview, configId]);
+  const editorHistory = useHistory(buildInitialState(block.wheelConfig), handleHistoryChange);
 
   // Dynamic wheel sizing — shrinks as sheet grows, matching Flutter behavior
   const bottomControlsHeight = 96;
@@ -105,6 +113,7 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             <WheelEditor
               key={currentConfig.id}
               initialConfig={currentConfig}
+              history={editorHistory}
               onPreview={handleWheelPreview}
             />
           </div>
@@ -139,10 +148,15 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             <ArrowLeft size={32} color="#FFFFFF" />
           </button>
           <div style={{ display: 'flex', gap: 4 }}>
+            {isPlayMode && (
+              <button onClick={() => setIsPlayMode(false)} style={{ padding: 8 }}>
+                <X size={32} color="#FFFFFF" />
+              </button>
+            )}
             <button onClick={() => setShowGearMenu(true)} style={{ padding: 8 }}>
               <Settings size={32} color="#FFFFFF" />
             </button>
-            {!isEditMode && (
+            {!isEditMode && !isPlayMode && (
               <button onClick={() => { setIsEditMode(true); setShowEditor(true); }} style={{ padding: 8 }}>
                 <Pencil size={32} color="#FFFFFF" />
               </button>
@@ -150,19 +164,21 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
           </div>
         </div>
 
-        {/* Wheel container — height shrinks as sheet grows */}
+        {/* Game container — height shrinks as sheet grows */}
         <div style={{
           position: 'absolute',
           top: 0,
           left: 0,
           right: 0,
-          bottom: isMobile ? Math.max(sheetHeight, bottomControlsHeight) : bottomControlsHeight,
+          bottom: isMobile ? sheetHeight : bottomControlsHeight,
           paddingTop: isMobile ? 16 * spacerProgress : 0,
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
-          justifyContent: 'center',
           opacity: wheelOpacity,
         }}>
+          {/* Top spacer — centers wheel */}
+          <div style={{ flex: 1 }} />
           <SpinningWheel
             ref={wheelRef}
             items={activeConfig.items}
@@ -185,6 +201,95 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             headerOpacity={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
             headerSizeProgress={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
           />
+          {/* Bottom spacer — centers wheel */}
+          <div style={{ flex: 1 }} />
+          {/* Spin button pinned to bottom — fades & collapses when sheet opens or play mode */}
+          <div style={{
+            width: '100%',
+            padding: '0 20px',
+            flexShrink: 0,
+            opacity: Math.max(0, 1 - spacerProgress),
+            height: 64 * Math.max(0, 1 - spacerProgress),
+            marginBottom: 12 * Math.max(0, 1 - spacerProgress),
+            overflow: 'hidden',
+            transition: 'opacity 0.3s, height 0.3s, margin-bottom 0.3s',
+          }}>
+            <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
+              <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
+            </PushDownButton>
+          </div>
+          {/* Bottom controls container */}
+          <div style={{
+            flexShrink: 0,
+            width: '100%',
+            height: isPlayMode ? 0 : bottomControlsHeight + 100,
+            opacity: isPlayMode ? 0 : 1,
+            backgroundColor: 'red',
+            overflow: 'hidden',
+            transition: 'height 0.3s ease, opacity 0.3s ease',
+            position: 'relative',
+          }}>
+            {/* Play button */}
+            <button
+              onClick={() => setIsPlayMode(true)}
+              style={{
+                position: 'absolute',
+                top: 12,
+                left: 16,
+                padding: 8,
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <Play size={28} color="#FFFFFF" fill="#FFFFFF" />
+            </button>
+            {/* Undo / Redo */}
+            <div style={{
+              position: 'absolute',
+              top: 12,
+              right: 16,
+              display: 'flex',
+              gap: 6,
+            }}>
+              <button
+                onClick={editorHistory.undo}
+                disabled={!editorHistory.canUndo}
+                style={{
+                  width: 36, height: 36,
+                  borderRadius: 50,
+                  backgroundColor: 'rgba(255,255,255,0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: editorHistory.canUndo ? 'pointer' : 'default',
+                  opacity: editorHistory.canUndo ? 1 : 0.35,
+                  border: 'none',
+                  transition: 'opacity 0.15s',
+                }}
+              >
+                <Undo2 size={18} color="#FFFFFF" />
+              </button>
+              <button
+                onClick={editorHistory.redo}
+                disabled={!editorHistory.canRedo}
+                style={{
+                  width: 36, height: 36,
+                  borderRadius: 50,
+                  backgroundColor: 'rgba(255,255,255,0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: editorHistory.canRedo ? 'pointer' : 'default',
+                  opacity: editorHistory.canRedo ? 1 : 0.35,
+                  border: 'none',
+                  transition: 'opacity 0.15s',
+                }}
+              >
+                <Redo2 size={18} color="#FFFFFF" />
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Mobile editor snapping sheet — sits above bottom controls */}
@@ -194,61 +299,19 @@ export default function RouletteScreen({ block, editMode = false, onBlockUpdated
             snapPositions={[0, 460, screenHeight - 80]}
             initialSnap={1}
             bottomOffset={0}
-            onCollapsed={() => { setShowEditor(false); setSheetHeight(0); }}
+            onCollapsed={() => { setShowEditor(false); setIsEditMode(false); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
           >
             <WheelEditor
               key={currentConfig.id}
               initialConfig={currentConfig}
+              history={editorHistory}
               onPreview={handleWheelPreview}
-              onClose={() => { setShowEditor(false); setSheetHeight(0); }}
+              onClose={() => { setShowEditor(false); setIsEditMode(false); setSheetHeight(0); }}
             />
           </SnappingSheet>
         )}
 
-        {/* Bottom controls — always at screen bottom */}
-        <div style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          backgroundColor: '#FFFFFF',
-          borderRadius: '36px 36px 0 0',
-          border: '1.5px solid #E4E4E7',
-          borderBottom: 'none',
-          padding: '18px 20px 20px',
-          zIndex: 60,
-        }}>
-          {isEditMode ? (
-            <div style={{ display: 'flex', gap: 10 }}>
-              <PushDownButton
-                color="#AE01CB"
-                onTap={() => wheelRef.current?.reset()}
-                style={{ width: 69 }}
-              >
-                <RotateCcw size={28} color="#FFFFFF" />
-              </PushDownButton>
-              <div style={{ flex: 1 }}>
-                <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
-                  <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
-                </PushDownButton>
-              </div>
-              {isMobile && (
-                <PushDownButton
-                  color={ON_SURFACE}
-                  onTap={() => setShowEditor(true)}
-                  style={{ width: 69 }}
-                >
-                  <Pencil size={28} color="#FFFFFF" />
-                </PushDownButton>
-              )}
-            </div>
-          ) : (
-            <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
-              <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
-            </PushDownButton>
-          )}
-        </div>
       </div>
 
       {/* Gear menu */}
