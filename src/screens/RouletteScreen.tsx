@@ -65,6 +65,7 @@ export default function RouletteScreen({
   const [isRandomIntensity, setIsRandomIntensity] = useState(true);
   const [showWinAnimation, setShowWinAnimation] = useState(true);
   const [showSegmentHeader, setShowSegmentHeader] = useState(true);
+  const [showSpinButton, setShowSpinButton] = useState(true);
   // Inner editor sheet starts closed. The user reveals it by tapping a chip
   // (Segments / Style / Settings) in the red footer. This keeps the overlay's
   // opening uncluttered — you see the wheel first, then choose to edit.
@@ -748,7 +749,7 @@ export default function RouletteScreen({
   const RED_BASE = 136;   // red container minimum (preview row + padding)
   const CHIP_H = 48;      // pinned chip bar
   const SPIN_H = 76;      // spin button + margin
-  const APP_BAR_PAD = 110;
+  const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = 400;
@@ -757,7 +758,9 @@ export default function RouletteScreen({
   // wheel area between them shrinks as the sheet rises so the wheel still
   // resizes to fit.
   const appBarPadCurrent = APP_BAR_PAD;
-  const spinHCurrent = isPlayMode ? 0 : SPIN_H;
+  // Spin button collapses (height + margin + opacity) as the sheet opens,
+  // and is removed entirely when the user disables it from Settings.
+  const spinHCurrent = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - spacerProgress);
   // Red box's actual DOM height — fixed at RED_BASE (not flexible).
   const redBoxHeight = isPlayMode ? 0 : RED_BASE;
   // Effective bottom coverage used for wheel sizing — when the sheet is open
@@ -765,10 +768,16 @@ export default function RouletteScreen({
   // (the sheet visually covers both the red box and the bottom of the wheel
   // area, since they're siblings under a fixed-position overlay).
   const effectiveBottomCover = isPlayMode ? 0 : Math.max(RED_BASE, sheetHeight);
+  // SpinningWheel renders header + 16 spacer + canvas + 16 bottom spacer.
+  // The header is in flex flow so the (header + canvas) group is centered as
+  // a unit between the app bar and spin button. Subtract its overhead so the
+  // wheel is sized to leave room for it.
+  const headerSizeProg = (isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0);
+  const wheelHeaderOverhead = ((56 * activeConfig.headerTextSize + 16) + 16) * headerSizeProg + 16;
   const wheelPadding = 20; // breathing room
   const availableForWheel = isMobile
-    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover
-    : screenHeight - 100;
+    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover - wheelHeaderOverhead
+    : screenHeight - 100 - wheelHeaderOverhead;
   const maxWheelSize = Math.min(availableForWheel - wheelPadding, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
   const dynamicScale = clampedWheelSize / idealWheelSize;
@@ -927,15 +936,21 @@ export default function RouletteScreen({
           paddingBottom: isMobile ? 0 : bottomControlsHeight,
           // When the sheet rises past the red box, push the wheel area up so
           // the spin button stays above the sheet's top edge instead of being
-          // covered. Below RED_BASE, the sheet only overlays red so margin = 0.
-          marginBottom: isMobile ? Math.max(0, sheetHeight - RED_BASE) : 0,
+          // covered. Capped at 450px so over-drag past the upper snap can't
+          // shove the red+chip past the viewport bottom; the viewport-safety
+          // min handles tiny viewports where 450 itself would overflow.
+          marginBottom: isMobile
+            ? Math.min(Math.max(0, sheetHeight - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE))
+            : 0,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           opacity: wheelOpacity,
           overflow: 'hidden',
         }}>
-          {/* Top spacer — centers wheel */}
+          {/* Top spacer — slightly less flex than the bottom spacer so the
+              wheel+header group sits a hair above the geometric center
+              (which optically reads as centered). */}
           <div style={{ flex: 1 }} />
           {/* Keyed wrapper forces a remount on block change so the CSS
               fade/scale animation re-fires each time the user switches
@@ -973,20 +988,27 @@ export default function RouletteScreen({
               headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
             />
           </div>
-          {/* Bottom spacer — centers wheel */}
-          <div style={{ flex: 1 }} />
-          {/* Spin button pinned to bottom of wheel section — always visible. */}
-          <div style={{
-            width: '100%',
-            padding: '0 20px',
-            flexShrink: 0,
-            height: 64,
-            marginBottom: 12,
-          }}>
-            <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
-              <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
-            </PushDownButton>
-          </div>
+          {/* Bottom spacer — slightly larger flex than the top spacer to
+              shift the wheel group up by a few px (optical centering). */}
+          <div style={{ flex: 1.4 }} />
+          {/* Spin button — pinned to bottom of wheel section, collapses
+              instantly with the sheet drag (no transition lag). Hidden
+              entirely when the user disables it from Settings. */}
+          {showSpinButton && (
+            <div style={{
+              width: '100%',
+              padding: '0 20px',
+              flexShrink: 0,
+              opacity: Math.max(0, 1 - spacerProgress),
+              height: 64 * Math.max(0, 1 - spacerProgress),
+              marginBottom: 12 * Math.max(0, 1 - spacerProgress),
+              overflow: 'hidden',
+            }}>
+              <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
+                <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
+              </PushDownButton>
+            </div>
+          )}
 
         </div>
 
@@ -1217,7 +1239,7 @@ export default function RouletteScreen({
           <SnappingSheet
             bottomOffset={48}
             visible={sheetTab !== null}
-            snapPositions={[0, 400, screenHeight - 80]}
+            snapPositions={[0, 400, screenHeight - 105]}
             initialSnap={1}
             onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
@@ -1283,6 +1305,13 @@ export default function RouletteScreen({
                   icon={<Type size={22} />}
                   value={showSegmentHeader}
                   onChange={setShowSegmentHeader}
+                />
+                <div style={{ height: 12 }} />
+                <ToggleRow
+                  label="Spin Button"
+                  icon={<Play size={22} />}
+                  value={showSpinButton}
+                  onChange={setShowSpinButton}
                 />
               </div>
             )}
@@ -1535,6 +1564,9 @@ function PinnedChipBar({
       backgroundColor: '#FFFFFF',
       borderTop: '1px solid #E4E4E7',
       boxSizing: 'border-box',
+      // Stack above red so red can never bleed into the chip's footprint.
+      position: 'relative',
+      zIndex: 5,
     }}>
       <div
         className="no-scrollbar"

@@ -405,7 +405,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      {/* Segment header */}
+      {/* Segment header — in flow above the canvas so the (header + canvas)
+          group acts as a unit when the parent centers this component. */}
       <div style={{
         opacity: headerOpacity,
         transform: `scale(${headerSizeProgress})`,
