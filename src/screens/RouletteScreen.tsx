@@ -70,8 +70,6 @@ export default function RouletteScreen({
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
-  // In-sheet confirmation step for the destructive Delete action.
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [editorTab, setEditorTab] = useState(0); // 0=Segments, 1=Style
@@ -712,33 +710,31 @@ export default function RouletteScreen({
           <button
             onClick={() => {
               flushAutoSave();
-              if (overlay && onDismiss) onDismiss();
+              // Exit straight out of the publish+overlay stack back to the
+              // screen that invoked it (Profile, Feed, etc.) — skipping the
+              // publish screen. When there's no prior history (deep link),
+              // fall back to home.
+              if (window.history.length > 1) navigate(-1);
               else navigate('/');
             }}
-            style={{ padding: 8 }}
+            style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}
+            aria-label="Close editor"
           >
-            <ArrowLeft size={32} color="#FFFFFF" />
+            <X size={32} color="#FFFFFF" strokeWidth={2.5} />
           </button>
-          <input
-            type="text"
-            value={editorHistory.state.name}
-            onChange={e => editorHistory.patch({ name: e.target.value })}
-            onBlur={editorHistory.commit}
-            placeholder="Wheel name"
-            style={{
-              flex: 1,
-              minWidth: 0,
-              margin: '0 4px',
-              padding: '4px 6px',
-              fontSize: 20,
-              fontWeight: 800,
-              fontFamily: 'inherit',
-              textAlign: 'center',
-              color: '#FFFFFF',
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              cursor: 'text',
+          <AppBarTitleInput
+            isInFlow={!!flowExperience}
+            flowName={flowExperience?.name ?? ''}
+            wheelName={editorHistory.state.name}
+            onCommitFlowName={(name) => {
+              if (!flowExperience) return;
+              commitFlowSet({
+                experience: { ...flowExperience, name },
+                steps: flowSteps ?? [],
+              });
+            }}
+            onCommitWheelName={(name) => {
+              editorHistory.set({ ...editorHistory.state, name });
             }}
           />
           <div style={{ display: 'flex', gap: 4 }}>
@@ -877,43 +873,64 @@ export default function RouletteScreen({
                   const isActive = step.id === block.id;
                   const items = step.wheelConfig?.items ?? [];
                   const previewItems = isActive ? activeConfig.items : items;
+                  const wheelLabel = (isActive ? activeConfig.name : step.wheelConfig?.name) || step.name;
+                  const onRenameWheel = (newName: string) => {
+                    if (isActive) {
+                      // Goes through editor history so the rename is undoable
+                      // alongside other edits to this wheel.
+                      editorHistory.set({ ...editorHistory.state, name: newName });
+                    } else if (step.wheelConfig) {
+                      onBlockUpdated?.({
+                        ...step,
+                        name: newName,
+                        wheelConfig: { ...step.wheelConfig, name: newName },
+                      });
+                    }
+                  };
                   return (
-                    <PreviewTile
-                      key={step.id}
-                      index={idx}
-                      active={isActive}
-                      grabbed={grabbedIndex === idx}
-                      innerRef={el => { tileElsRef.current[idx] = el; }}
-                      onClick={isActive ? undefined : () => {
-                        dbg('RouletteScreen', 'tile:tap', {
-                          from: sid(block.id),
-                          to: sid(step.id),
-                          flowExp: sid(flowExperience?.id ?? null),
-                          flowSteps: sids(flowSteps),
-                        });
-                        flushAutoSave();
-                        navigate(`/block/${step.id}`, {
-                          state: {
-                            block: step,
-                            editMode: true,
-                            flowExperience,
-                            flowSteps,
-                          },
-                        });
-                      }}
-                      onContextOpen={() => setCtxMenuIndex(idx)}
-                      onGrabStart={handleGrabStart}
-                      shouldSuppressClick={shouldSuppressTileClick}
-                    >
-                      <WheelThumbnail items={previewItems} size={72} />
-                    </PreviewTile>
+                    <TileWithLabel key={step.id} label={wheelLabel} onLabelEdit={onRenameWheel}>
+                      <PreviewTile
+                        index={idx}
+                        active={isActive}
+                        grabbed={grabbedIndex === idx}
+                        innerRef={el => { tileElsRef.current[idx] = el; }}
+                        onClick={isActive ? undefined : () => {
+                          dbg('RouletteScreen', 'tile:tap', {
+                            from: sid(block.id),
+                            to: sid(step.id),
+                            flowExp: sid(flowExperience?.id ?? null),
+                            flowSteps: sids(flowSteps),
+                          });
+                          flushAutoSave();
+                          navigate(`/block/${step.id}`, {
+                            state: {
+                              block: step,
+                              editMode: true,
+                              flowExperience,
+                              flowSteps,
+                            },
+                          });
+                        }}
+                        onContextOpen={() => setCtxMenuIndex(idx)}
+                        onGrabStart={handleGrabStart}
+                        shouldSuppressClick={shouldSuppressTileClick}
+                      >
+                        <WheelThumbnail items={previewItems} size={72} />
+                      </PreviewTile>
+                    </TileWithLabel>
                   );
                 })
               ) : (
-                <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
-                  <WheelThumbnail items={activeConfig.items} size={72} />
-                </PreviewTile>
+                <TileWithLabel
+                  label={activeConfig.name || block.name}
+                  onLabelEdit={name => editorHistory.set({ ...editorHistory.state, name })}
+                >
+                  <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
+                    <WheelThumbnail items={activeConfig.items} size={72} />
+                  </PreviewTile>
+                </TileWithLabel>
               )}
+              <TileWithLabel label="">
               <PreviewTile
                 onClick={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
@@ -956,6 +973,7 @@ export default function RouletteScreen({
               >
                 <Plus size={32} color="rgba(255,255,255,0.85)" />
               </PreviewTile>
+              </TileWithLabel>
             </div>
 
             {/* Chips row: bottom */}
@@ -1059,66 +1077,139 @@ export default function RouletteScreen({
 
       {/* Per-tile context menu (right-click / long-press on a preview tile) */}
       {ctxMenuIndex !== null && (
-        <DraggableSheet onClose={() => { setCtxMenuIndex(null); setConfirmDelete(false); }}>
+        <DraggableSheet onClose={() => setCtxMenuIndex(null)}>
           <div style={{ padding: '0 20px 28px' }}>
-            {confirmDelete ? (
-              <>
-                <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 6px' }}>
-                  Delete this wheel?
-                </h3>
-                <p style={{ fontSize: 13, textAlign: 'center', color: withAlpha(ON_SURFACE, 0.55), margin: '0 0 16px' }}>
-                  This can't be undone.
-                </p>
-                <CtxRow
-                  icon={<Trash2 size={20} />}
-                  label="Confirm delete"
-                  danger
-                  onTap={() => {
-                    const i = ctxMenuIndex;
-                    setCtxMenuIndex(null);
-                    setConfirmDelete(false);
-                    runCtxAction('delete', i);
-                  }}
-                />
-                <CtxRow
-                  icon={<X size={20} />}
-                  label="Cancel"
-                  onTap={() => setConfirmDelete(false)}
-                />
-              </>
-            ) : (
-              <>
-                <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
-                  Wheel actions
-                </h3>
-                <CtxRow
-                  icon={<ArrowLeftFromLine size={20} />}
-                  label="Insert wheel before"
-                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
-                />
-                <CtxRow
-                  icon={<ArrowRightFromLine size={20} />}
-                  label="Insert wheel after"
-                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
-                />
-                <CtxRow
-                  icon={<Copy size={20} />}
-                  label="Duplicate wheel"
-                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
-                />
-                <CtxRow
-                  icon={<Trash2 size={20} />}
-                  label="Delete wheel"
-                  danger
-                  onTap={() => setConfirmDelete(true)}
-                />
-              </>
-            )}
+            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
+              Wheel actions
+            </h3>
+            <CtxRow
+              icon={<ArrowLeftFromLine size={20} />}
+              label="Insert wheel before"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
+            />
+            <CtxRow
+              icon={<ArrowRightFromLine size={20} />}
+              label="Insert wheel after"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
+            />
+            <CtxRow
+              icon={<Copy size={20} />}
+              label="Duplicate wheel"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
+            />
+            <CtxRow
+              icon={<Trash2 size={20} />}
+              label="Delete wheel"
+              danger
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('delete', i); }}
+            />
           </div>
         </DraggableSheet>
       )}
 
     </div>
+  );
+}
+
+// Wraps a PreviewTile with a small wheel-name label below it. Tapping the
+// label focuses an inline input so the user can rename that wheel. Fixed
+// height keeps the + tile aligned with named tiles.
+function TileWithLabel({ label, onLabelEdit, children }: {
+  label: string;
+  onLabelEdit?: (name: string) => void;
+  children: React.ReactNode;
+}) {
+  const [draft, setDraft] = useState(label);
+  useEffect(() => { setDraft(label); }, [label]);
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === label) { setDraft(label); return; }
+    onLabelEdit?.(trimmed);
+  };
+  const commonStyle: React.CSSProperties = {
+    width: 88,
+    height: 18,
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'rgba(255,255,255,0.85)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    textAlign: 'center',
+    lineHeight: '18px',
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+      {children}
+      {onLabelEdit ? (
+        <input
+          type="text"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          style={{
+            ...commonStyle,
+            padding: 0,
+            border: 'none',
+            outline: 'none',
+            background: 'transparent',
+            fontFamily: 'inherit',
+            cursor: 'text',
+          }}
+        />
+      ) : (
+        <div style={commonStyle}>{label}</div>
+      )}
+    </div>
+  );
+}
+
+// Top app-bar title: edits the flow name when editing a step of a flow, or
+// the wheel's own name when the block is standalone. Local draft avoids
+// spamming history / Firestore on every keystroke — we commit on blur.
+function AppBarTitleInput({
+  isInFlow, flowName, wheelName, onCommitFlowName, onCommitWheelName,
+}: {
+  isInFlow: boolean;
+  flowName: string;
+  wheelName: string;
+  onCommitFlowName: (name: string) => void;
+  onCommitWheelName: (name: string) => void;
+}) {
+  const displayed = isInFlow ? flowName : wheelName;
+  const [draft, setDraft] = useState(displayed);
+  useEffect(() => { setDraft(displayed); }, [displayed, isInFlow]);
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed) { setDraft(displayed); return; }
+    if (trimmed === displayed) return;
+    if (isInFlow) onCommitFlowName(trimmed);
+    else onCommitWheelName(trimmed);
+  };
+  return (
+    <input
+      type="text"
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      placeholder={isInFlow ? 'Flow name' : 'Wheel name'}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        margin: '0 4px',
+        padding: '4px 6px',
+        fontSize: 20,
+        fontWeight: 800,
+        fontFamily: 'inherit',
+        textAlign: 'center',
+        color: '#FFFFFF',
+        background: 'transparent',
+        border: 'none',
+        outline: 'none',
+        cursor: 'text',
+      }}
+    />
   );
 }
 

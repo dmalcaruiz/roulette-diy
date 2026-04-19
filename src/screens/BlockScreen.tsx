@@ -367,10 +367,10 @@ function BlockViewLayer({
         </button>
         <input
           type="text"
-          value={nameDraft}
-          onChange={e => setNameDraft(e.target.value)}
-          onBlur={commitName}
-          placeholder="Wheel name"
+          value={flowExperience ? flowNameDraft : nameDraft}
+          onChange={e => (flowExperience ? setFlowNameDraft : setNameDraft)(e.target.value)}
+          onBlur={flowExperience ? commitFlowName : commitName}
+          placeholder={flowExperience ? 'Flow name' : 'Wheel name'}
           style={{
             flex: 1,
             minWidth: 0,
@@ -437,28 +437,6 @@ function BlockViewLayer({
       <div style={{ padding: '8px 16px' }}>
         {flowExperience && (
           <Section title="Flow" icon={<Compass size={16} />}>
-            <FieldLabel>Title</FieldLabel>
-            <input
-              type="text"
-              value={flowNameDraft}
-              onChange={e => setFlowNameDraft(e.target.value)}
-              onBlur={commitFlowName}
-              placeholder="Flow title"
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: `1.5px solid ${BORDER}`,
-                backgroundColor: '#F8F8F9',
-                fontSize: 15,
-                fontWeight: 600,
-                fontFamily: 'inherit',
-                color: ON_SURFACE,
-                outline: 'none',
-                boxSizing: 'border-box',
-                marginBottom: 10,
-              }}
-            />
             <FieldLabel>Description</FieldLabel>
             <textarea
               value={flowDescDraft}
