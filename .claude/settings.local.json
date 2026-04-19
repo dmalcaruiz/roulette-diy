@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force)"
+    ]
+  }
+}

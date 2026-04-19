@@ -1,0 +1,108 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── helpers ────────────────────────────────────────────────────────
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    // Permits ONLY atomic counter fields to be changed by third parties.
+    function onlyCounterDeltas(allowed) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(allowed);
+    }
+
+    // ── users/{uid} — profile ─────────────────────────────────────────
+    // Public-readable profile. Write only self. displayName + handle + bio + photoUrl.
+    match /users/{uid} {
+      allow read: if true;
+      allow create: if isSelf(uid);
+      allow update: if isSelf(uid)
+        // Counters are incremented by server-side transactions only (never direct from client).
+        || onlyCounterDeltas(['followersCount', 'followingCount', 'wheelsCount']);
+      allow delete: if false;
+
+      // Private subcollections
+      match /drafts/{draftId} {
+        allow read, write: if isSelf(uid);
+      }
+      match /library/{wheelId} {
+        allow read: if isSelf(uid);
+        allow write: if isSelf(uid);
+      }
+      match /liked_wheels/{wheelId} {
+        allow read: if isSelf(uid);
+        allow write: if isSelf(uid);
+      }
+      match /liked_responses/{responseId} {
+        allow read: if isSelf(uid);
+        allow write: if isSelf(uid);
+      }
+      match /following/{targetUid} {
+        allow read: if isSelf(uid);
+        allow write: if isSelf(uid);
+      }
+    }
+
+    // ── uploadQuotas/{uid} — server-only bookkeeping ──────────────────
+    match /uploadQuotas/{uid} {
+      allow read, write: if false; // only the issueUploadUrl Function writes here
+    }
+
+    // ── wheels/{wheelId} — published wheels ───────────────────────────
+    match /wheels/{wheelId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if (signedIn() && resource.data.authorId == request.auth.uid)
+        || onlyCounterDeltas(['likesCount', 'commentsCount', 'responsesCount', 'savesCount']);
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && request.resource.data.authorId == request.auth.uid;
+        allow update: if signedIn() && resource.data.authorId == request.auth.uid
+          || onlyCounterDeltas(['likesCount']);
+        allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+      }
+
+      match /responses/{responseId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && request.resource.data.authorId == request.auth.uid;
+        allow update: if (signedIn() && resource.data.authorId == request.auth.uid)
+          || onlyCounterDeltas(['likesCount', 'commentsCount']);
+        allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+        match /comments/{commentId} {
+          allow read: if true;
+          allow create: if signedIn()
+            && request.resource.data.authorId == request.auth.uid;
+          allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+        }
+      }
+    }
+
+    // ── reports/{reportId} — moderation inbox ─────────────────────────
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid;
+      allow read, update, delete: if false; // admin console only
+    }
+
+    // ── handles/{handle} — uniqueness index ───────────────────────────
+    // Documents live at /handles/{handleLowercase}, contain { uid }.
+    // Create-only by the handle's owner; delete allowed by owner on handle change.
+    match /handles/{handle} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}

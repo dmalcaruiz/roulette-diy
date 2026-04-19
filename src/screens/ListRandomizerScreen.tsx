@@ -110,7 +110,7 @@ export default function ListRandomizerScreen({ block, editMode = false, onBlockU
     <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: '#FFFFFF' }}>
       {/* App bar */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 8px 0' }}>
-        <button onClick={() => navigate(-1)} style={{ padding: 8 }}>
+        <button onClick={() => navigate('/')} style={{ padding: 8 }}>
           <ArrowLeft size={24} color={ON_SURFACE} />
         </button>
         <div style={{ width: 4 }} />

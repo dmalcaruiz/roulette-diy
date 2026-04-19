@@ -84,7 +84,7 @@ export default function ExperienceBuilderScreen({ block, allBlocks, onBlockUpdat
     <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: '#FFF' }}>
       {/* App bar */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 8px 0', gap: 4 }}>
-        <button onClick={() => navigate(-1)} style={{ padding: 8 }}>
+        <button onClick={() => navigate('/')} style={{ padding: 8 }}>
           <ArrowLeft size={24} color={ON_SURFACE} />
         </button>
         <div style={{ flex: 1 }}>

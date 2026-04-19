@@ -39,6 +39,11 @@ interface WheelEditorProps {
   history: HistoryControls<EditorState>;
   onPreview?: (config: WheelConfig) => void;
   onClose?: () => void;
+  // Optional controlled tab. If provided, the editor renders that tab and
+  // calls onTabChange when the user taps a tab header. If omitted, the
+  // editor manages its own tab state (legacy behavior).
+  selectedTab?: number;
+  onTabChange?: (tab: number) => void;
 }
 
 let segmentIdCounter = 0;
@@ -101,14 +106,22 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
   };
 }
 
-export default function WheelEditor({ initialConfig, history, onPreview, onClose }: WheelEditorProps) {
+export default function WheelEditor({
+  initialConfig, history, onPreview, onClose,
+  selectedTab: selectedTabProp, onTabChange,
+}: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
   const { segments, name } = state;
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  const [selectedTab, setSelectedTab] = useState(0);
+  const [internalTab, setInternalTab] = useState(0);
+  const selectedTab = selectedTabProp ?? internalTab;
+  const setSelectedTab = (t: number) => {
+    if (onTabChange) onTabChange(t);
+    if (selectedTabProp === undefined) setInternalTab(t);
+  };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);

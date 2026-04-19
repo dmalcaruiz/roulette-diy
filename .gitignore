@@ -2,3 +2,10 @@ node_modules
 dist
 .env
 .env.local
+functions/node_modules
+functions/lib
+functions/.env
+functions/.env.local
+firebase-debug.log
+firestore-debug.log
+.firebase/

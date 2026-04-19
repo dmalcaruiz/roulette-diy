@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { dbg } from '../utils/debugLog';
 
 const MAX_HISTORY = 50;
 
@@ -19,7 +20,16 @@ interface HistoryState<T> {
   dirty: boolean;
 }
 
-export function useHistory<T>(initial: T, onChange?: (state: T) => void): HistoryControls<T> {
+export function useHistory<T>(
+  initial: T,
+  onChange?: (state: T) => void,
+  // When this key changes, the history is reset to a fresh single-entry
+  // stack with the current `initial` value. Used to re-initialize the
+  // editor's state when the underlying entity being edited changes
+  // (e.g., switching between wheels in a flow) without remounting the
+  // host component.
+  resetKey?: string | number,
+): HistoryControls<T> {
   const [hist, setHist] = useState<HistoryState<T>>({
     entries: [initial],
     index: 0,
@@ -30,11 +40,35 @@ export function useHistory<T>(initial: T, onChange?: (state: T) => void): Histor
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // Fire onChange whenever hist changes (skip initial)
-  const mountedRef = useRef(false);
+  // Latest `initial` kept in a ref so the reset effect grabs the most
+  // recent value without depending on it (which would fire every render).
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
+
+  // Reset on resetKey change — skip the first render so mount doesn't
+  // double-initialize.
+  const prevResetKeyRef = useRef<string | number | undefined>(resetKey);
+  const mountedResetRef = useRef(false);
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
+    if (!mountedResetRef.current) {
+      mountedResetRef.current = true;
+      prevResetKeyRef.current = resetKey;
+      return;
+    }
+    if (resetKey !== prevResetKeyRef.current) {
+      dbg('useHistory', 'reset', { from: String(prevResetKeyRef.current ?? 'null'), to: String(resetKey ?? 'null') });
+      prevResetKeyRef.current = resetKey;
+      setHist({ entries: [initialRef.current], index: 0, dirty: false });
+      mountedOnChangeRef.current = false;
+    }
+  }, [resetKey]);
+
+  // Fire onChange whenever hist changes (skip initial AND skip immediately
+  // after a reset so we don't re-fire a preview for the reset.)
+  const mountedOnChangeRef = useRef(false);
+  useEffect(() => {
+    if (!mountedOnChangeRef.current) {
+      mountedOnChangeRef.current = true;
       return;
     }
     onChangeRef.current?.(hist.entries[hist.index]);

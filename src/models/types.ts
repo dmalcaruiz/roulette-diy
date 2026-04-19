@@ -78,6 +78,10 @@ export interface Block {
   wheelConfig?: WheelConfig | null;
   listConfig?: ListRandomizerConfig | null;
   experienceConfig?: ExperienceConfig | null;
+  // Set on Roulette/List blocks that are steps of an Experience flow.
+  // Points at the Experience block that contains them. Unset for
+  // stand-alone blocks.
+  parentExperienceId?: string | null;
 }
 
 // ── Block helpers ────────────────────────────────────────────────────────
