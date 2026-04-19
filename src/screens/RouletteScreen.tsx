@@ -692,7 +692,7 @@ export default function RouletteScreen({
   const bottomContentHeight = 260;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
-  const midSnap = 460;
+  const midSnap = 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
   const wheelPadding = 140 - 110 * spacerProgress;
   const availableForWheel = isMobile
@@ -855,10 +855,13 @@ export default function RouletteScreen({
           top: 0,
           left: 0,
           right: 0,
-          bottom: isMobile ? sheetHeight : bottomControlsHeight,
+          // Sheet's bottom sits 48px up (bottomOffset for the pinned chip bar),
+          // so the game container must pull its floor up the full sheetHeight
+          // + 48 to stop the sheet from overlapping the wheel area.
+          bottom: isMobile ? sheetHeight + (sheetHeight > 0 ? 48 : 0) : bottomControlsHeight,
           paddingTop: isMobile
-            ? 40 * Math.max(0, 1 - sheetHeight / midSnap) + 16 * spacerProgress
-            : 40,
+            ? 110 * Math.max(0, 1 - sheetHeight / midSnap) + 16 * spacerProgress
+            : 110,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -1104,34 +1107,29 @@ export default function RouletteScreen({
             </div>
 
           </div>
+
+          {/* Chip bar as the last flex child — rides the bottom of the game
+              container so it rises with the sheet. */}
+          {isMobile && !isPlayMode && (
+            <PinnedChipBar
+              activeTab={sheetTab}
+              onChange={setSheetTab}
+              canUndo={editorHistory.canUndo || opCanUndo}
+              canRedo={editorHistory.canRedo || opCanRedo}
+              onUndo={unifiedUndo}
+              onRedo={unifiedRedo}
+              onPlay={() => setIsPlayMode(true)}
+            />
+          )}
         </div>
 
-        {/* Pinned chip bar — permanently pinned to the bottom of the
-            viewport. Never moves. Sits inside the red container's reserved
-            bottom band; when a sheet opens, it overlays the sheet's bottom
-            via high z-index so it's always accessible. */}
-        {isMobile && !isPlayMode && (
-          <PinnedChipBar
-            activeTab={sheetTab}
-            onChange={setSheetTab}
-            bottom={0}
-            canUndo={editorHistory.canUndo || opCanUndo}
-            canRedo={editorHistory.canRedo || opCanRedo}
-            onUndo={unifiedUndo}
-            onRedo={unifiedRedo}
-            onPlay={() => setIsPlayMode(true)}
-          />
-        )}
-
-        {/* Unified snapping sheet — hosts all four panes; the chip bar that
-            drives it is rendered separately as a pinned element above. */}
+        {/* Unified snapping sheet — hosts all four panes. The chip bar that
+            drives it sits inline at the bottom of the game container. */}
         {isMobile && (
           <SnappingSheet
-            // Sheet's bottom sits above the pinned chip bar so the bar
-            // never obscures sheet content.
-            bottomOffset={48}
+            bottomOffset={0}
             visible={sheetTab !== null}
-            snapPositions={[0, 460, screenHeight - 80]}
+            snapPositions={[0, 400, screenHeight - 80]}
             initialSnap={1}
             onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
@@ -1394,12 +1392,11 @@ function AppBarTitleInput({
   );
 }
 
-// Floating chip bar pinned above the red footer or the open sheet
-// (whichever is taller). High z-index so it stays on top of the sheet.
+// Chip bar that lives as a normal flex child at the bottom of the game
+// container — rides up with the container when the sheet opens.
 function PinnedChipBar({
   activeTab,
   onChange,
-  bottom,
   canUndo,
   canRedo,
   onUndo,
@@ -1408,7 +1405,6 @@ function PinnedChipBar({
 }: {
   activeTab: 'segments' | 'style' | 'settings' | 'templates' | null;
   onChange: (t: 'segments' | 'style' | 'settings' | 'templates') => void;
-  bottom: number;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -1423,18 +1419,16 @@ function PinnedChipBar({
   ];
   return (
     <div style={{
-      position: 'fixed',
-      left: 0,
-      right: 0,
-      bottom,
+      flexShrink: 0,
+      width: '100%',
       height: 48,
-      zIndex: 80,
       display: 'flex',
       alignItems: 'center',
       gap: 10,
       padding: '0 14px',
       backgroundColor: '#FFFFFF',
       borderTop: '1px solid #E4E4E7',
+      boxSizing: 'border-box',
     }}>
       <div
         className="no-scrollbar"
