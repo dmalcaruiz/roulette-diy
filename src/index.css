@@ -54,3 +54,18 @@ a {
 .no-scrollbar::-webkit-scrollbar {
   display: none;                /* Chrome, Safari, Edge Chromium */
 }
+/* Suppress iOS's native long-press callout (save image / lookup / select) and
+   the default tap highlight across every descendant of the preview row, so our
+   own long-press gesture is the only thing that fires. Inputs opt back in so
+   users can still edit wheel-name labels. */
+.no-scrollbar,
+.no-scrollbar * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.no-scrollbar input {
+  -webkit-user-select: text;
+  user-select: text;
+}

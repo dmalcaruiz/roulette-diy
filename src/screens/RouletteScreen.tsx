@@ -121,6 +121,12 @@ export default function RouletteScreen({
   const screenWidth = viewport.w;
   const screenHeight = viewport.h;
   const isMobile = screenWidth < 900;
+  // Orthogonal to layout-mobile: "is this a touch-primary device" — used
+  // for UX decisions (mobile-style rename sheet vs. inline label edit). A
+  // PC with a small window isn't touch-primary, so it keeps inline editing.
+  const isTouchPrimary = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
   const idealWheelSize = 700;
   const availableWidth = isMobile ? (screenWidth - 16) : (screenWidth - 400 - 32);
   const effectiveWheelSize = Math.min(availableWidth, idealWheelSize);
@@ -920,11 +926,11 @@ export default function RouletteScreen({
                       });
                     }
                   };
-                  // On mobile, tapping the label opens the rename sheet
-                  // directly. On desktop, it focuses the inline input — and
-                  // for non-active wheels it also navigates so edits land on
-                  // the right one.
-                  const onLabelFocus = isMobile
+                  // On touch-primary devices, tapping the label opens the
+                  // rename sheet directly. With a mouse/trackpad, it focuses
+                  // the inline input — and for non-active wheels it also
+                  // navigates so edits land on the right one.
+                  const onLabelFocus = isTouchPrimary
                     ? () => openRenameSheet(idx)
                     : (isActive ? undefined : () => {
                         flushAutoSave();
@@ -936,7 +942,7 @@ export default function RouletteScreen({
                     <TileWithLabel
                       key={step.id}
                       label={wheelLabel}
-                      editable={!isMobile}
+                      editable={!isTouchPrimary}
                       onLabelEdit={onRenameWheel}
                       onLabelFocus={onLabelFocus}
                     >
@@ -974,9 +980,9 @@ export default function RouletteScreen({
               ) : (
                 <TileWithLabel
                   label={activeConfig.name || block.name}
-                  editable={!isMobile}
+                  editable={!isTouchPrimary}
                   onLabelEdit={name => editorHistory.set({ ...editorHistory.state, name })}
-                  onLabelFocus={isMobile ? () => openRenameSheet(0) : undefined}
+                  onLabelFocus={isTouchPrimary ? () => openRenameSheet(0) : undefined}
                 >
                   <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
                     <WheelThumbnail items={activeConfig.items} size={72} />
