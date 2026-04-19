@@ -65,6 +65,7 @@ export default function RouletteScreen({
   // opening uncluttered — you see the wheel first, then choose to edit.
   const [showEditor, setShowEditor] = useState(false);
   const [showGearMenu, setShowGearMenu] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -685,7 +686,7 @@ export default function RouletteScreen({
   // bottomContentHeight reserves the vertical space used by the spin button
   // (~76px incl. margin) plus the red footer (250px) when the sheet is closed,
   // so the wheel shrinks enough to keep the footer fully on-screen.
-  const bottomContentHeight = 326;
+  const bottomContentHeight = 266;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = 460;
@@ -914,7 +915,7 @@ export default function RouletteScreen({
           <div style={{
             flexShrink: 0,
             width: '100%',
-            height: isPlayMode ? 0 : 250,
+            height: isPlayMode ? 0 : 190,
             opacity: isPlayMode ? 0 : 1,
             backgroundColor: 'red',
             overflow: 'hidden',
@@ -925,15 +926,46 @@ export default function RouletteScreen({
             gap: 10,
             boxSizing: 'border-box',
           }}>
-            {/* Header row: play (left) · undo/redo (right) */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <button
-                onClick={() => setIsPlayMode(true)}
-                style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}
+            {/* Top row: chips (left, scrollable) · undo/redo + play (right). */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div
+                className="no-scrollbar"
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  minWidth: 0,
+                  overflowX: 'auto',
+                  flex: 1,
+                  // Gradient fade on the right edge so chips that clip out
+                  // of view dissolve into the red background nicely.
+                  WebkitMaskImage:
+                    'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+                  maskImage:
+                    'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+                }}
               >
-                <Play size={24} color="#FFFFFF" fill="#FFFFFF" />
-              </button>
-              <div style={{ display: 'flex', gap: 6 }}>
+                <Chip
+                  icon={<LayoutList size={14} />}
+                  label="Segments"
+                  onTap={() => { setEditorTab(0); setShowEditor(true); }}
+                />
+                <Chip
+                  icon={<Paintbrush size={14} />}
+                  label="Style"
+                  onTap={() => { setEditorTab(1); setShowEditor(true); }}
+                />
+                <Chip
+                  icon={<SettingsIcon size={14} />}
+                  label="Settings"
+                  onTap={() => setShowGearMenu(true)}
+                />
+                <Chip
+                  icon={<LayoutGrid size={14} />}
+                  label="Templates"
+                  onTap={() => setShowTemplates(true)}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                 <IconButton
                   onClick={unifiedUndo}
                   disabled={!(editorHistory.canUndo || opCanUndo)}
@@ -946,6 +978,20 @@ export default function RouletteScreen({
                 >
                   <Redo2 size={18} color="#FFFFFF" />
                 </IconButton>
+                <button
+                  onClick={() => setIsPlayMode(true)}
+                  aria-label="Play"
+                  style={{
+                    width: 36, height: 36,
+                    borderRadius: 50,
+                    backgroundColor: 'rgba(255,255,255,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Play size={18} color="#FFFFFF" fill="#FFFFFF" />
+                </button>
               </div>
             </div>
 
@@ -1125,30 +1171,6 @@ export default function RouletteScreen({
               </TileWithLabel>
             </div>
 
-            {/* Chips row: bottom */}
-            <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingTop: 2 }}>
-              <Chip
-                icon={<LayoutList size={14} />}
-                label="Segments"
-                onTap={() => { setEditorTab(0); setShowEditor(true); }}
-              />
-              <Chip
-                icon={<Paintbrush size={14} />}
-                label="Style"
-                onTap={() => { setEditorTab(1); setShowEditor(true); }}
-              />
-              <Chip
-                icon={<SettingsIcon size={14} />}
-                label="Settings"
-                onTap={() => setShowGearMenu(true)}
-              />
-              <Chip
-                icon={<LayoutGrid size={14} />}
-                label="Templates"
-                onTap={() => { /* TODO */ }}
-                muted
-              />
-            </div>
           </div>
         </div>
 
@@ -1256,6 +1278,19 @@ export default function RouletteScreen({
               danger
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('delete', i); }}
             />
+          </div>
+        </DraggableSheet>
+      )}
+
+      {/* Templates sheet — placeholder until we wire a real picker. */}
+      {showTemplates && (
+        <DraggableSheet maxWidth={9999} onClose={() => setShowTemplates(false)}>
+          <div style={{ padding: '0 24px 32px', textAlign: 'center' }}>
+            <h3 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 10px' }}>Templates</h3>
+            <p style={{ fontSize: 14, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.55), margin: '0 0 4px' }}>
+              Prebuilt wheels are coming soon. You'll be able to pick a starter
+              here and customize from there.
+            </p>
           </div>
         </DraggableSheet>
       )}

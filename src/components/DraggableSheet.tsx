@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { X } from 'lucide-react';
 
 interface DraggableSheetProps {
   onClose: () => void;
@@ -79,6 +80,7 @@ export default function DraggableSheet({ onClose, children, maxWidth = 500 }: Dr
           maxHeight: '85dvh',
           display: 'flex',
           flexDirection: 'column',
+          position: 'relative',
         }}
       >
         {/* Drag handle */}
@@ -90,6 +92,28 @@ export default function DraggableSheet({ onClose, children, maxWidth = 500 }: Dr
             margin: '0 auto',
           }} />
         </div>
+        {/* Top-right close button */}
+        <button
+          onClick={handleClose}
+          aria-label="Close"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 14,
+            width: 32,
+            height: 32,
+            borderRadius: 50,
+            backgroundColor: '#F4F4F5',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: 'none',
+            cursor: 'pointer',
+            zIndex: 1,
+          }}
+        >
+          <X size={16} color="#1E1E2C" />
+        </button>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {children}
         </div>

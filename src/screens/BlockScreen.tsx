@@ -15,7 +15,7 @@ import { dbg, sid, sids } from '../utils/debugLog';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  ArrowLeft, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
+  X, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
   Share2, Lock, Trash2, Tag, FileText, Loader2, Compass,
 } from 'lucide-react';
 
@@ -335,11 +335,10 @@ function BlockViewLayer({
       backgroundColor: '#F8F8F9',
       paddingBottom: 40,
     }}>
-      {/* Top bar */}
+      {/* Top bar — close lives on the right for parity with other sheets. */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', backgroundColor: '#F8F8F9' }}>
-        <button onClick={onBack} style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}>
-          <ArrowLeft size={26} color={ON_SURFACE} />
-        </button>
+        {/* Left spacer so the centered title stays centered. */}
+        <div style={{ width: 42, height: 42 }} />
         <input
           type="text"
           value={flowExperience ? flowNameDraft : nameDraft}
@@ -383,8 +382,23 @@ function BlockViewLayer({
             cursor: 'text',
           }}
         />
-        {/* Spacer to balance the back button so the centered title sits at the true screen center */}
-        <div style={{ width: 42, height: 42 }} />
+        <button
+          onClick={onBack}
+          aria-label="Close"
+          style={{
+            width: 42, height: 42,
+            padding: 8,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <X size={22} color={ON_SURFACE} />
+        </button>
       </div>
 
       {/* Compact preview strip — matches the edit-screen tile style so the

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { X } from 'lucide-react';
 
 interface SnappingSheetProps {
   /** Snap positions in px from bottom of viewport, ascending order */
@@ -219,6 +220,7 @@ export default function SnappingSheet({
         border: '1.5px solid #E4E4E7',
         borderBottom: 'none',
         overflow: 'hidden',
+        position: 'relative',
       }}>
         {/* Grabbing handle */}
         <div
@@ -240,6 +242,28 @@ export default function SnappingSheet({
             margin: '0 auto',
           }} />
         </div>
+        {/* Top-right close button — snaps to 0 which invokes onCollapsed. */}
+        <button
+          onClick={() => snapToNearest(0)}
+          aria-label="Close"
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 14,
+            width: 32,
+            height: 32,
+            borderRadius: 50,
+            backgroundColor: '#F4F4F5',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: 'none',
+            cursor: 'pointer',
+            zIndex: 2,
+          }}
+        >
+          <X size={16} color="#1E1E2C" />
+        </button>
 
         {/* Scrollable content */}
         <div
