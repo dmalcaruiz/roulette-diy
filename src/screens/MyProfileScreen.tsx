@@ -78,7 +78,13 @@ export default function MyProfileScreen({
           YOUR WHEELS
         </h3>
         <BlocksList
-          blocks={blocks}
+          // Profile shows everything as flows. Child wheels of an Experience
+          // are hidden from the row list — they're accessible by opening their
+          // parent flow — but still passed via allBlocks so flow cards can
+          // resolve their step blockIds into wheel thumbnails.
+          blocks={blocks.filter(b => !b.parentExperienceId)}
+          allBlocks={blocks}
+          asFlows
           // In My Blocks, card tap and the explicit edit chevron do the same
           // thing: open the block for editing (publish screen + editor overlay).
           // Home's view-only tap is handled by a separate callback in App.tsx.

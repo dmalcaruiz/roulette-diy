@@ -16,7 +16,7 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
   ArrowLeft, Pencil, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
-  Share2, Lock, Trash2, Tag, FileText, Loader2,
+  Share2, Lock, Trash2, Tag, FileText, Loader2, Compass,
 } from 'lucide-react';
 
 interface BlockScreenProps {
@@ -199,10 +199,20 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
 
   if (!block) return <div>Block not found</div>;
 
+  // Update the parent Experience doc. Local flowExperience is patched
+  // optimistically; the Firestore write rides the same saveDraft path as
+  // wheel edits (via App.handleBlockUpdated).
+  const handleFlowExperienceUpdated = useCallback((updated: Block) => {
+    setFlowExperienceRaw(prev => (prev && prev.id === updated.id ? { ...prev, ...updated } as CloudBlock : prev));
+    onBlockUpdated?.(updated);
+  }, [onBlockUpdated]);
+
   return (
     <>
       <BlockViewLayer
         block={block}
+        flowExperience={flowExperience}
+        onFlowExperienceUpdated={handleFlowExperienceUpdated}
         wheelRef={wheelRef}
         onBack={() => navigate('/')}
         onEdit={async () => {
@@ -264,9 +274,12 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
 // ── Backdrop/view layer — preview + settings ─────────────────────────────
 
 function BlockViewLayer({
-  block, wheelRef, onBack, onEdit, onBlockUpdated,
+  block, flowExperience, onFlowExperienceUpdated,
+  wheelRef, onBack, onEdit, onBlockUpdated,
 }: {
   block: Block;
+  flowExperience?: CloudBlock;
+  onFlowExperienceUpdated?: (b: Block) => void;
   wheelRef: React.RefObject<SpinningWheelHandle | null>;
   onBack: () => void;
   onEdit: () => void;
@@ -276,16 +289,89 @@ function BlockViewLayer({
   const screenWidth = window.innerWidth;
   const wheelSize = Math.min(screenWidth - 40, 420);
 
+  // Local draft for the title — avoids hitting saveDraft on every keystroke.
+  // Flushes to onBlockUpdated on blur. Re-syncs if the block prop changes.
+  const [nameDraft, setNameDraft] = useState(block.name);
+  useEffect(() => { setNameDraft(block.name); }, [block.id, block.name]);
+  const commitName = () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === block.name) {
+      setNameDraft(block.name);
+      return;
+    }
+    onBlockUpdated({
+      ...block,
+      name: trimmed,
+      wheelConfig: block.wheelConfig ? { ...block.wheelConfig, name: trimmed } : block.wheelConfig,
+    });
+  };
+
+  // Flow metadata drafts (only relevant when this wheel is part of a flow).
+  const [flowNameDraft, setFlowNameDraft] = useState(flowExperience?.name ?? '');
+  const [flowDescDraft, setFlowDescDraft] = useState(flowExperience?.experienceConfig?.description ?? '');
+  useEffect(() => {
+    setFlowNameDraft(flowExperience?.name ?? '');
+    setFlowDescDraft(flowExperience?.experienceConfig?.description ?? '');
+  }, [flowExperience?.id, flowExperience?.name, flowExperience?.experienceConfig?.description]);
+  const commitFlowName = () => {
+    if (!flowExperience || !onFlowExperienceUpdated) return;
+    const trimmed = flowNameDraft.trim();
+    if (!trimmed || trimmed === flowExperience.name) {
+      setFlowNameDraft(flowExperience.name);
+      return;
+    }
+    onFlowExperienceUpdated({ ...flowExperience, name: trimmed });
+  };
+  const commitFlowDesc = () => {
+    if (!flowExperience || !onFlowExperienceUpdated) return;
+    const current = flowExperience.experienceConfig?.description ?? '';
+    const next = flowDescDraft.trim();
+    if (next === current.trim()) return;
+    onFlowExperienceUpdated({
+      ...flowExperience,
+      experienceConfig: {
+        ...(flowExperience.experienceConfig ?? { steps: [] }),
+        description: next || null,
+      },
+    });
+  };
+
   return (
-    <div style={{ minHeight: '100dvh', backgroundColor: '#F8F8F9', paddingBottom: 40 }}>
+    <div style={{
+      height: '100dvh',
+      overflowY: 'auto',
+      backgroundColor: '#F8F8F9',
+      paddingBottom: 40,
+    }}>
       {/* Top bar */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', backgroundColor: '#F8F8F9' }}>
         <button onClick={onBack} style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}>
           <ArrowLeft size={26} color={ON_SURFACE} />
         </button>
-        <h1 style={{ margin: 0, marginLeft: 4, fontSize: 20, fontWeight: 800, color: ON_SURFACE, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {block.name}
-        </h1>
+        <input
+          type="text"
+          value={nameDraft}
+          onChange={e => setNameDraft(e.target.value)}
+          onBlur={commitName}
+          placeholder="Wheel name"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            margin: '0 4px',
+            padding: '4px 6px',
+            fontSize: 20,
+            fontWeight: 800,
+            fontFamily: 'inherit',
+            textAlign: 'center',
+            color: ON_SURFACE,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            cursor: 'text',
+          }}
+        />
+        {/* Spacer to balance the back button so the centered title sits at the true screen center */}
+        <div style={{ width: 42, height: 42 }} />
       </div>
 
       {/* Wheel preview */}
@@ -332,6 +418,54 @@ function BlockViewLayer({
 
       {/* Settings sections */}
       <div style={{ padding: '8px 16px' }}>
+        {flowExperience && (
+          <Section title="Flow" icon={<Compass size={16} />}>
+            <FieldLabel>Title</FieldLabel>
+            <input
+              type="text"
+              value={flowNameDraft}
+              onChange={e => setFlowNameDraft(e.target.value)}
+              onBlur={commitFlowName}
+              placeholder="Flow title"
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: `1.5px solid ${BORDER}`,
+                backgroundColor: '#F8F8F9',
+                fontSize: 15,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                color: ON_SURFACE,
+                outline: 'none',
+                boxSizing: 'border-box',
+                marginBottom: 10,
+              }}
+            />
+            <FieldLabel>Description</FieldLabel>
+            <textarea
+              value={flowDescDraft}
+              onChange={e => setFlowDescDraft(e.target.value)}
+              onBlur={commitFlowDesc}
+              placeholder="Describe this flow (optional)"
+              rows={3}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: `1.5px solid ${BORDER}`,
+                backgroundColor: '#F8F8F9',
+                fontSize: 14,
+                fontWeight: 500,
+                fontFamily: 'inherit',
+                color: ON_SURFACE,
+                outline: 'none',
+                resize: 'vertical',
+                boxSizing: 'border-box',
+              }}
+            />
+          </Section>
+        )}
         <PublishingSection block={block} onBlockUpdated={onBlockUpdated} />
         <SpinSection />
         <MoreSection block={block} />

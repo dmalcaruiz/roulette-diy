@@ -40,11 +40,19 @@ interface BlocksListProps {
   onBlockDuplicate: (block: CloudBlock) => void;
   onBlockDelete: (id: string) => void;
   showFilters?: boolean;    // hide filter chips when embedded in smaller contexts
+  // Display-only: show every block as a "Flow" (no type split). A standalone
+  // roulette/list is shown as a 1-step flow. Callers should pre-filter out
+  // child wheels (those with parentExperienceId set) when using this.
+  asFlows?: boolean;
+  // Unfiltered block set used to resolve Experience step blockIds to their
+  // child wheels (for rendering thumbnails). Only needed when asFlows is on
+  // and the flow contains Experience blocks whose children are not in `blocks`.
+  allBlocks?: CloudBlock[];
 }
 
 export default function BlocksList({
   blocks, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete,
-  showFilters = true,
+  showFilters = true, asFlows = false, allBlocks,
 }: BlocksListProps) {
   const [filter, setFilter] = useState<BlockFilter>('all');
   const stats = usePublishedStats(blocks);
@@ -58,7 +66,7 @@ export default function BlocksList({
 
   return (
     <div>
-      {showFilters && (
+      {showFilters && !asFlows && (
         <div style={{ display: 'flex', gap: 8, padding: '0 4px 14px', flexWrap: 'wrap' }}>
           {([
             ['all', 'All'],
@@ -104,6 +112,8 @@ export default function BlocksList({
                 stats={block.publishedWheelId ? stats.get(block.publishedWheelId) : undefined}
                 onTap={() => onBlockTap(block)}
                 onEdit={() => onBlockEdit(block)}
+                asFlow={asFlows}
+                allBlocks={allBlocks ?? blocks}
               />
             </SwipeableActionCell>
           </div>
@@ -134,18 +144,42 @@ function EmptyState({ filter }: { filter: BlockFilter }) {
   );
 }
 
-function BlockCard({ block, stats, onTap, onEdit }: {
+function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
   block: CloudBlock;
   stats?: BlockStats;
   onTap: () => void;
   onEdit: () => void;
+  asFlow?: boolean;
+  allBlocks?: CloudBlock[];
 }) {
   const bottomColor = oklchShadow('#FFFFFF');
   const innerStrokeColor = oklchShadow('#FFFFFF', 0.06);
-  const typeColor = colorForType(block.type);
-  const TypeIcon = iconForType(block.type);
+  const typeColor = asFlow ? EXPERIENCE_COLOR : colorForType(block.type);
+  const TypeIcon = asFlow ? Compass : iconForType(block.type);
   const isPublished = !!block.publishedWheelId;
   const isChallenge = stats?.isChallenge ?? false;
+  // Step count for flow display: experiences use their steps array; standalone
+  // roulettes/lists count as a 1-step flow.
+  const stepCount = asFlow
+    ? (block.type === 'experience' ? (block.experienceConfig?.steps.length ?? 0) : 1)
+    : 0;
+  // Flow preview thumbnails: resolve step blockIds via allBlocks. Standalone
+  // roulettes preview their own wheel. Experiences preview their child
+  // roulettes in order. Non-roulette children are skipped for now.
+  const flowPreviewItems = (() => {
+    if (!asFlow) return [];
+    if (block.type === 'roulette' && block.wheelConfig) {
+      return [block.wheelConfig.items];
+    }
+    if (block.type === 'experience' && allBlocks) {
+      const stepIds = block.experienceConfig?.steps.map(s => s.blockId) ?? [];
+      return stepIds
+        .map(id => allBlocks.find(b => b.id === id))
+        .filter((b): b is CloudBlock => !!b && b.type === 'roulette' && !!b.wheelConfig)
+        .map(b => b.wheelConfig!.items);
+    }
+    return [];
+  })();
 
   return (
     <div onClick={onTap} style={{ cursor: 'pointer' }}>
@@ -172,7 +206,9 @@ function BlockCard({ block, stats, onTap, onEdit }: {
           <GripVertical size={18} color={withAlpha(ON_SURFACE, 0.25)} />
 
           {/* Thumbnail */}
-          {block.type === 'roulette' && block.wheelConfig ? (
+          {asFlow && flowPreviewItems.length > 0 ? (
+            <WheelThumbnail items={flowPreviewItems[0]} size={44} />
+          ) : block.type === 'roulette' && block.wheelConfig ? (
             <WheelThumbnail items={block.wheelConfig.items} size={44} />
           ) : (
             <div style={{
@@ -193,7 +229,7 @@ function BlockCard({ block, stats, onTap, onEdit }: {
 
             {/* Pills row */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-              <Pill color={typeColor}>{getBlockTypeLabel(block.type)}</Pill>
+              <Pill color={typeColor}>{asFlow ? 'Flow' : getBlockTypeLabel(block.type)}</Pill>
               <StatusPill published={isPublished} />
               {isChallenge && (
                 <Pill color="#F59E0B">
@@ -202,7 +238,7 @@ function BlockCard({ block, stats, onTap, onEdit }: {
                 </Pill>
               )}
               <span style={{ fontSize: 11, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.4) }}>
-                {getBlockItemCountLabel(block)}
+                {asFlow ? `${stepCount} step${stepCount === 1 ? '' : 's'}` : getBlockItemCountLabel(block)}
               </span>
             </div>
 

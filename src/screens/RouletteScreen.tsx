@@ -6,14 +6,17 @@ import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../c
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Check, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Check, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, ArrowLeftFromLine, ArrowRightFromLine } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { useHistory } from '../hooks/useHistory';
 import WheelThumbnail from '../components/WheelThumbnail';
 import { useAuth } from '../contexts/AuthContext';
-import { buildAppendWheelChange, persistBlocks } from '../services/flowService';
-import type { CloudBlock } from '../services/blockService';
+import {
+  buildAppendWheelChange, buildInsertWheelChange, buildDuplicateWheelChange,
+  buildRemoveWheelChange, persistBlocks, persistFlowChange,
+} from '../services/flowService';
+import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
 
 interface RouletteScreenProps {
@@ -58,11 +61,15 @@ export default function RouletteScreen({
   const [spinIntensity, setSpinIntensity] = useState(0.5);
   const [isRandomIntensity, setIsRandomIntensity] = useState(true);
   const [showWinAnimation, setShowWinAnimation] = useState(true);
+  const [showSegmentHeader, setShowSegmentHeader] = useState(true);
   // Inner editor sheet starts closed. The user reveals it by tapping a chip
   // (Segments / Style / Settings) in the red footer. This keeps the overlay's
   // opening uncluttered — you see the wheel first, then choose to edit.
   const [showEditor, setShowEditor] = useState(false);
   const [showGearMenu, setShowGearMenu] = useState(false);
+  // Context menu triggered by right-click / long-press on a preview tile.
+  // Holds the index of the tile that opened it. null = closed.
+  const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [editorTab, setEditorTab] = useState(0); // 0=Segments, 1=Style
@@ -73,8 +80,14 @@ export default function RouletteScreen({
   const baseConfig = block.wheelConfig!;
   const activeConfig =
     previewConfig && previewConfig.id === baseConfig.id ? previewConfig : baseConfig;
-  const screenWidth = window.innerWidth;
-  const screenHeight = window.innerHeight;
+  const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const screenWidth = viewport.w;
+  const screenHeight = viewport.h;
   const isMobile = screenWidth < 900;
   const idealWheelSize = 700;
   const availableWidth = isMobile ? (screenWidth - 16) : (screenWidth - 400 - 32);
@@ -161,14 +174,251 @@ export default function RouletteScreen({
     previewRowRef.current?.scrollTo({ left: 0, behavior: 'auto' });
   }, []);
 
-  // Dynamic wheel sizing — shrinks as sheet grows, matching Flutter behavior
+  // ── Reorder (long-press + drag sideways on a preview tile) ─────────────
+  // Ported from the WheelEditor segment-reorder pattern:
+  //  - Parent owns per-tile refs (tileElsRef).
+  //  - On long-press threshold (from PreviewTile's onGrabStart), window-level
+  //    pointermove / pointerup listeners are attached; these drive the
+  //    hit-test + live swap so pointer capture isn't needed (pre-threshold
+  //    scroll on the row keeps working).
+  //  - Midpoint hit-testing via getBoundingClientRect for smoother swaps.
+  const tileElsRef = useRef<(HTMLDivElement | null)[]>([]);
+  const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
+  // Always-current refs so the window-level handlers created at grab-start
+  // can see the latest flow state after subsequent swaps.
+  const flowExperienceRef = useRef(flowExperience);
+  const flowStepsRef = useRef(flowSteps);
+  flowExperienceRef.current = flowExperience;
+  flowStepsRef.current = flowSteps;
+
+  const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
+    const startFlowSteps = flowStepsRef.current;
+    const startFlowExp = flowExperienceRef.current;
+    if (!startFlowSteps || !startFlowExp) {
+      // Standalone (no flow) — long-press still selects; no reorder possible.
+      // Release behavior falls back to context menu via onContextOpen.
+      return;
+    }
+
+    const prevExp = startFlowExp;
+    const prevSteps = startFlowSteps;
+    let currentSource = sourceIndex;
+    let didMove = false;
+    let menuOpened = false;
+    setGrabbedIndex(sourceIndex);
+    dbg('RouletteScreen', 'reorder:start', { index: sourceIndex });
+
+    // Auto-open the context menu if the user keeps holding without dragging.
+    // Fires 550ms after activation (~850ms total from initial press).
+    const autoMenuTimer = setTimeout(() => {
+      if (didMove || menuOpened) return;
+      menuOpened = true;
+      cleanup();
+      setGrabbedIndex(null);
+      setCtxMenuIndex(currentSource);
+    }, 550);
+
+    const onMove = (me: PointerEvent) => {
+      if (menuOpened) return;
+      // Cancel the auto-menu once the user meaningfully moves.
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+      if (Math.hypot(dx, dy) > 8) clearTimeout(autoMenuTimer);
+
+      const steps = flowStepsRef.current;
+      const exp = flowExperienceRef.current;
+      if (!steps || !exp?.experienceConfig) return;
+
+      // Midpoint hit-test across the live tile refs.
+      let target = steps.length - 1;
+      const els = tileElsRef.current;
+      for (let i = 0; i < steps.length; i++) {
+        const el = els[i];
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (me.clientX < rect.left + rect.width / 2) {
+          target = i;
+          break;
+        }
+      }
+      target = Math.max(0, Math.min(target, steps.length - 1));
+      if (target === currentSource) return;
+
+      const nextSteps = [...steps];
+      const [movedStep] = nextSteps.splice(currentSource, 1);
+      nextSteps.splice(target, 0, movedStep);
+
+      const entries = exp.experienceConfig.steps;
+      const nextEntries = [...entries];
+      const [movedEntry] = nextEntries.splice(currentSource, 1);
+      nextEntries.splice(target, 0, movedEntry);
+      const nextExp: CloudBlock = {
+        ...exp,
+        experienceConfig: { ...exp.experienceConfig, steps: nextEntries },
+      };
+
+      currentSource = target;
+      didMove = true;
+      onFlowChange?.(nextExp, nextSteps);
+      setGrabbedIndex(target);
+    };
+
+    const cleanup = () => {
+      clearTimeout(autoMenuTimer);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+
+    const onUp = () => {
+      if (menuOpened) {
+        cleanup();
+        return;
+      }
+      cleanup();
+      setGrabbedIndex(null);
+      if (didMove) {
+        const toSave = flowExperienceRef.current;
+        if (user && toSave) {
+          dbg('RouletteScreen', 'reorder:end:persist', { expId: sid(toSave.id) });
+          saveDraft(user.uid, toSave).catch(err => {
+            dbg('RouletteScreen', 'reorder:persist-fail', { err: String(err) });
+            onFlowChange?.(prevExp, prevSteps);
+            alert('Failed to save new order.');
+          });
+        }
+      } else {
+        setCtxMenuIndex(currentSource);
+      }
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }, [user, onFlowChange]);
+
+  // ── Context-menu actions (delete / duplicate / insert) ─────────────────
+  // `index` is the preview-tile position. For standalone (no flow), index is
+  // always 0 and refers to the current block. For flows, it refers to
+  // flowSteps[index]. All actions update local state optimistically and
+  // persist in the background, rolling back on failure.
+  type CtxAction = 'delete' | 'duplicate' | 'insertBefore' | 'insertAfter';
+  const runCtxAction = useCallback(async (action: CtxAction, index: number) => {
+    if (!user) return;
+    flushAutoSave();
+    const currentBlock = { ...block, wheelConfig: activeConfig } as CloudBlock;
+    const inFlow = !!(flowExperience && flowSteps && flowSteps.length > 0);
+
+    try {
+      if (inFlow) {
+        const exp = flowExperience!;
+        const steps = flowSteps!;
+        if (action === 'delete') {
+          const change = buildRemoveWheelChange({ experience: exp, steps, index });
+          const prevExp = exp, prevSteps = steps;
+          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
+          const deletedActive = steps[index].id === block.id;
+          if (deletedActive) {
+            if (change.nextSteps.length > 0) {
+              const nextIdx = Math.min(index, change.nextSteps.length - 1);
+              navigate(`/block/${change.nextSteps[nextIdx].id}`, {
+                state: {
+                  block: change.nextSteps[nextIdx], editMode: true,
+                  flowExperience: change.experience ?? undefined,
+                  flowSteps: change.nextSteps,
+                },
+              });
+            } else {
+              navigate('/');
+            }
+          }
+          persistFlowChange(user.uid, change).catch(err => {
+            dbg('RouletteScreen', 'ctx:delete:persist-fail', { err: String(err) });
+            onFlowChange?.(prevExp, prevSteps);
+            alert('Failed to delete wheel.');
+          });
+          return;
+        }
+        if (action === 'duplicate') {
+          const change = buildDuplicateWheelChange({ experience: exp, steps, index });
+          const prevExp = exp, prevSteps = steps;
+          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
+          persistFlowChange(user.uid, change).catch(err => {
+            dbg('RouletteScreen', 'ctx:duplicate:persist-fail', { err: String(err) });
+            onFlowChange?.(prevExp, prevSteps);
+            alert('Failed to duplicate wheel.');
+          });
+          return;
+        }
+        if (action === 'insertBefore' || action === 'insertAfter') {
+          const targetIndex = action === 'insertBefore' ? index : index + 1;
+          const change = buildInsertWheelChange({
+            currentBlock, experience: exp, steps, index: targetIndex,
+          });
+          const prevExp = exp, prevSteps = steps;
+          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
+          persistFlowChange(user.uid, change).catch(err => {
+            dbg('RouletteScreen', 'ctx:insert:persist-fail', { err: String(err) });
+            onFlowChange?.(prevExp, prevSteps);
+            alert('Failed to insert wheel.');
+          });
+          return;
+        }
+      } else {
+        // Standalone wheel — no flow context.
+        if (action === 'delete') {
+          await deleteDraft(user.uid, block.id);
+          navigate('/');
+          return;
+        }
+        if (action === 'duplicate') {
+          const newId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const now = new Date().toISOString();
+          const clone: CloudBlock = {
+            ...currentBlock,
+            id: newId,
+            createdAt: now,
+            lastUsedAt: now,
+            publishedWheelId: null,
+            wheelConfig: currentBlock.wheelConfig
+              ? { ...currentBlock.wheelConfig, id: newId }
+              : currentBlock.wheelConfig,
+          };
+          await saveDraft(user.uid, clone);
+          return;
+        }
+        if (action === 'insertBefore' || action === 'insertAfter') {
+          const targetIndex = action === 'insertBefore' ? 0 : 1;
+          const change = buildInsertWheelChange({ currentBlock, index: targetIndex });
+          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
+          const stampedCurrent = change.writes.find(w => w.id === block.id);
+          if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
+          persistFlowChange(user.uid, change).catch(err => {
+            dbg('RouletteScreen', 'ctx:insert-wrap:persist-fail', { err: String(err) });
+            onFlowChange?.(undefined, []);
+            alert('Failed to insert wheel.');
+          });
+          return;
+        }
+      }
+    } catch (e) {
+      dbg('RouletteScreen', 'ctx:build-fail', { action, err: e instanceof Error ? e.message : String(e) });
+      alert(e instanceof Error ? e.message : 'Action failed.');
+    }
+  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, flushAutoSave]);
+
+  // Dynamic wheel sizing — shrinks as sheet grows, matching Flutter behavior.
+  // bottomContentHeight reserves the vertical space used by the spin button
+  // (~76px incl. margin) plus the red footer (250px) when the sheet is closed,
+  // so the wheel shrinks enough to keep the footer fully on-screen.
+  const bottomContentHeight = 326;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = 460;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
   const wheelPadding = 140 - 110 * spacerProgress;
   const availableForWheel = isMobile
-    ? screenHeight - Math.max(sheetHeight, bottomControlsHeight)
+    ? screenHeight - Math.max(sheetHeight, bottomContentHeight)
     : screenHeight - 100;
   const maxWheelSize = Math.min(availableForWheel - wheelPadding, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
@@ -235,7 +485,7 @@ export default function RouletteScreen({
           left: 0,
           right: 0,
           display: 'flex',
-          justifyContent: 'space-between',
+          alignItems: 'center',
           padding: '12px 8px',
           zIndex: 10,
           opacity: isMobile ? Math.max(0, 1 - sheetHeight / midSnap) : 1,
@@ -253,6 +503,28 @@ export default function RouletteScreen({
           >
             <ArrowLeft size={32} color="#FFFFFF" />
           </button>
+          <input
+            type="text"
+            value={editorHistory.state.name}
+            onChange={e => editorHistory.patch({ name: e.target.value })}
+            onBlur={editorHistory.commit}
+            placeholder="Wheel name"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              margin: '0 4px',
+              padding: '4px 6px',
+              fontSize: 20,
+              fontWeight: 800,
+              fontFamily: 'inherit',
+              textAlign: 'center',
+              color: '#FFFFFF',
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              cursor: 'text',
+            }}
+          />
           <div style={{ display: 'flex', gap: 4 }}>
             {isPlayMode && (
               <button onClick={() => setIsPlayMode(false)} style={{ padding: 8 }}>
@@ -276,14 +548,20 @@ export default function RouletteScreen({
           </div>
         </div>
 
-        {/* Game container — height shrinks as sheet grows */}
+        {/* Game container — height shrinks as sheet grows.
+            paddingTop reserves space for the absolute-positioned app bar so
+            the flex column centers the wheel (or the header+wheel group) in
+            the visible area between app bar and spin button, not the whole
+            container. Fades in lockstep with the app bar as the sheet rises. */}
         <div style={{
           position: 'absolute',
           top: 0,
           left: 0,
           right: 0,
           bottom: isMobile ? sheetHeight : bottomControlsHeight,
-          paddingTop: isMobile ? 16 * spacerProgress : 0,
+          paddingTop: isMobile
+            ? 40 * Math.max(0, 1 - sheetHeight / midSnap) + 16 * spacerProgress
+            : 40,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -310,8 +588,8 @@ export default function RouletteScreen({
             headerTextColor={textColor}
             overlayColor={overlayColor}
             showWinAnimation={showWinAnimation}
-            headerOpacity={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
-            headerSizeProgress={isMobile ? Math.max(0, 1 - spacerProgress) : 1}
+            headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
+            headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
           />
           {/* Bottom spacer — centers wheel */}
           <div style={{ flex: 1 }} />
@@ -366,16 +644,19 @@ export default function RouletteScreen({
 
             {/* Preview row: [wheel 1] … [wheel N] [+ icon] — + always rightmost,
                 so adding a new wheel extends the chain linearly. */}
-            <div ref={previewRowRef} style={{ display: 'flex', gap: 10, flexShrink: 0, overflowX: 'auto' }}>
+            <div ref={previewRowRef} style={{ display: 'flex', gap: 10, minWidth: 0, overflowX: 'auto' }}>
               {flowSteps && flowSteps.length > 0 ? (
-                flowSteps.map(step => {
+                flowSteps.map((step, idx) => {
                   const isActive = step.id === block.id;
                   const items = step.wheelConfig?.items ?? [];
                   const previewItems = isActive ? activeConfig.items : items;
                   return (
                     <PreviewTile
                       key={step.id}
+                      index={idx}
                       active={isActive}
+                      grabbed={grabbedIndex === idx}
+                      innerRef={el => { tileElsRef.current[idx] = el; }}
                       onClick={isActive ? undefined : () => {
                         dbg('RouletteScreen', 'tile:tap', {
                           from: sid(block.id),
@@ -393,13 +674,15 @@ export default function RouletteScreen({
                           },
                         });
                       }}
+                      onContextOpen={() => setCtxMenuIndex(idx)}
+                      onGrabStart={handleGrabStart}
                     >
                       <WheelThumbnail items={previewItems} size={72} />
                     </PreviewTile>
                   );
                 })
               ) : (
-                <PreviewTile active>
+                <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
                   <WheelThumbnail items={activeConfig.items} size={72} />
                 </PreviewTile>
               )}
@@ -563,10 +846,84 @@ export default function RouletteScreen({
               value={showWinAnimation}
               onChange={setShowWinAnimation}
             />
+            <div style={{ height: 12 }} />
+
+            <ToggleRow
+              label="Segment Header"
+              icon={<Type size={22} />}
+              value={showSegmentHeader}
+              onChange={setShowSegmentHeader}
+            />
           </div>
         </DraggableSheet>
       )}
 
+      {/* Per-tile context menu (right-click / long-press on a preview tile) */}
+      {ctxMenuIndex !== null && (
+        <DraggableSheet onClose={() => setCtxMenuIndex(null)}>
+          <div style={{ padding: '0 20px 28px' }}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
+              Wheel actions
+            </h3>
+            <CtxRow
+              icon={<ArrowLeftFromLine size={20} />}
+              label="Insert wheel before"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
+            />
+            <CtxRow
+              icon={<ArrowRightFromLine size={20} />}
+              label="Insert wheel after"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
+            />
+            <CtxRow
+              icon={<Copy size={20} />}
+              label="Duplicate wheel"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
+            />
+            <CtxRow
+              icon={<Trash2 size={20} />}
+              label="Delete wheel"
+              danger
+              onTap={() => {
+                const i = ctxMenuIndex;
+                setCtxMenuIndex(null);
+                if (!confirm('Delete this wheel?')) return;
+                runCtxAction('delete', i);
+              }}
+            />
+          </div>
+        </DraggableSheet>
+      )}
+
+    </div>
+  );
+}
+
+function CtxRow({ icon, label, onTap, danger }: {
+  icon: React.ReactNode;
+  label: string;
+  onTap: () => void;
+  danger?: boolean;
+}) {
+  const color = danger ? '#EF4444' : ON_SURFACE;
+  return (
+    <div
+      onClick={onTap}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        padding: '14px 16px',
+        borderRadius: 14,
+        backgroundColor: '#F4F4F5',
+        border: '1.5px solid #E4E4E7',
+        marginBottom: 8,
+        cursor: 'pointer',
+        color,
+      }}
+    >
+      {icon}
+      <span style={{ fontWeight: 700, fontSize: 15 }}>{label}</span>
     </div>
   );
 }
@@ -624,14 +981,108 @@ function ToggleRow({ label, icon, value, onChange }: {
 
 // ── Red-footer subcomponents ─────────────────────────────────────────────
 
-function PreviewTile({ onClick, active, children }: {
+function PreviewTile({
+  onClick, onContextOpen, onGrabStart,
+  index, active, grabbed, innerRef, children,
+}: {
   onClick?: () => void;
+  // Right-click handler (no hold required).
+  onContextOpen?: () => void;
+  // Fires when the 500ms long-press threshold is met and the finger is still
+  // down. Parent takes over the pointer from here via window listeners.
+  onGrabStart?: (index: number, startX: number, startY: number) => void;
+  index?: number;
   active?: boolean;
+  // True when this tile is the one currently being dragged in a reorder.
+  // Driven by parent state since the grabbed position shifts as tiles swap.
+  grabbed?: boolean;
+  // Callback ref so parent can collect a { index -> element } map for
+  // midpoint hit-testing during reorder.
+  innerRef?: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
 }) {
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Standalone-only: second timer that auto-opens the context menu if the user
+  // keeps holding after activation without dragging.
+  const menuAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPressRef = useRef(false);
+  const startPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Standalone fallback: when there is no reorder handler (no flow), a
+  // long-press still needs to open the context menu on release.
+  const primedForContextRef = useRef(false);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (menuAutoTimerRef.current) {
+      clearTimeout(menuAutoTimerRef.current);
+      menuAutoTimerRef.current = null;
+    }
+  };
+
   return (
     <div
-      onClick={onClick}
+      ref={el => { innerRef?.(el); }}
+      onClick={() => {
+        if (didLongPressRef.current) {
+          didLongPressRef.current = false;
+          return;
+        }
+        onClick?.();
+      }}
+      onContextMenu={onContextOpen ? (e => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick?.();
+        clearLongPress();
+        didLongPressRef.current = true;
+        onContextOpen();
+      }) : undefined}
+      onPointerDown={(onGrabStart || onContextOpen) ? (e => {
+        if (e.button === 2) return;
+        didLongPressRef.current = false;
+        primedForContextRef.current = false;
+        startPosRef.current = { x: e.clientX, y: e.clientY };
+        longPressTimerRef.current = setTimeout(() => {
+          didLongPressRef.current = true;
+          longPressTimerRef.current = null;
+          onClick?.();
+          if (index !== undefined && onGrabStart) {
+            // Parent takes over via window listeners; release handling lives
+            // in parent's onUp (reorder commit vs. context-menu open).
+            const start = startPosRef.current;
+            onGrabStart(index, start?.x ?? 0, start?.y ?? 0);
+          } else if (onContextOpen) {
+            // Standalone — no reorder. Arm release-opens-menu, and also
+            // auto-open the menu after another 550ms of holding still.
+            primedForContextRef.current = true;
+            menuAutoTimerRef.current = setTimeout(() => {
+              menuAutoTimerRef.current = null;
+              primedForContextRef.current = false;
+              onContextOpen();
+            }, 550);
+          }
+        }, 300);
+      }) : undefined}
+      onPointerMove={(onGrabStart || onContextOpen) ? (e => {
+        if (!startPosRef.current) return;
+        const dx = e.clientX - startPosRef.current.x;
+        const dy = e.clientY - startPosRef.current.y;
+        if (Math.hypot(dx, dy) > 8) clearLongPress();
+      }) : undefined}
+      onPointerUp={(onGrabStart || onContextOpen) ? (() => {
+        clearLongPress();
+        if (primedForContextRef.current) {
+          primedForContextRef.current = false;
+          onContextOpen?.();
+        }
+      }) : undefined}
+      onPointerCancel={(onGrabStart || onContextOpen) ? (() => {
+        clearLongPress();
+        primedForContextRef.current = false;
+      }) : undefined}
       style={{
         width: 88,
         height: 88,
@@ -643,6 +1094,12 @@ function PreviewTile({ onClick, active, children }: {
         justifyContent: 'center',
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
+        userSelect: 'none',
+        touchAction: 'manipulation',
+        transform: grabbed ? 'scale(1.08)' : 'scale(1)',
+        boxShadow: grabbed ? '0 6px 16px rgba(0,0,0,0.35)' : 'none',
+        transition: 'transform 0.12s ease, box-shadow 0.12s ease',
+        zIndex: grabbed ? 2 : undefined,
       }}
     >
       {children}

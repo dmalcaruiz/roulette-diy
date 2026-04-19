@@ -9,6 +9,7 @@ import {
   AlertTriangle, GitBranch, CheckCircle2, Circle,
 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
+import WheelThumbnail from '../components/WheelThumbnail';
 
 function iconForType(type: BlockType) {
   switch (type) {
@@ -182,6 +183,14 @@ export default function ExperienceBuilderScreen({ block, allBlocks, onBlockUpdat
                     <StepCard3D
                       index={index}
                       block={refBlock}
+                      onTap={() => {
+                        // Open the step in its edit overlay. BlockScreen will
+                        // detect parentExperienceId and load the flow context
+                        // itself, so we don't need to pass flowExperience/steps.
+                        navigate(`/block/${refBlock.id}`, {
+                          state: { block: refBlock, editMode: true },
+                        });
+                      }}
                       onDelete={() => removeStep(index)}
                     />
                   ) : (
@@ -311,7 +320,9 @@ function ConditionOption({ label, isSelected, onTap }: { label: string; isSelect
   );
 }
 
-function StepCard3D({ index, block, onDelete }: { index: number; block: Block; onDelete: () => void }) {
+function StepCard3D({ index, block, onTap, onDelete }: {
+  index: number; block: Block; onTap?: () => void; onDelete: () => void;
+}) {
   const typeColor = colorForType(block.type);
   const bottomColor = oklchShadow(typeColor);
   const innerStroke = oklchShadow(typeColor, 0.06);
@@ -324,11 +335,14 @@ function StepCard3D({ index, block, onDelete }: { index: number; block: Block; o
         borderRadius: 21, backgroundColor: bottomColor,
         border: `2.5px solid ${oklchShadow(typeColor, 0.16)}`,
       }} />
-      <div style={{
-        position: 'relative', marginBottom: 6.5, borderRadius: 21,
-        backgroundColor: typeColor, border: `2.5px solid ${innerStroke}`,
-        padding: '16px 18px', display: 'flex', alignItems: 'center',
-      }}>
+      <div
+        onClick={onTap}
+        style={{
+          position: 'relative', marginBottom: 6.5, borderRadius: 21,
+          backgroundColor: typeColor, border: `2.5px solid ${innerStroke}`,
+          padding: '16px 18px', display: 'flex', alignItems: 'center',
+          cursor: onTap ? 'pointer' : 'default',
+        }}>
         <div style={{
           width: 30, height: 30, borderRadius: '50%',
           backgroundColor: 'rgba(255,255,255,0.25)',
@@ -338,7 +352,19 @@ function StepCard3D({ index, block, onDelete }: { index: number; block: Block; o
           {index + 1}
         </div>
         <div style={{ width: 14 }} />
-        <TypeIcon size={22} color="rgba(255,255,255,0.8)" />
+        {block.type === 'roulette' && block.wheelConfig ? (
+          <div style={{
+            width: 40, height: 40, borderRadius: '50%',
+            backgroundColor: '#FFF',
+            padding: 2,
+            boxSizing: 'border-box',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <WheelThumbnail items={block.wheelConfig.items} size={36} />
+          </div>
+        ) : (
+          <TypeIcon size={22} color="rgba(255,255,255,0.8)" />
+        )}
         <div style={{ width: 10 }} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: '#FFF', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -349,7 +375,7 @@ function StepCard3D({ index, block, onDelete }: { index: number; block: Block; o
           </div>
         </div>
         <div
-          onClick={onDelete}
+          onClick={e => { e.stopPropagation(); onDelete(); }}
           style={{
             width: 32, height: 32, borderRadius: 10,
             backgroundColor: 'rgba(255,255,255,0.2)',

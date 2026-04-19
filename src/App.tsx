@@ -96,7 +96,23 @@ export default function App() {
   // on first render, no Firestore fetch delay before the preview row fills.
   const openForEditing = useCallback((block: CloudBlock) => {
     const parentId = block.parentExperienceId;
-    dbg('App.openForEditing', 'enter', { block: sid(block.id), parent: sid(parentId ?? null) });
+    dbg('App.openForEditing', 'enter', { block: sid(block.id), parent: sid(parentId ?? null), type: block.type });
+
+    // Helper: given an Experience and its step blocks, jump to the first step
+    // with full flow context so BlockScreen renders the publish screen +
+    // editor overlay for that wheel (instead of ExperienceBuilderScreen).
+    const openFlowAtStep0 = (experience: CloudBlock, stepBlocks: CloudBlock[]) => {
+      navigate(`/block/${stepBlocks[0].id}`, {
+        state: {
+          block: stepBlocks[0],
+          editMode: true,
+          flowExperience: experience,
+          flowSteps: stepBlocks,
+        },
+      });
+    };
+
+    // Child wheel tapped — resolve its parent flow and open step 0.
     if (parentId) {
       const experience = blocks.find(b => b.id === parentId);
       const steps = experience?.experienceConfig?.steps;
@@ -105,24 +121,33 @@ export default function App() {
           .map(s => blocks.find(b => b.id === s.blockId))
           .filter((b): b is CloudBlock => !!b);
         if (stepBlocks.length > 0) {
-          dbg('App.openForEditing', 'resolved-flow', {
-            exp: sid(experience.id),
-            step0: sid(stepBlocks[0].id),
-            steps: sids(stepBlocks),
+          dbg('App.openForEditing', 'resolved-flow-via-child', {
+            exp: sid(experience.id), step0: sid(stepBlocks[0].id), steps: sids(stepBlocks),
           });
-          navigate(`/block/${stepBlocks[0].id}`, {
-            state: {
-              block: stepBlocks[0],
-              editMode: true,
-              flowExperience: experience,
-              flowSteps: stepBlocks,
-            },
-          });
+          openFlowAtStep0(experience, stepBlocks);
           return;
         }
       }
       dbg('App.openForEditing', 'flow-unresolved-fallback', { block: sid(block.id) });
     }
+
+    // Experience itself tapped — resolve its steps and open step 0's wheel
+    // in the publish screen rather than the ExperienceBuilder.
+    if (block.type === 'experience') {
+      const steps = block.experienceConfig?.steps ?? [];
+      const stepBlocks = steps
+        .map(s => blocks.find(b => b.id === s.blockId))
+        .filter((b): b is CloudBlock => !!b);
+      if (stepBlocks.length > 0) {
+        dbg('App.openForEditing', 'resolved-flow-via-parent', {
+          exp: sid(block.id), step0: sid(stepBlocks[0].id), steps: sids(stepBlocks),
+        });
+        openFlowAtStep0(block, stepBlocks);
+        return;
+      }
+      dbg('App.openForEditing', 'experience-empty-fallback', { block: sid(block.id) });
+    }
+
     dbg('App.openForEditing', 'standalone-navigate', { block: sid(block.id) });
     navigateToBlock(block, true);
   }, [blocks, navigate, navigateToBlock]);
