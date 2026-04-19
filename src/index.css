@@ -69,3 +69,14 @@ a {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* Wheel swap-in animation (main preview and newly-added flow tiles). */
+@keyframes wheel-fade-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes tile-pop-in {
+  0%   { opacity: 0; transform: scale(0.6); }
+  60%  { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}

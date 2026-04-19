@@ -862,28 +862,36 @@ export default function RouletteScreen({
         }}>
           {/* Top spacer — centers wheel */}
           <div style={{ flex: 1 }} />
-          <SpinningWheel
-            ref={wheelRef}
-            items={activeConfig.items}
-            onFinished={onWheelFinished}
-            size={clampedWheelSize}
-            textSizeMultiplier={activeConfig.textSize * dynamicScale}
-            headerTextSizeMultiplier={activeConfig.headerTextSize * dynamicScale}
-            imageSize={activeConfig.imageSize * dynamicScale}
-            cornerRadius={activeConfig.cornerRadius * dynamicScale}
-            innerCornerStyle={activeConfig.innerCornerStyle}
-            centerInset={activeConfig.centerInset * dynamicScale}
-            strokeWidth={activeConfig.strokeWidth * dynamicScale}
-            showBackgroundCircle={activeConfig.showBackgroundCircle}
-            centerMarkerSize={activeConfig.centerMarkerSize * dynamicScale}
-            spinIntensity={spinIntensity}
-            isRandomIntensity={isRandomIntensity}
-            headerTextColor={textColor}
-            overlayColor={overlayColor}
-            showWinAnimation={showWinAnimation}
-            headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
-            headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
-          />
+          {/* Keyed wrapper forces a remount on block change so the CSS
+              fade/scale animation re-fires each time the user switches
+              wheel (or a new wheel is appended and navigated-to). */}
+          <div
+            key={block.id}
+            style={{ animation: 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)' }}
+          >
+            <SpinningWheel
+              ref={wheelRef}
+              items={activeConfig.items}
+              onFinished={onWheelFinished}
+              size={clampedWheelSize}
+              textSizeMultiplier={activeConfig.textSize * dynamicScale}
+              headerTextSizeMultiplier={activeConfig.headerTextSize * dynamicScale}
+              imageSize={activeConfig.imageSize * dynamicScale}
+              cornerRadius={activeConfig.cornerRadius * dynamicScale}
+              innerCornerStyle={activeConfig.innerCornerStyle}
+              centerInset={activeConfig.centerInset * dynamicScale}
+              strokeWidth={activeConfig.strokeWidth * dynamicScale}
+              showBackgroundCircle={activeConfig.showBackgroundCircle}
+              centerMarkerSize={activeConfig.centerMarkerSize * dynamicScale}
+              spinIntensity={spinIntensity}
+              isRandomIntensity={isRandomIntensity}
+              headerTextColor={textColor}
+              overlayColor={overlayColor}
+              showWinAnimation={showWinAnimation}
+              headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
+              headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
+            />
+          </div>
           {/* Bottom spacer — centers wheel */}
           <div style={{ flex: 1 }} />
           {/* Spin button pinned to bottom — fades & collapses when sheet opens or play mode */}
@@ -1097,6 +1105,19 @@ export default function RouletteScreen({
                   // so its in-memory blocks list reflects it.
                   const stampedCurrent = change.writes.find(w => w.id === block.id);
                   if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
+
+                  // Navigate to the newly-added wheel so the center preview
+                  // animates in via the keyed wrapper. replace: true keeps
+                  // the history stack tidy.
+                  navigate(`/block/${change.newBlock.id}`, {
+                    replace: true,
+                    state: {
+                      block: change.newBlock,
+                      editMode: true,
+                      flowExperience: change.experience,
+                      flowSteps: nextSteps,
+                    },
+                  });
                 }}
               >
                 <Plus size={32} color="rgba(255,255,255,0.85)" />
@@ -1601,6 +1622,8 @@ function PreviewTile({
         justifyContent: 'center',
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
+        // Pop-in animation fires on initial mount (tile added or sheet opened).
+        animation: 'tile-pop-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1)',
         userSelect: 'none',
         WebkitUserSelect: 'none',
         // Suppress the iOS long-press callout (copy/save/select) that
