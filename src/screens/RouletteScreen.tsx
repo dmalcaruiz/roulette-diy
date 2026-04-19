@@ -1,12 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { useHistory } from '../hooks/useHistory';
@@ -45,6 +45,11 @@ export default function RouletteScreen({
 }: RouletteScreenProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Wheel-switch slide direction is passed via navigation state from the tile
+  // tap handler. 'right' = forward through the flow, 'left' = backward, undefined
+  // = creation / deep-link / external navigation (use central fade-in instead).
+  const wheelTransition = (location.state as { wheelTransition?: 'left' | 'right' } | null)?.wheelTransition;
   const wheelRef = useRef<SpinningWheelHandle>(null);
   const [backgroundColor, setBackgroundColor] = useState('#000000');
   const [textColor, setTextColor] = useState('#FFFFFF');
@@ -67,7 +72,24 @@ export default function RouletteScreen({
   // share the same SnappingSheet and are switched by a chip header at the
   // top. null = sheet closed.
   type SheetTab = 'segments' | 'style' | 'settings' | 'templates';
+  const SHEET_TAB_ORDER: SheetTab[] = ['segments', 'style', 'settings', 'templates'];
   const [sheetTab, setSheetTab] = useState<SheetTab | null>(null);
+  // Direction of the most recent tab change — drives the slide-in animation
+  // for the sheet body so chip switches feel like sideways navigation.
+  const [tabSlideDir, setTabSlideDir] = useState<'left' | 'right' | null>(null);
+  const prevSheetTabRef = useRef<SheetTab | null>(null);
+  const setSheetTabAnimated = useCallback((next: SheetTab | null) => {
+    const prev = prevSheetTabRef.current;
+    if (next && prev && next !== prev) {
+      const prevIdx = SHEET_TAB_ORDER.indexOf(prev);
+      const nextIdx = SHEET_TAB_ORDER.indexOf(next);
+      setTabSlideDir(nextIdx > prevIdx ? 'right' : 'left');
+    } else {
+      setTabSlideDir(null);
+    }
+    prevSheetTabRef.current = next;
+    setSheetTab(next);
+  }, []);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -487,6 +509,42 @@ export default function RouletteScreen({
   flowExperienceRef.current = flowExperience;
   flowStepsRef.current = flowSteps;
 
+  // Reorder animation — when a swap shuffles the array, the tiles whose
+  // index changed re-play the poppy bounce (matches `tile-pop-in` in
+  // index.css). Compared by index (not rect) so the grabbed tile's
+  // scale(1.08) — which shifts its bounding rect — doesn't trigger the
+  // animation by itself. The grabbed tile keeps scale(1.08) at the final
+  // keyframe so it doesn't snap back to 1.
+  const prevTileIndicesRef = useRef<Map<string, number>>(new Map());
+  useLayoutEffect(() => {
+    if (!flowSteps) {
+      prevTileIndicesRef.current.clear();
+      return;
+    }
+    const newIndices = new Map<string, number>();
+    flowSteps.forEach((step, idx) => {
+      const oldIdx = prevTileIndicesRef.current.get(step.id);
+      if (oldIdx !== undefined && oldIdx !== idx) {
+        const el = tileElsRef.current[idx];
+        if (el) {
+          const isGrabbed = idx === grabbedIndex;
+          const peak = isGrabbed ? 1.16 : 1.06;
+          const settle = isGrabbed ? 1.08 : 1;
+          el.animate(
+            [
+              { opacity: 0, transform: 'scale(0.6)' },
+              { opacity: 1, transform: `scale(${peak})`, offset: 0.6 },
+              { opacity: 1, transform: `scale(${settle})` },
+            ],
+            { duration: 320, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' },
+          );
+        }
+      }
+      newIndices.set(step.id, idx);
+    });
+    prevTileIndicesRef.current = newIndices;
+  });
+
   const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
     // Lock scroll: stop momentum glide + tear down any in-progress mouse
     // drag-to-scroll so the row freezes the moment the grab activates.
@@ -683,20 +741,33 @@ export default function RouletteScreen({
     }
   }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, flushAutoSave]);
 
-  // Dynamic wheel sizing — shrinks as sheet grows, matching Flutter behavior.
-  // bottomContentHeight reserves the vertical space used by the spin button
-  // (~76px incl. margin) plus the red footer (250px) when the sheet is closed,
-  // so the wheel shrinks enough to keep the footer fully on-screen.
-  // Reserved height for the bottom stack: spin button (76) + red footer
-  // (184, which already includes the 48px space for the chip bar to overlay).
-  const bottomContentHeight = 260;
+  // Dynamic wheel sizing — the wheel + sheet area is a flex column:
+  //   child1 (flex:1): app bar + wheel + red container (red grows with sheet)
+  //   child2 (flex-shrink:0, 48px): chip bar
+  // Red container absorbs sheet height so the wheel shrinks in lockstep.
+  const RED_BASE = 136;   // red container minimum (preview row + padding)
+  const CHIP_H = 48;      // pinned chip bar
+  const SPIN_H = 76;      // spin button + margin
+  const APP_BAR_PAD = 110;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
-  const wheelPadding = 140 - 110 * spacerProgress;
+  // App bar and spin button stay at constant size (always visible). The
+  // wheel area between them shrinks as the sheet rises so the wheel still
+  // resizes to fit.
+  const appBarPadCurrent = APP_BAR_PAD;
+  const spinHCurrent = isPlayMode ? 0 : SPIN_H;
+  // Red box's actual DOM height — fixed at RED_BASE (not flexible).
+  const redBoxHeight = isPlayMode ? 0 : RED_BASE;
+  // Effective bottom coverage used for wheel sizing — when the sheet is open
+  // taller than the red box, the wheel must shrink to stay above the sheet
+  // (the sheet visually covers both the red box and the bottom of the wheel
+  // area, since they're siblings under a fixed-position overlay).
+  const effectiveBottomCover = isPlayMode ? 0 : Math.max(RED_BASE, sheetHeight);
+  const wheelPadding = 20; // breathing room
   const availableForWheel = isMobile
-    ? screenHeight - Math.max(sheetHeight, bottomContentHeight)
+    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover
     : screenHeight - 100;
   const maxWheelSize = Math.min(availableForWheel - wheelPadding, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
@@ -741,7 +812,7 @@ export default function RouletteScreen({
               history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
               selectedTab={sheetTab === 'style' ? 1 : 0}
-              onTabChange={t => setSheetTab(t === 0 ? 'segments' : 'style')}
+              onTabChange={t => setSheetTabAnimated(t === 0 ? 'segments' : 'style')}
             />
           </div>
         </div>
@@ -756,7 +827,7 @@ export default function RouletteScreen({
         backgroundColor,
         overflow: 'hidden',
       }}>
-        {/* App bar — fades out as sheet rises */}
+        {/* App bar — fixed at top, always fully visible. */}
         <div style={{
           position: 'absolute',
           top: 0,
@@ -766,10 +837,7 @@ export default function RouletteScreen({
           alignItems: 'center',
           padding: '12px 8px',
           zIndex: 10,
-          opacity: isMobile ? Math.max(0, 1 - sheetHeight / midSnap) : 1,
-          height: isMobile ? 54 * Math.max(0, 1 - sheetHeight / midSnap) : 54,
-          overflow: 'hidden',
-          transition: sheetHeight === 0 ? 'opacity 0.3s, height 0.3s' : 'none',
+          height: 54,
         }}>
           <button
             onClick={() => {
@@ -824,8 +892,8 @@ export default function RouletteScreen({
           />
           <div style={{ display: 'flex', gap: 4 }}>
             {isPlayMode && (
-              <button onClick={() => setIsPlayMode(false)} style={{ padding: 8 }}>
-                <X size={32} color="#FFFFFF" />
+              <button onClick={() => setIsPlayMode(false)} style={{ padding: 8 }} aria-label="Stop">
+                <Square size={26} color="#FFFFFF" fill="#FFFFFF" strokeWidth={2.5} />
               </button>
             )}
             {!isPlayMode && onRequestPublish && (
@@ -845,27 +913,27 @@ export default function RouletteScreen({
           </div>
         </div>
 
-        {/* Game container — height shrinks as sheet grows.
-            paddingTop reserves space for the absolute-positioned app bar so
-            the flex column centers the wheel (or the header+wheel group) in
-            the visible area between app bar and spin button, not the whole
-            container. Fades in lockstep with the app bar as the sheet rises. */}
+        {/* Stack child 1 — flex column holding app bar + wheel + red container.
+            Takes all vertical space above the chip bar (which is sibling 2).
+            The red container's height grows with sheetHeight, so the wheel
+            (sandwiched between flex spacers) shrinks as the sheet rises.
+            paddingTop reserves space for the absolute-positioned app bar. */}
         <div style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          // Sheet's bottom sits 48px up (bottomOffset for the pinned chip bar),
-          // so the game container must pull its floor up the full sheetHeight
-          // + 48 to stop the sheet from overlapping the wheel area.
-          bottom: isMobile ? sheetHeight + (sheetHeight > 0 ? 48 : 0) : bottomControlsHeight,
-          paddingTop: isMobile
-            ? 110 * Math.max(0, 1 - sheetHeight / midSnap) + 16 * spacerProgress
-            : 110,
+          flex: 1,
+          position: 'relative',
+          minHeight: 0,
+          // Constant — reserves space for the always-visible app bar.
+          paddingTop: APP_BAR_PAD,
+          paddingBottom: isMobile ? 0 : bottomControlsHeight,
+          // When the sheet rises past the red box, push the wheel area up so
+          // the spin button stays above the sheet's top edge instead of being
+          // covered. Below RED_BASE, the sheet only overlays red so margin = 0.
+          marginBottom: isMobile ? Math.max(0, sheetHeight - RED_BASE) : 0,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           opacity: wheelOpacity,
+          overflow: 'hidden',
         }}>
           {/* Top spacer — centers wheel */}
           <div style={{ flex: 1 }} />
@@ -874,7 +942,13 @@ export default function RouletteScreen({
               wheel (or a new wheel is appended and navigated-to). */}
           <div
             key={block.id}
-            style={{ animation: 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)' }}
+            style={{
+              animation: wheelTransition === 'right'
+                ? 'slide-in-from-right 0.5s cubic-bezier(0.32, 0.72, 0, 1) both'
+                : wheelTransition === 'left'
+                  ? 'slide-in-from-left 0.5s cubic-bezier(0.32, 0.72, 0, 1) both'
+                  : 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)',
+            }}
           >
             <SpinningWheel
               ref={wheelRef}
@@ -901,43 +975,52 @@ export default function RouletteScreen({
           </div>
           {/* Bottom spacer — centers wheel */}
           <div style={{ flex: 1 }} />
-          {/* Spin button pinned to bottom — fades & collapses when sheet opens or play mode */}
+          {/* Spin button pinned to bottom of wheel section — always visible. */}
           <div style={{
             width: '100%',
             padding: '0 20px',
             flexShrink: 0,
-            opacity: Math.max(0, 1 - spacerProgress),
-            height: 64 * Math.max(0, 1 - spacerProgress),
-            marginBottom: 12 * Math.max(0, 1 - spacerProgress),
-            overflow: 'hidden',
-            transition: 'opacity 0.3s, height 0.3s, margin-bottom 0.3s',
+            height: 64,
+            marginBottom: 12,
           }}>
             <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
               <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
             </PushDownButton>
           </div>
-          {/* Bottom controls container — preview row at the top, 48px of
-              reserved space at the bottom where the pinned chip bar overlays. */}
+
+        </div>
+
+          {/* Red container — fixed height (not flexible), sibling of the
+              wheel area, pinned above the chip bar. The sheet overlays both
+              the wheel area and red as a group via fixed positioning. */}
           <div style={{
             flexShrink: 0,
             width: '100%',
-            height: isPlayMode ? 0 : 184,
+            height: redBoxHeight,
             opacity: isPlayMode ? 0 : 1,
             backgroundColor: 'red',
-            overflow: 'hidden',
+            // visible (not hidden) so the pop-in scale and grabbed box-shadow
+            // can extend past the red box without being clipped.
+            overflow: 'visible',
             transition: 'height 0.3s ease, opacity 0.3s ease',
             display: 'flex',
             flexDirection: 'column',
-            padding: '12px 16px 62px',
+            // Center the preview row vertically inside the red box.
+            justifyContent: 'center',
+            padding: '12px 16px 14px',
             boxSizing: 'border-box',
           }}>
-            {/* Preview row: [wheel 1] … [wheel N] [+ icon] */}
+            {/* Preview row: [wheel 1] … [wheel N] [+ icon].
+                flexShrink: 0 keeps the row at its intrinsic height (≈110
+                for tile + gap + label) so red's flex column doesn't squish
+                it down to red's padding box. Without this, the row would
+                gain a forced vertical scrollbar and break centering. */}
             <div
               ref={previewRowRef}
               className="no-scrollbar"
               onMouseDown={handleRowMouseDown}
               onWheel={handleRowWheel}
-              style={{ display: 'flex', gap: 10, minWidth: 0, overflowX: 'auto', cursor: 'grab' }}
+              style={{ display: 'flex', flexShrink: 0, gap: 10, minWidth: 0, overflowX: 'auto', cursor: 'grab' }}
             >
               {flowSteps && flowSteps.length > 0 ? (
                 flowSteps.map((step, idx) => {
@@ -973,12 +1056,14 @@ export default function RouletteScreen({
                     ? () => openRenameSheet(idx)
                     : (isActive ? undefined : () => {
                         flushAutoSave();
+                        const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
+                        const dir = idx > fromIdx ? 'right' : 'left';
                         // replace: true so switching previews doesn't push a
                         // new history entry (otherwise X/back would just
                         // unwind through each tile switch).
                         navigate(`/block/${step.id}`, {
                           replace: true,
-                          state: { block: step, editMode: true, flowExperience, flowSteps },
+                          state: { block: step, editMode: true, flowExperience, flowSteps, wheelTransition: dir },
                         });
                       });
                   return (
@@ -1008,6 +1093,8 @@ export default function RouletteScreen({
                             flowSteps: sids(flowSteps),
                           });
                           flushAutoSave();
+                          const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
+                          const dir = idx > fromIdx ? 'right' : 'left';
                           // replace: true so switching previews doesn't push
                           // a new history entry — X/back should exit the
                           // editor, not unwind through each tile switch.
@@ -1018,6 +1105,7 @@ export default function RouletteScreen({
                               editMode: true,
                               flowExperience,
                               flowSteps,
+                              wheelTransition: dir,
                             },
                           });
                         }}
@@ -1108,35 +1196,51 @@ export default function RouletteScreen({
 
           </div>
 
-          {/* Chip bar as the last flex child — rides the bottom of the game
-              container so it rises with the sheet. */}
-          {isMobile && !isPlayMode && (
-            <PinnedChipBar
-              activeTab={sheetTab}
-              onChange={setSheetTab}
-              canUndo={editorHistory.canUndo || opCanUndo}
-              canRedo={editorHistory.canRedo || opCanRedo}
-              onUndo={unifiedUndo}
-              onRedo={unifiedRedo}
-              onPlay={() => setIsPlayMode(true)}
-            />
-          )}
-        </div>
+        {/* Stack child 2 — pinned chip bar. Always visible, never moves.
+            The sheet (bottomOffset: 48) snaps to its top edge. */}
+        {isMobile && !isPlayMode && (
+          <PinnedChipBar
+            activeTab={sheetTab}
+            onChange={setSheetTabAnimated}
+            canUndo={editorHistory.canUndo || opCanUndo}
+            canRedo={editorHistory.canRedo || opCanRedo}
+            onUndo={unifiedUndo}
+            onRedo={unifiedRedo}
+            onPlay={() => setIsPlayMode(true)}
+          />
+        )}
 
-        {/* Unified snapping sheet — hosts all four panes. The chip bar that
-            drives it sits inline at the bottom of the game container. */}
+        {/* Unified snapping sheet — overlays the red container area. The
+            chip bar sits beneath, so bottomOffset: 48 keeps the sheet from
+            covering it. */}
         {isMobile && (
           <SnappingSheet
-            bottomOffset={0}
+            bottomOffset={48}
             visible={sheetTab !== null}
             snapPositions={[0, 400, screenHeight - 80]}
             initialSnap={1}
             onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
           >
+            {/* overflow-x: hidden clips the off-screen slide so the parent
+                doesn't briefly horizontal-scroll during the animation. */}
+            <div style={{ overflowX: 'hidden' }}>
+            {/* Keyed wrapper — remounts on chip change so the slide-in
+                animation re-fires. Direction is set by setSheetTabAnimated
+                based on the order of the chips. */}
+            <div
+              key={sheetTab ?? 'closed'}
+              style={{
+                animation: tabSlideDir === 'right'
+                  ? 'slide-in-from-right 0.3s cubic-bezier(0.32, 0.72, 0, 1) both'
+                  : tabSlideDir === 'left'
+                    ? 'slide-in-from-left 0.3s cubic-bezier(0.32, 0.72, 0, 1) both'
+                    : undefined,
+              }}
+            >
             {(sheetTab === 'segments' || sheetTab === 'style') && (
               <WheelEditor
-                key={baseConfig.id}
+                key={`${baseConfig.id}:${sheetTab}`}
                 initialConfig={baseConfig}
                 history={wrappedEditorHistory}
                 onPreview={handleWheelPreview}
@@ -1190,6 +1294,8 @@ export default function RouletteScreen({
                 </p>
               </div>
             )}
+            </div>
+            </div>
           </SnappingSheet>
         )}
 

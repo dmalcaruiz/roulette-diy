@@ -32,6 +32,7 @@ export interface EditorState {
   centerMarkerSize: number;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
+  segmentsMode: 'simple' | 'complex';
 }
 
 interface WheelEditorProps {
@@ -79,6 +80,7 @@ export function buildInitialState(config?: WheelConfig | null): EditorState {
     centerMarkerSize: config?.centerMarkerSize ?? 200,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
+    segmentsMode: config?.segmentsMode ?? 'simple',
   };
 }
 
@@ -103,6 +105,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     centerMarkerSize: state.centerMarkerSize,
     innerCornerStyle: state.innerCornerStyle,
     centerInset: state.centerInset,
+    segmentsMode: state.segmentsMode,
   };
 }
 
@@ -119,7 +122,14 @@ export default function WheelEditor({
   // Tab selection is controlled by the chips in the red footer via the
   // selectedTab prop; the internal fallback stays at 0 (Segments).
   const selectedTab = selectedTabProp ?? 0;
-  const [segmentsMode, setSegmentsMode] = useState<'simple' | 'complex'>('simple');
+  // Mode lives on EditorState so it persists per-wheel through the same
+  // save cycle as everything else (Firestore round-trip, undo/redo).
+  const segmentsMode = state.segmentsMode;
+  const setSegmentsMode = (v: 'simple' | 'complex') => {
+    if (v !== stateRef.current.segmentsMode) {
+      set({ ...stateRef.current, segmentsMode: v });
+    }
+  };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);

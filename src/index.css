@@ -80,3 +80,15 @@ a {
   60%  { opacity: 1; transform: scale(1.06); }
   100% { opacity: 1; transform: scale(1); }
 }
+
+/* Sheet tab transitions — make chip switching feel like sideways navigation.
+   Forward (e.g. Segments → Style) slides in from the right; backward slides
+   in from the left. Distance is large enough to read as direction-of-travel. */
+@keyframes slide-in-from-right {
+  from { transform: translateX(60%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+@keyframes slide-in-from-left {
+  from { transform: translateX(-60%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}

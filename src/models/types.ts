@@ -24,6 +24,7 @@ export interface WheelConfig {
   centerMarkerSize: number;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
+  segmentsMode?: 'simple' | 'complex';
 }
 
 export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfig {
@@ -41,6 +42,7 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     centerMarkerSize: 200,
     innerCornerStyle: 'none',
     centerInset: 50,
+    segmentsMode: 'simple',
     ...overrides,
   };
 }
