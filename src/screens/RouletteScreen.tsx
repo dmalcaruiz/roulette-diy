@@ -14,7 +14,7 @@ import WheelThumbnail from '../components/WheelThumbnail';
 import { useAuth } from '../contexts/AuthContext';
 import {
   buildAppendWheelChange, buildInsertWheelChange, buildDuplicateWheelChange,
-  buildRemoveWheelChange, persistBlocks, persistFlowChange,
+  buildRemoveWheelChange,
 } from '../services/flowService';
 import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
@@ -70,6 +70,8 @@ export default function RouletteScreen({
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
+  // In-sheet confirmation step for the destructive Delete action.
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [editorTab, setEditorTab] = useState(0); // 0=Segments, 1=Style
@@ -138,6 +140,128 @@ export default function RouletteScreen({
   }, [handleWheelPreview, configId]);
   const editorHistory = useHistory(buildInitialState(block.wheelConfig), handleHistoryChange, block.id);
 
+  // ── Flow history ───────────────────────────────────────────────────────
+  // Mirrors the pattern used by the wheel-editor's useHistory: a single
+  // snapshot struct tracked across set/undo/redo, onChange applies the new
+  // state externally and persists the Firestore delta. Each ctx-menu action
+  // (delete / duplicate / insert) and reorder-commit pushes a snapshot via
+  // flowHistory.set, so undo/redo in the red footer reverts them naturally.
+  type FlowHistState = { experience: CloudBlock | undefined; steps: CloudBlock[] };
+  const initialFlowState: FlowHistState = {
+    experience: flowExperience,
+    steps: flowSteps ?? [],
+  };
+  // Tracks the last state that was applied + persisted externally. Diff
+  // against new state inside onChange tells us what to save/delete.
+  const appliedFlowRef = useRef<FlowHistState>(initialFlowState);
+
+  const computeFlowDelta = (prev: FlowHistState, next: FlowHistState) => {
+    const writes: CloudBlock[] = [];
+    const deletes: string[] = [];
+    // Experience doc: save if present (covers created + reordered), delete if
+    // the flow was dissolved.
+    if (next.experience) writes.push(next.experience);
+    else if (prev.experience) deletes.push(prev.experience.id);
+    // Step blocks: save any whose id is new to this snapshot (insert /
+    // duplicate / restored-on-undo); delete any missing (delete / undone-insert).
+    const prevIds = new Set(prev.steps.map(s => s.id));
+    const nextIds = new Set(next.steps.map(s => s.id));
+    for (const s of next.steps) if (!prevIds.has(s.id)) writes.push(s);
+    for (const s of prev.steps) if (!nextIds.has(s.id)) deletes.push(s.id);
+    return { writes, deletes };
+  };
+
+  const handleFlowHistoryChange = useCallback((s: FlowHistState) => {
+    const prev = appliedFlowRef.current;
+    appliedFlowRef.current = s;
+    onFlowChange?.(s.experience, s.steps);
+    if (!user) return;
+    const delta = computeFlowDelta(prev, s);
+    if (delta.writes.length === 0 && delta.deletes.length === 0) return;
+    Promise.all([
+      ...delta.writes.map(b => saveDraft(user.uid, b)),
+      ...delta.deletes.map(id => deleteDraft(user.uid, id)),
+    ]).catch(err => dbg('RouletteScreen', 'flow-history:persist-fail', { err: String(err) }));
+  }, [user, onFlowChange]);
+
+  // No resetKey — RouletteScreen is unmounted by FullScreenSheet when the
+  // overlay closes, so flow history is naturally scoped to a single edit
+  // session. We deliberately avoid resetting on flowExperience?.id changes,
+  // since a standalone→flow transition (via insert-before/after or +) would
+  // otherwise wipe the undo stack right after the op that created the flow.
+  const flowHistory = useHistory<FlowHistState>(
+    initialFlowState,
+    handleFlowHistoryChange,
+  );
+
+  // ── Shared op log (for unified undo/redo across both histories) ────────
+  type OpKind = 'editor' | 'flow';
+  const opLogRef = useRef<OpKind[]>([]);
+  const opRedoLogRef = useRef<OpKind[]>([]);
+  const editorDirtyRef = useRef(false);
+  // Reactive enablement for the buttons — refs alone don't trigger re-render.
+  const [opCanUndo, setOpCanUndo] = useState(false);
+  const [opCanRedo, setOpCanRedo] = useState(false);
+  const syncOpFlags = () => {
+    setOpCanUndo(editorDirtyRef.current || opLogRef.current.length > 0);
+    setOpCanRedo(opRedoLogRef.current.length > 0);
+  };
+  const pushOp = (kind: OpKind) => {
+    opLogRef.current.push(kind);
+    opRedoLogRef.current = [];
+    syncOpFlags();
+  };
+
+  // Wrapped editor history used by WheelEditor. set / first patch / commit
+  // record an 'editor' op so unified undo knows what to pop.
+  const wrappedEditorHistory: typeof editorHistory = {
+    ...editorHistory,
+    set: (next) => { editorHistory.set(next); pushOp('editor'); },
+    patch: (partial) => { editorHistory.patch(partial); editorDirtyRef.current = true; syncOpFlags(); },
+    commit: () => {
+      editorHistory.commit();
+      if (editorDirtyRef.current) {
+        editorDirtyRef.current = false;
+        pushOp('editor');
+      }
+    },
+    undo: () => unifiedUndo(),
+    redo: () => unifiedRedo(),
+  };
+
+  const unifiedUndo = () => {
+    // Pending (uncommitted) edits are their own undo step — handled by the
+    // editor's own undo (strips the dirty entry) without touching the op log.
+    if (editorDirtyRef.current) {
+      editorHistory.undo();
+      editorDirtyRef.current = false;
+      syncOpFlags();
+      return;
+    }
+    const op = opLogRef.current.pop();
+    if (!op) return;
+    opRedoLogRef.current.push(op);
+    if (op === 'editor') editorHistory.undo();
+    else flowHistory.undo();
+    syncOpFlags();
+  };
+
+  const unifiedRedo = () => {
+    const op = opRedoLogRef.current.pop();
+    if (!op) return;
+    opLogRef.current.push(op);
+    if (op === 'editor') editorHistory.redo();
+    else flowHistory.redo();
+    syncOpFlags();
+  };
+
+  // Helper for flow mutations: applies the snapshot via history.set (onChange
+  // takes care of both local state and Firestore delta) and records the op.
+  const commitFlowSet = (next: FlowHistState) => {
+    flowHistory.set(next);
+    pushOp('flow');
+  };
+
   // When the block prop changes (flow switch), clear any stale preview state.
   // activeConfig immediately falls back to the new block.wheelConfig (by id
   // mismatch), but this cleanup keeps state tidy and breaks reference chains.
@@ -174,6 +298,116 @@ export default function RouletteScreen({
     previewRowRef.current?.scrollTo({ left: 0, behavior: 'auto' });
   }, []);
 
+  // ── Row-level scroll enhancements (mouse) ──────────────────────────────
+  // The preview row is a native horizontal scroller for touch + trackpad, but
+  // a regular desktop mouse can't pan it by drag. These handlers add:
+  //  - click-drag to scroll the row (with momentum on release)
+  //  - vertical wheel redirected to horizontal scroll
+  // Click suppression flag prevents an accidental tile navigate after a drag.
+  const clickSuppressUntilRef = useRef(0);
+  const shouldSuppressTileClick = useCallback(
+    () => Date.now() < clickSuppressUntilRef.current,
+    [],
+  );
+  // Handle to the running momentum animation so a new drag / wheel event
+  // can cancel it immediately.
+  const inertiaRafRef = useRef<number | null>(null);
+  const cancelInertia = useCallback(() => {
+    if (inertiaRafRef.current !== null) {
+      cancelAnimationFrame(inertiaRafRef.current);
+      inertiaRafRef.current = null;
+    }
+  }, []);
+  // Cleanup for an in-progress mouse drag-to-scroll. Called when a long-press
+  // activates so the row stops panning mid-drag.
+  const rowDragCleanupRef = useRef<(() => void) | null>(null);
+  // Kick off a momentum animation after a drag ends. Velocity is in
+  // scrollLeft-px per ms (sign matches scrollLeft direction). Decay is tuned
+  // for a ~500ms glide with typical flick velocities.
+  const startInertia = useCallback((velocity: number) => {
+    const row = previewRowRef.current;
+    if (!row) return;
+    cancelInertia();
+    const DECAY_PER_MS = 0.004; // exponential decay rate
+    const MIN_V = 0.02;         // px/ms — stop threshold
+    let v = velocity;
+    let lastTime = performance.now();
+    const tick = (now: number) => {
+      const dt = now - lastTime;
+      lastTime = now;
+      row.scrollLeft += v * dt;
+      v *= Math.exp(-DECAY_PER_MS * dt);
+      if (Math.abs(v) < MIN_V) {
+        inertiaRafRef.current = null;
+        return;
+      }
+      inertiaRafRef.current = requestAnimationFrame(tick);
+    };
+    inertiaRafRef.current = requestAnimationFrame(tick);
+  }, [cancelInertia]);
+
+  const handleRowWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const row = previewRowRef.current;
+    if (!row) return;
+    cancelInertia();
+    // Prefer vertical-wheel → horizontal-scroll (laptop touchpads already
+    // emit deltaX natively; this just helps standard mouse wheels).
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      row.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }
+  }, [cancelInertia]);
+
+  const handleRowMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const row = previewRowRef.current;
+    if (!row) return;
+    cancelInertia();
+    // If a previous drag's window listeners somehow linger, kill them first.
+    rowDragCleanupRef.current?.();
+    const startX = e.clientX;
+    const startScrollLeft = row.scrollLeft;
+    let didDrag = false;
+    // Track recent pointer samples so we can compute release velocity.
+    let lastSampleX = e.clientX;
+    let lastSampleTime = performance.now();
+    let velocity = 0; // px/ms in scrollLeft direction (opposite of mouse X)
+
+    const onMove = (me: MouseEvent) => {
+      const dx = me.clientX - startX;
+      if (!didDrag && Math.abs(dx) > 4) didDrag = true;
+      if (!didDrag) return;
+      const now = performance.now();
+      const dt = now - lastSampleTime;
+      if (dt > 0) {
+        const frameVelocity = -(me.clientX - lastSampleX) / dt;
+        velocity = velocity * 0.3 + frameVelocity * 0.7;
+      }
+      lastSampleX = me.clientX;
+      lastSampleTime = now;
+      row.scrollLeft = startScrollLeft - dx;
+    };
+    const cleanup = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      rowDragCleanupRef.current = null;
+    };
+    const onUp = () => {
+      cleanup();
+      if (didDrag) {
+        clickSuppressUntilRef.current = Date.now() + 150;
+        // If the user was still moving at release, glide.
+        const sinceLastSample = performance.now() - lastSampleTime;
+        if (sinceLastSample < 80 && Math.abs(velocity) > 0.1) {
+          startInertia(velocity);
+        }
+      }
+    };
+    rowDragCleanupRef.current = cleanup;
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [cancelInertia, startInertia]);
+
   // ── Reorder (long-press + drag sideways on a preview tile) ─────────────
   // Ported from the WheelEditor segment-reorder pattern:
   //  - Parent owns per-tile refs (tileElsRef).
@@ -192,6 +426,10 @@ export default function RouletteScreen({
   flowStepsRef.current = flowSteps;
 
   const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
+    // Lock scroll: stop momentum glide + tear down any in-progress mouse
+    // drag-to-scroll so the row freezes the moment the grab activates.
+    cancelInertia();
+    rowDragCleanupRef.current?.();
     const startFlowSteps = flowStepsRef.current;
     const startFlowExp = flowExperienceRef.current;
     if (!startFlowSteps || !startFlowExp) {
@@ -200,8 +438,6 @@ export default function RouletteScreen({
       return;
     }
 
-    const prevExp = startFlowExp;
-    const prevSteps = startFlowSteps;
     let currentSource = sourceIndex;
     let didMove = false;
     let menuOpened = false;
@@ -278,14 +514,12 @@ export default function RouletteScreen({
       cleanup();
       setGrabbedIndex(null);
       if (didMove) {
-        const toSave = flowExperienceRef.current;
-        if (user && toSave) {
-          dbg('RouletteScreen', 'reorder:end:persist', { expId: sid(toSave.id) });
-          saveDraft(user.uid, toSave).catch(err => {
-            dbg('RouletteScreen', 'reorder:persist-fail', { err: String(err) });
-            onFlowChange?.(prevExp, prevSteps);
-            alert('Failed to save new order.');
-          });
+        // Push the final snapshot through flow history — onChange handles
+        // local propagation + Firestore persistence + makes it undoable.
+        const finalExp = flowExperienceRef.current;
+        const finalSteps = flowStepsRef.current ?? [];
+        if (finalExp) {
+          commitFlowSet({ experience: finalExp, steps: finalSteps });
         }
       } else {
         setCtxMenuIndex(currentSource);
@@ -295,7 +529,7 @@ export default function RouletteScreen({
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
-  }, [user, onFlowChange]);
+  }, [user, onFlowChange, cancelInertia]);
 
   // ── Context-menu actions (delete / duplicate / insert) ─────────────────
   // `index` is the preview-tile position. For standalone (no flow), index is
@@ -315,9 +549,8 @@ export default function RouletteScreen({
         const steps = flowSteps!;
         if (action === 'delete') {
           const change = buildRemoveWheelChange({ experience: exp, steps, index });
-          const prevExp = exp, prevSteps = steps;
-          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
           const deletedActive = steps[index].id === block.id;
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           if (deletedActive) {
             if (change.nextSteps.length > 0) {
               const nextIdx = Math.min(index, change.nextSteps.length - 1);
@@ -332,22 +565,11 @@ export default function RouletteScreen({
               navigate('/');
             }
           }
-          persistFlowChange(user.uid, change).catch(err => {
-            dbg('RouletteScreen', 'ctx:delete:persist-fail', { err: String(err) });
-            onFlowChange?.(prevExp, prevSteps);
-            alert('Failed to delete wheel.');
-          });
           return;
         }
         if (action === 'duplicate') {
           const change = buildDuplicateWheelChange({ experience: exp, steps, index });
-          const prevExp = exp, prevSteps = steps;
-          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
-          persistFlowChange(user.uid, change).catch(err => {
-            dbg('RouletteScreen', 'ctx:duplicate:persist-fail', { err: String(err) });
-            onFlowChange?.(prevExp, prevSteps);
-            alert('Failed to duplicate wheel.');
-          });
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           return;
         }
         if (action === 'insertBefore' || action === 'insertAfter') {
@@ -355,20 +577,17 @@ export default function RouletteScreen({
           const change = buildInsertWheelChange({
             currentBlock, experience: exp, steps, index: targetIndex,
           });
-          const prevExp = exp, prevSteps = steps;
-          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
-          persistFlowChange(user.uid, change).catch(err => {
-            dbg('RouletteScreen', 'ctx:insert:persist-fail', { err: String(err) });
-            onFlowChange?.(prevExp, prevSteps);
-            alert('Failed to insert wheel.');
-          });
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           return;
         }
       } else {
         // Standalone wheel — no flow context.
         if (action === 'delete') {
-          await deleteDraft(user.uid, block.id);
+          // Optimistic: navigate home immediately, persist in the background.
           navigate('/');
+          deleteDraft(user.uid, block.id).catch(err => {
+            dbg('RouletteScreen', 'ctx:delete:standalone-fail', { err: String(err) });
+          });
           return;
         }
         if (action === 'duplicate') {
@@ -390,14 +609,11 @@ export default function RouletteScreen({
         if (action === 'insertBefore' || action === 'insertAfter') {
           const targetIndex = action === 'insertBefore' ? 0 : 1;
           const change = buildInsertWheelChange({ currentBlock, index: targetIndex });
-          onFlowChange?.(change.experience ?? undefined, change.nextSteps);
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
+          // Ensure App.blocks gets the newly-stamped current block (its
+          // parentExperienceId just changed), so the profile list updates.
           const stampedCurrent = change.writes.find(w => w.id === block.id);
           if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
-          persistFlowChange(user.uid, change).catch(err => {
-            dbg('RouletteScreen', 'ctx:insert-wrap:persist-fail', { err: String(err) });
-            onFlowChange?.(undefined, []);
-            alert('Failed to insert wheel.');
-          });
           return;
         }
       }
@@ -460,7 +676,7 @@ export default function RouletteScreen({
             <WheelEditor
               key={baseConfig.id}
               initialConfig={baseConfig}
-              history={editorHistory}
+              history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
               selectedTab={editorTab}
               onTabChange={setEditorTab}
@@ -633,10 +849,16 @@ export default function RouletteScreen({
                 <Play size={24} color="#FFFFFF" fill="#FFFFFF" />
               </button>
               <div style={{ display: 'flex', gap: 6 }}>
-                <IconButton onClick={editorHistory.undo} disabled={!editorHistory.canUndo}>
+                <IconButton
+                  onClick={unifiedUndo}
+                  disabled={!(editorHistory.canUndo || opCanUndo)}
+                >
                   <Undo2 size={18} color="#FFFFFF" />
                 </IconButton>
-                <IconButton onClick={editorHistory.redo} disabled={!editorHistory.canRedo}>
+                <IconButton
+                  onClick={unifiedRedo}
+                  disabled={!(editorHistory.canRedo || opCanRedo)}
+                >
                   <Redo2 size={18} color="#FFFFFF" />
                 </IconButton>
               </div>
@@ -644,7 +866,12 @@ export default function RouletteScreen({
 
             {/* Preview row: [wheel 1] … [wheel N] [+ icon] — + always rightmost,
                 so adding a new wheel extends the chain linearly. */}
-            <div ref={previewRowRef} style={{ display: 'flex', gap: 10, minWidth: 0, overflowX: 'auto' }}>
+            <div
+              ref={previewRowRef}
+              onMouseDown={handleRowMouseDown}
+              onWheel={handleRowWheel}
+              style={{ display: 'flex', gap: 10, minWidth: 0, overflowX: 'auto', cursor: 'grab' }}
+            >
               {flowSteps && flowSteps.length > 0 ? (
                 flowSteps.map((step, idx) => {
                   const isActive = step.id === block.id;
@@ -676,6 +903,7 @@ export default function RouletteScreen({
                       }}
                       onContextOpen={() => setCtxMenuIndex(idx)}
                       onGrabStart={handleGrabStart}
+                      shouldSuppressClick={shouldSuppressTileClick}
                     >
                       <WheelThumbnail items={previewItems} size={72} />
                     </PreviewTile>
@@ -689,20 +917,15 @@ export default function RouletteScreen({
               <PreviewTile
                 onClick={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
-                  const t0 = performance.now();
-                  dbg('RouletteScreen', 'plus:0-click', {
+                  dbg('RouletteScreen', 'plus:click', {
                     currentBlock: sid(block.id),
-                    parent: sid((block as CloudBlock).parentExperienceId ?? null),
                     flowExp: sid(flowExperience?.id ?? null),
-                    flowSteps: sids(flowSteps),
                     flowStepsLen: flowSteps?.length ?? 0,
                   });
-                  dbg('RouletteScreen', 'plus:1-flushAutoSave');
                   flushAutoSave();
 
                   let change;
                   try {
-                    dbg('RouletteScreen', 'plus:2-buildChange');
                     change = buildAppendWheelChange({
                       currentBlock: { ...block, wheelConfig: activeConfig } as CloudBlock,
                       experience: flowExperience,
@@ -713,46 +936,22 @@ export default function RouletteScreen({
                     return;
                   }
 
-                  const prevFlowSteps = flowSteps;
-                  const prevFlowExperience = flowExperience;
-                  const nextFlowSteps: CloudBlock[] = flowSteps && flowSteps.length > 0
+                  // Build the resulting snapshot (same as the old inline logic).
+                  const nextSteps: CloudBlock[] = flowSteps && flowSteps.length > 0
                     ? [...flowSteps, change.newBlock]
                     : [
                         { ...(block as CloudBlock), wheelConfig: activeConfig, parentExperienceId: change.experience.id },
                         change.newBlock,
                       ];
-                  dbg('RouletteScreen', 'plus:3-computed-nextSteps', {
-                    mode: flowSteps && flowSteps.length > 0 ? 'append-existing' : 'wrap-new',
-                    prevLen: prevFlowSteps?.length ?? 0,
-                    nextLen: nextFlowSteps.length,
-                    ids: sids(nextFlowSteps),
-                  });
 
-                  dbg('RouletteScreen', 'plus:4-onFlowChange-call');
-                  onFlowChange?.(change.experience, nextFlowSteps);
+                  // Route through flow history so the append is undoable.
+                  commitFlowSet({ experience: change.experience, steps: nextSteps });
 
+                  // When this press wraps a standalone wheel into a new flow,
+                  // the current block's parentExperienceId changes. Tell App
+                  // so its in-memory blocks list reflects it.
                   const stampedCurrent = change.writes.find(w => w.id === block.id);
-                  if (stampedCurrent) {
-                    dbg('RouletteScreen', 'plus:5-onBlockUpdated-stampedCurrent', {
-                      block: sid(stampedCurrent.id),
-                      parent: sid(stampedCurrent.parentExperienceId ?? null),
-                    });
-                    onBlockUpdated?.(stampedCurrent);
-                  } else {
-                    dbg('RouletteScreen', 'plus:5-no-stampedCurrent');
-                  }
-
-                  dbg('RouletteScreen', 'plus:6-persist-start', {
-                    writes: sids(change.writes),
-                    tookMs: Math.round(performance.now() - t0),
-                  });
-                  persistBlocks(user.uid, change.writes)
-                    .then(() => dbg('RouletteScreen', 'plus:7-persist-ok', { tookMs: Math.round(performance.now() - t0) }))
-                    .catch((err) => {
-                      dbg('RouletteScreen', 'plus:7-persist-fail-rollback', { err: err instanceof Error ? err.message : String(err) });
-                      alert(`Failed to save new wheel: ${err instanceof Error ? err.message : String(err)}`);
-                      onFlowChange?.(prevFlowExperience, prevFlowSteps ?? []);
-                    });
+                  if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
                 }}
               >
                 <Plus size={32} color="rgba(255,255,255,0.85)" />
@@ -799,7 +998,7 @@ export default function RouletteScreen({
             <WheelEditor
               key={baseConfig.id}
               initialConfig={baseConfig}
-              history={editorHistory}
+              history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
               selectedTab={editorTab}
               onTabChange={setEditorTab}
@@ -860,37 +1059,61 @@ export default function RouletteScreen({
 
       {/* Per-tile context menu (right-click / long-press on a preview tile) */}
       {ctxMenuIndex !== null && (
-        <DraggableSheet onClose={() => setCtxMenuIndex(null)}>
+        <DraggableSheet onClose={() => { setCtxMenuIndex(null); setConfirmDelete(false); }}>
           <div style={{ padding: '0 20px 28px' }}>
-            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
-              Wheel actions
-            </h3>
-            <CtxRow
-              icon={<ArrowLeftFromLine size={20} />}
-              label="Insert wheel before"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
-            />
-            <CtxRow
-              icon={<ArrowRightFromLine size={20} />}
-              label="Insert wheel after"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
-            />
-            <CtxRow
-              icon={<Copy size={20} />}
-              label="Duplicate wheel"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
-            />
-            <CtxRow
-              icon={<Trash2 size={20} />}
-              label="Delete wheel"
-              danger
-              onTap={() => {
-                const i = ctxMenuIndex;
-                setCtxMenuIndex(null);
-                if (!confirm('Delete this wheel?')) return;
-                runCtxAction('delete', i);
-              }}
-            />
+            {confirmDelete ? (
+              <>
+                <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 6px' }}>
+                  Delete this wheel?
+                </h3>
+                <p style={{ fontSize: 13, textAlign: 'center', color: withAlpha(ON_SURFACE, 0.55), margin: '0 0 16px' }}>
+                  This can't be undone.
+                </p>
+                <CtxRow
+                  icon={<Trash2 size={20} />}
+                  label="Confirm delete"
+                  danger
+                  onTap={() => {
+                    const i = ctxMenuIndex;
+                    setCtxMenuIndex(null);
+                    setConfirmDelete(false);
+                    runCtxAction('delete', i);
+                  }}
+                />
+                <CtxRow
+                  icon={<X size={20} />}
+                  label="Cancel"
+                  onTap={() => setConfirmDelete(false)}
+                />
+              </>
+            ) : (
+              <>
+                <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
+                  Wheel actions
+                </h3>
+                <CtxRow
+                  icon={<ArrowLeftFromLine size={20} />}
+                  label="Insert wheel before"
+                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
+                />
+                <CtxRow
+                  icon={<ArrowRightFromLine size={20} />}
+                  label="Insert wheel after"
+                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
+                />
+                <CtxRow
+                  icon={<Copy size={20} />}
+                  label="Duplicate wheel"
+                  onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
+                />
+                <CtxRow
+                  icon={<Trash2 size={20} />}
+                  label="Delete wheel"
+                  danger
+                  onTap={() => setConfirmDelete(true)}
+                />
+              </>
+            )}
           </div>
         </DraggableSheet>
       )}
@@ -983,7 +1206,7 @@ function ToggleRow({ label, icon, value, onChange }: {
 
 function PreviewTile({
   onClick, onContextOpen, onGrabStart,
-  index, active, grabbed, innerRef, children,
+  index, active, grabbed, innerRef, shouldSuppressClick, children,
 }: {
   onClick?: () => void;
   // Right-click handler (no hold required).
@@ -999,6 +1222,9 @@ function PreviewTile({
   // Callback ref so parent can collect a { index -> element } map for
   // midpoint hit-testing during reorder.
   innerRef?: (el: HTMLDivElement | null) => void;
+  // Returns true if the click should be ignored — used to skip tile navigate
+  // immediately after a row drag-to-scroll mouse gesture.
+  shouldSuppressClick?: () => boolean;
   children: React.ReactNode;
 }) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1010,6 +1236,11 @@ function PreviewTile({
   // Standalone fallback: when there is no reorder handler (no flow), a
   // long-press still needs to open the context menu on release.
   const primedForContextRef = useRef(false);
+  // Local grabbed state — driven by this tile's own long-press activation.
+  // For flow tiles the parent also passes `grabbed`, which wins; for
+  // standalone tiles (no parent state), this is the only source.
+  const [isGrabbedLocal, setIsGrabbedLocal] = useState(false);
+  const effectiveGrabbed = !!grabbed || isGrabbedLocal;
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -1030,6 +1261,7 @@ function PreviewTile({
           didLongPressRef.current = false;
           return;
         }
+        if (shouldSuppressClick?.()) return;
         onClick?.();
       }}
       onContextMenu={onContextOpen ? (e => {
@@ -1050,17 +1282,20 @@ function PreviewTile({
           longPressTimerRef.current = null;
           onClick?.();
           if (index !== undefined && onGrabStart) {
-            // Parent takes over via window listeners; release handling lives
-            // in parent's onUp (reorder commit vs. context-menu open).
+            // Flow tile: parent owns the grabbed visual via its grabbedIndex
+            // (which it clears when the auto-menu fires). Don't also set a
+            // local flag — otherwise the tile stays scaled after the sheet
+            // auto-opens because local state doesn't reset until pointerup.
             const start = startPosRef.current;
             onGrabStart(index, start?.x ?? 0, start?.y ?? 0);
           } else if (onContextOpen) {
-            // Standalone — no reorder. Arm release-opens-menu, and also
-            // auto-open the menu after another 550ms of holding still.
+            // Standalone — no reorder. Local flag drives the visual.
+            setIsGrabbedLocal(true);
             primedForContextRef.current = true;
             menuAutoTimerRef.current = setTimeout(() => {
               menuAutoTimerRef.current = null;
               primedForContextRef.current = false;
+              setIsGrabbedLocal(false); // release scale when menu auto-opens
               onContextOpen();
             }, 550);
           }
@@ -1074,6 +1309,7 @@ function PreviewTile({
       }) : undefined}
       onPointerUp={(onGrabStart || onContextOpen) ? (() => {
         clearLongPress();
+        setIsGrabbedLocal(false);
         if (primedForContextRef.current) {
           primedForContextRef.current = false;
           onContextOpen?.();
@@ -1081,6 +1317,7 @@ function PreviewTile({
       }) : undefined}
       onPointerCancel={(onGrabStart || onContextOpen) ? (() => {
         clearLongPress();
+        setIsGrabbedLocal(false);
         primedForContextRef.current = false;
       }) : undefined}
       style={{
@@ -1095,11 +1332,13 @@ function PreviewTile({
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
         userSelect: 'none',
-        touchAction: 'manipulation',
-        transform: grabbed ? 'scale(1.08)' : 'scale(1)',
-        boxShadow: grabbed ? '0 6px 16px rgba(0,0,0,0.35)' : 'none',
+        // While grabbed (long-press active), kill native touch pan so the
+        // row doesn't scroll under the user's finger during reorder/menu-hold.
+        touchAction: effectiveGrabbed ? 'none' : 'manipulation',
+        transform: effectiveGrabbed ? 'scale(1.08)' : 'scale(1)',
+        boxShadow: effectiveGrabbed ? '0 6px 16px rgba(0,0,0,0.35)' : 'none',
         transition: 'transform 0.12s ease, box-shadow 0.12s ease',
-        zIndex: grabbed ? 2 : undefined,
+        zIndex: effectiveGrabbed ? 2 : undefined,
       }}
     >
       {children}

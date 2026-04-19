@@ -99,6 +99,15 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.block?.id]);
 
+  // Refs mirror the latest flow state so the flow-load effect can skip
+  // re-fetching when we already have the same experience in memory — that
+  // guards in-flight optimistic edits (reorders) from being clobbered by a
+  // stale Firestore read that races a pending saveDraft.
+  const flowExperienceRef = useRef<CloudBlock | undefined>(undefined);
+  const flowStepsRef = useRef<CloudBlock[] | undefined>(undefined);
+  flowExperienceRef.current = flowExperience;
+  flowStepsRef.current = flowSteps;
+
   // When the current block belongs to an Experience flow, load the parent
   // experience + all step blocks so we can pass them to the editor's
   // preview row. We also hold the Experience doc locally so the `+` handler
@@ -112,6 +121,14 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
     if (!parentId) {
       dbg('BlockScreen', 'flow-load:skip-no-parent', { block: sid(block.id) });
       setFlowSteps(undefined, 'flow-load-no-parent'); setFlowExperience(undefined, 'flow-load-no-parent'); return;
+    }
+    // Already have this flow loaded? Skip — local state (including pending
+    // optimistic reorders) is authoritative. Navigating between steps of the
+    // same flow keeps parentId the same, so we'd otherwise re-fetch here and
+    // risk overwriting an in-flight reorder with stale Firestore data.
+    if (flowExperienceRef.current?.id === parentId && flowStepsRef.current) {
+      dbg('BlockScreen', 'flow-load:skip-cached', { parent: sid(parentId) });
+      return;
     }
     dbg('BlockScreen', 'flow-load:start', { block: sid(block.id), parent: sid(parentId) });
     let cancelled = false;
@@ -214,7 +231,7 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
         flowExperience={flowExperience}
         onFlowExperienceUpdated={handleFlowExperienceUpdated}
         wheelRef={wheelRef}
-        onBack={() => navigate('/')}
+        onBack={() => navigate(-1)}
         onEdit={async () => {
           // When the block is part of a flow, always open the editor on the
           // first wheel — regardless of which step the user navigated here

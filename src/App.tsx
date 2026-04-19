@@ -232,7 +232,18 @@ interface AppShellProps {
 }
 
 function AppShell({ blocks, onCreateBlock, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete }: AppShellProps) {
-  const [tab, setTab] = useState(0);
+  // Persist the selected tab across AppShell remounts (e.g. when the user
+  // navigates to /block/:id and then presses back, AppShell re-mounts at /
+  // and would otherwise reset to Feed).
+  const [tab, setTabState] = useState<number>(() => {
+    const saved = sessionStorage.getItem('appShellTab');
+    const parsed = saved !== null ? parseInt(saved, 10) : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+  const setTab = (next: number) => {
+    setTabState(next);
+    sessionStorage.setItem('appShellTab', String(next));
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
