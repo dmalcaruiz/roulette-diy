@@ -5,8 +5,8 @@ import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel'
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha } from '../utils/colorUtils';
-import { ON_SURFACE, PRIMARY } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Check, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, ArrowLeftFromLine, ArrowRightFromLine } from 'lucide-react';
+import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
+import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Check, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, ArrowLeftFromLine, ArrowRightFromLine, Pencil } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { useHistory } from '../hooks/useHistory';
@@ -70,6 +70,38 @@ export default function RouletteScreen({
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
+  // Mobile rename sheet — replaces inline label-editing on touch devices.
+  // Holds the preview-tile index being renamed. null = closed.
+  const [renameIndex, setRenameIndex] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const openRenameSheet = (idx: number) => {
+    const target = flowSteps?.[idx];
+    const current = target
+      ? (target.wheelConfig?.name ?? target.name)
+      : (activeConfig.name || block.name);
+    setRenameDraft(current);
+    setRenameIndex(idx);
+  };
+  const commitRename = () => {
+    if (renameIndex === null) return;
+    const trimmed = renameDraft.trim();
+    setRenameIndex(null);
+    if (!trimmed) return;
+    const step = flowSteps?.[renameIndex];
+    const targetIsActive = step ? step.id === block.id : renameIndex === 0;
+    if (targetIsActive) {
+      if (trimmed === editorHistory.state.name) return;
+      editorHistory.set({ ...editorHistory.state, name: trimmed });
+    } else if (step?.wheelConfig) {
+      const currentName = step.wheelConfig.name;
+      if (trimmed === currentName) return;
+      onBlockUpdated?.({
+        ...step,
+        name: trimmed,
+        wheelConfig: { ...step.wheelConfig, name: trimmed },
+      });
+    }
+  };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [editorTab, setEditorTab] = useState(0); // 0=Segments, 1=Style
@@ -888,8 +920,26 @@ export default function RouletteScreen({
                       });
                     }
                   };
+                  // On mobile, tapping the label opens the rename sheet
+                  // directly. On desktop, it focuses the inline input — and
+                  // for non-active wheels it also navigates so edits land on
+                  // the right one.
+                  const onLabelFocus = isMobile
+                    ? () => openRenameSheet(idx)
+                    : (isActive ? undefined : () => {
+                        flushAutoSave();
+                        navigate(`/block/${step.id}`, {
+                          state: { block: step, editMode: true, flowExperience, flowSteps },
+                        });
+                      });
                   return (
-                    <TileWithLabel key={step.id} label={wheelLabel} onLabelEdit={onRenameWheel}>
+                    <TileWithLabel
+                      key={step.id}
+                      label={wheelLabel}
+                      editable={!isMobile}
+                      onLabelEdit={onRenameWheel}
+                      onLabelFocus={onLabelFocus}
+                    >
                       <PreviewTile
                         index={idx}
                         active={isActive}
@@ -924,7 +974,9 @@ export default function RouletteScreen({
               ) : (
                 <TileWithLabel
                   label={activeConfig.name || block.name}
+                  editable={!isMobile}
                   onLabelEdit={name => editorHistory.set({ ...editorHistory.state, name })}
+                  onLabelFocus={isMobile ? () => openRenameSheet(0) : undefined}
                 >
                   <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
                     <WheelThumbnail items={activeConfig.items} size={72} />
@@ -1084,6 +1136,11 @@ export default function RouletteScreen({
               Wheel actions
             </h3>
             <CtxRow
+              icon={<Pencil size={20} />}
+              label="Rename wheel"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); openRenameSheet(i); }}
+            />
+            <CtxRow
               icon={<ArrowLeftFromLine size={20} />}
               label="Insert wheel before"
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
@@ -1108,16 +1165,58 @@ export default function RouletteScreen({
         </DraggableSheet>
       )}
 
+      {/* Rename wheel sheet — primary editing path on mobile */}
+      {renameIndex !== null && (
+        <DraggableSheet onClose={() => setRenameIndex(null)}>
+          <div style={{ padding: '0 24px 32px' }}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 14px' }}>
+              Rename wheel
+            </h3>
+            <input
+              type="text"
+              value={renameDraft}
+              onChange={e => setRenameDraft(e.target.value)}
+              autoFocus
+              onKeyDown={e => { if (e.key === 'Enter') commitRename(); }}
+              placeholder="Wheel name"
+              style={{
+                width: '100%',
+                padding: '12px 14px',
+                borderRadius: 14,
+                border: `1.5px solid ${BORDER}`,
+                backgroundColor: '#F8F8F9',
+                fontSize: 16,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                color: ON_SURFACE,
+                outline: 'none',
+                boxSizing: 'border-box',
+                marginBottom: 14,
+              }}
+            />
+            <PushDownButton color={PRIMARY} onTap={commitRename}>
+              <span style={{ color: '#FFF', fontSize: 15, fontWeight: 800 }}>Save</span>
+            </PushDownButton>
+          </div>
+        </DraggableSheet>
+      )}
+
     </div>
   );
 }
 
 // Wraps a PreviewTile with a small wheel-name label below it. Tapping the
-// label focuses an inline input so the user can rename that wheel. Fixed
-// height keeps the + tile aligned with named tiles.
-function TileWithLabel({ label, onLabelEdit, children }: {
+// label focuses an inline input so the user can rename that wheel, and also
+// selects (activates) the wheel that owns the label so the edit targets the
+// right one. Fixed height keeps the + tile aligned with named tiles.
+function TileWithLabel({ label, editable, onLabelEdit, onLabelFocus, children }: {
   label: string;
+  // When false (mobile), the label is a display-only clickable div — tapping
+  // navigates to the parent wheel but doesn't start an inline edit. Renaming
+  // happens via the context menu → rename sheet.
+  editable?: boolean;
   onLabelEdit?: (name: string) => void;
+  onLabelFocus?: () => void;
   children: React.ReactNode;
 }) {
   const [draft, setDraft] = useState(label);
@@ -1139,14 +1238,16 @@ function TileWithLabel({ label, onLabelEdit, children }: {
     textAlign: 'center',
     lineHeight: '18px',
   };
+  const isEditable = editable && !!onLabelEdit;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
       {children}
-      {onLabelEdit ? (
+      {isEditable ? (
         <input
           type="text"
           value={draft}
           onChange={e => setDraft(e.target.value)}
+          onFocus={onLabelFocus}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
           style={{
@@ -1160,7 +1261,12 @@ function TileWithLabel({ label, onLabelEdit, children }: {
           }}
         />
       ) : (
-        <div style={commonStyle}>{label}</div>
+        <div
+          onClick={onLabelFocus}
+          style={{ ...commonStyle, cursor: onLabelFocus ? 'pointer' : 'default' }}
+        >
+          {label}
+        </div>
       )}
     </div>
   );
