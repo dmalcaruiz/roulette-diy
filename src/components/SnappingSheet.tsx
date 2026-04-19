@@ -48,12 +48,11 @@ export default function SnappingSheet({
       ? targetHeight - scrollDragOffset
       : targetHeight;
 
-  // During drag, report directly
-  useEffect(() => {
-    if (dragging || isScrollDraggingRef.current) {
-      onHeightChange?.(displayHeight);
-    }
-  }, [dragging, displayHeight, onHeightChange]);
+  // Keep the latest onHeightChange in a ref so the pointer handlers (which
+  // must run synchronously with their own setState to avoid a 1-frame lag)
+  // don't need it as a useCallback dependency.
+  const onHeightChangeRef = useRef(onHeightChange);
+  onHeightChangeRef.current = onHeightChange;
 
   // After release, poll the actual rendered height during CSS transition
   const startAnimationTracking = useCallback(() => {
@@ -95,7 +94,12 @@ export default function SnappingSheet({
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!dragging) return;
-    setDragOffset(e.clientY - startYRef.current);
+    const dy = e.clientY - startYRef.current;
+    setDragOffset(dy);
+    // Report synchronously so the parent's game container re-renders in the
+    // same React commit as the sheet itself — otherwise the red footer lags
+    // by a frame behind the sheet during drag.
+    onHeightChangeRef.current?.(startHeightRef.current - dy);
   }, [dragging]);
 
   const onPointerUp = useCallback(() => {
@@ -136,6 +140,7 @@ export default function SnappingSheet({
       }
       const offset = Math.max(0, dy);
       setScrollDragOffset(offset);
+      onHeightChangeRef.current?.(targetHeight - offset);
       e.preventDefault();
     } else if (!returnToScrollRef.current && atTop && dy > 5) {
       // At scroll top, pulling down — switch to sheet drag
@@ -146,7 +151,7 @@ export default function SnappingSheet({
       setScrollDragOffset(0);
       e.preventDefault();
     }
-  }, []);
+  }, [targetHeight]);
 
   const onScrollPointerUp = useCallback(() => {
     const scrollEl = scrollRef.current;

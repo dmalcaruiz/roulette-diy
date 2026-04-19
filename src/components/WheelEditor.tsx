@@ -6,7 +6,7 @@ import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
-  Copy, LayoutList, Paintbrush, X, CheckCircle, Circle, Settings,
+  Copy, CheckCircle, Circle, Settings,
 } from 'lucide-react';
 import SwipeableActionCell from './SwipeableActionCell';
 import { HistoryControls } from '../hooks/useHistory';
@@ -116,12 +116,9 @@ export default function WheelEditor({
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  const [internalTab, setInternalTab] = useState(0);
-  const selectedTab = selectedTabProp ?? internalTab;
-  const setSelectedTab = (t: number) => {
-    if (onTabChange) onTabChange(t);
-    if (selectedTabProp === undefined) setInternalTab(t);
-  };
+  // Tab selection is controlled by the chips in the red footer via the
+  // selectedTab prop; the internal fallback stays at 0 (Segments).
+  const selectedTab = selectedTabProp ?? 0;
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
@@ -590,88 +587,18 @@ export default function WheelEditor({
       padding: '0 20px 16px',
       height: '100%',
     }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 13 }}>
-        <h2 style={{ flex: 1, fontSize: 22, fontWeight: 700, margin: 0 }}>Edit Wheel</h2>
-        {onClose && (
-          <div onClick={onClose} style={{
-            width: 32, height: 32,
-            borderRadius: 50,
-            backgroundColor: '#F4F4F5',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-          }}>
-            <X size={16} color={ON_SURFACE} />
-          </div>
-        )}
-      </div>
-
-      {/* Name field */}
-      <input
-        type="text"
-        value={name}
-        onChange={e => patch({ name: e.target.value })}
-        onBlur={commit}
-        style={{
-          width: '100%',
-          padding: '14px 16px',
-          borderRadius: 14,
-          border: `1.5px solid ${BORDER}`,
-          backgroundColor: '#F8F8F9',
-          fontSize: 17,
-          fontWeight: 600,
-          fontFamily: 'inherit',
-          outline: 'none',
-          marginBottom: 16,
-        }}
-      />
-
-      {/* Tab bar */}
-      <div style={{
-        display: 'flex',
-        height: 48,
-        backgroundColor: '#E4E4E7',
-        borderRadius: 16,
-        padding: 4,
-        marginBottom: 14,
+      {/* Header — title only (close and rename live outside the sheet now) */}
+      <h2 style={{
+        fontSize: 22,
+        fontWeight: 700,
+        margin: 0,
+        padding: '4px 0 14px',
       }}>
-        {['Segments', 'Style'].map((label, i) => {
-          const isActive = selectedTab === i;
-          const Icon = i === 0 ? LayoutList : Paintbrush;
-          return (
-            <div
-              key={label}
-              onClick={() => setSelectedTab(i)}
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 6,
-                borderRadius: 14,
-                backgroundColor: isActive ? '#FFFFFF' : 'transparent',
-                border: isActive ? `1.5px solid ${BORDER}` : '1.5px solid transparent',
-                boxShadow: isActive ? '0 2px 6px rgba(0,0,0,0.08)' : 'none',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-              }}
-            >
-              <Icon size={16} color={isActive ? ON_SURFACE : withAlpha(ON_SURFACE, 0.4)} />
-              <span style={{
-                fontSize: 14,
-                fontWeight: 700,
-                color: isActive ? ON_SURFACE : withAlpha(ON_SURFACE, 0.4),
-              }}>
-                {label}
-              </span>
-            </div>
-          );
-        })}
-      </div>
+        Edit wheel
+      </h2>
 
-      {/* Tab content */}
+      {/* Tab content — tab switching happens via the Segments/Style chips
+          in the red footer; no in-sheet tab bar. */}
       {selectedTab === 1 ? renderStyleTab() : (
         <>
           {segments.map((seg, i) => (
