@@ -63,9 +63,11 @@ export default function RouletteScreen({
   // Inner editor sheet starts closed. The user reveals it by tapping a chip
   // (Segments / Style / Settings) in the red footer. This keeps the overlay's
   // opening uncluttered — you see the wheel first, then choose to edit.
-  const [showEditor, setShowEditor] = useState(false);
-  const [showGearMenu, setShowGearMenu] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
+  // Unified sheet — all four panes (segments, style, settings, templates)
+  // share the same SnappingSheet and are switched by a chip header at the
+  // top. null = sheet closed.
+  type SheetTab = 'segments' | 'style' | 'settings' | 'templates';
+  const [sheetTab, setSheetTab] = useState<SheetTab | null>(null);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -116,7 +118,6 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
-  const [editorTab, setEditorTab] = useState(0); // 0=Segments, 1=Style
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // activeConfig: previewConfig wins only if it belongs to the CURRENT block.
   // Comparing by wheelConfig.id protects against stale previewConfig carrying
@@ -686,7 +687,9 @@ export default function RouletteScreen({
   // bottomContentHeight reserves the vertical space used by the spin button
   // (~76px incl. margin) plus the red footer (250px) when the sheet is closed,
   // so the wheel shrinks enough to keep the footer fully on-screen.
-  const bottomContentHeight = 266;
+  // Reserved height for the bottom stack: spin button (76) + red footer
+  // (184, which already includes the 48px space for the chip bar to overlay).
+  const bottomContentHeight = 260;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = 460;
@@ -737,8 +740,8 @@ export default function RouletteScreen({
               initialConfig={baseConfig}
               history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
-              selectedTab={editorTab}
-              onTabChange={setEditorTab}
+              selectedTab={sheetTab === 'style' ? 1 : 0}
+              onTabChange={t => setSheetTab(t === 0 ? 'segments' : 'style')}
             />
           </div>
         </div>
@@ -910,93 +913,22 @@ export default function RouletteScreen({
               <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
             </PushDownButton>
           </div>
-          {/* Bottom controls container — flex column:
-              [play / undo-redo] [+  wheel preview] [chips] */}
+          {/* Bottom controls container — preview row at the top, 48px of
+              reserved space at the bottom where the pinned chip bar overlays. */}
           <div style={{
             flexShrink: 0,
             width: '100%',
-            height: isPlayMode ? 0 : 190,
+            height: isPlayMode ? 0 : 184,
             opacity: isPlayMode ? 0 : 1,
             backgroundColor: 'red',
             overflow: 'hidden',
             transition: 'height 0.3s ease, opacity 0.3s ease',
             display: 'flex',
             flexDirection: 'column',
-            padding: '12px 16px 14px',
-            gap: 10,
+            padding: '12px 16px 62px',
             boxSizing: 'border-box',
           }}>
-            {/* Top row: chips (left, scrollable) · undo/redo + play (right). */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div
-                className="no-scrollbar"
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  minWidth: 0,
-                  overflowX: 'auto',
-                  flex: 1,
-                  // Gradient fade on the right edge so chips that clip out
-                  // of view dissolve into the red background nicely.
-                  WebkitMaskImage:
-                    'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
-                  maskImage:
-                    'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
-                }}
-              >
-                <Chip
-                  icon={<LayoutList size={14} />}
-                  label="Segments"
-                  onTap={() => { setEditorTab(0); setShowEditor(true); }}
-                />
-                <Chip
-                  icon={<Paintbrush size={14} />}
-                  label="Style"
-                  onTap={() => { setEditorTab(1); setShowEditor(true); }}
-                />
-                <Chip
-                  icon={<SettingsIcon size={14} />}
-                  label="Settings"
-                  onTap={() => setShowGearMenu(true)}
-                />
-                <Chip
-                  icon={<LayoutGrid size={14} />}
-                  label="Templates"
-                  onTap={() => setShowTemplates(true)}
-                />
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                <IconButton
-                  onClick={unifiedUndo}
-                  disabled={!(editorHistory.canUndo || opCanUndo)}
-                >
-                  <Undo2 size={18} color="#FFFFFF" />
-                </IconButton>
-                <IconButton
-                  onClick={unifiedRedo}
-                  disabled={!(editorHistory.canRedo || opCanRedo)}
-                >
-                  <Redo2 size={18} color="#FFFFFF" />
-                </IconButton>
-                <button
-                  onClick={() => setIsPlayMode(true)}
-                  aria-label="Play"
-                  style={{
-                    width: 36, height: 36,
-                    borderRadius: 50,
-                    backgroundColor: 'rgba(255,255,255,0.15)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Play size={18} color="#FFFFFF" fill="#FFFFFF" />
-                </button>
-              </div>
-            </div>
-
-            {/* Preview row: [wheel 1] … [wheel N] [+ icon] — + always rightmost,
-                so adding a new wheel extends the chain linearly. */}
+            {/* Preview row: [wheel 1] … [wheel N] [+ icon] */}
             <div
               ref={previewRowRef}
               className="no-scrollbar"
@@ -1174,77 +1106,96 @@ export default function RouletteScreen({
           </div>
         </div>
 
-        {/* Mobile editor snapping sheet — opens when user taps a chip */}
+        {/* Pinned chip bar — permanently pinned to the bottom of the
+            viewport. Never moves. Sits inside the red container's reserved
+            bottom band; when a sheet opens, it overlays the sheet's bottom
+            via high z-index so it's always accessible. */}
+        {isMobile && !isPlayMode && (
+          <PinnedChipBar
+            activeTab={sheetTab}
+            onChange={setSheetTab}
+            bottom={0}
+            canUndo={editorHistory.canUndo || opCanUndo}
+            canRedo={editorHistory.canRedo || opCanRedo}
+            onUndo={unifiedUndo}
+            onRedo={unifiedRedo}
+            onPlay={() => setIsPlayMode(true)}
+          />
+        )}
+
+        {/* Unified snapping sheet — hosts all four panes; the chip bar that
+            drives it is rendered separately as a pinned element above. */}
         {isMobile && (
           <SnappingSheet
-            visible={showEditor}
+            // Sheet's bottom sits above the pinned chip bar so the bar
+            // never obscures sheet content.
+            bottomOffset={48}
+            visible={sheetTab !== null}
             snapPositions={[0, 460, screenHeight - 80]}
             initialSnap={1}
-            bottomOffset={0}
-            onCollapsed={() => { setShowEditor(false); setSheetHeight(0); }}
+            onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
           >
-            <WheelEditor
-              key={baseConfig.id}
-              initialConfig={baseConfig}
-              history={wrappedEditorHistory}
-              onPreview={handleWheelPreview}
-              selectedTab={editorTab}
-              onTabChange={setEditorTab}
-              onClose={() => { setShowEditor(false); setSheetHeight(0); }}
-            />
+            {(sheetTab === 'segments' || sheetTab === 'style') && (
+              <WheelEditor
+                key={baseConfig.id}
+                initialConfig={baseConfig}
+                history={wrappedEditorHistory}
+                onPreview={handleWheelPreview}
+                selectedTab={sheetTab === 'segments' ? 0 : 1}
+              />
+            )}
+            {sheetTab === 'settings' && (
+              <div style={{ padding: '0 20px 24px' }}>
+                <ToggleRow
+                  label="Random Intensity"
+                  icon={<Shuffle size={22} />}
+                  value={isRandomIntensity}
+                  onChange={setIsRandomIntensity}
+                />
+                <div style={{ height: 12 }} />
+                {!isRandomIntensity && (
+                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, gap: 8 }}>
+                    <span style={{ width: 100, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>Intensity</span>
+                    <input
+                      type="range"
+                      min={0} max={1} step={0.05}
+                      value={spinIntensity}
+                      onChange={e => setSpinIntensity(parseFloat(e.target.value))}
+                      style={{ flex: 1, accentColor: ON_SURFACE }}
+                    />
+                    <span style={{ width: 44, textAlign: 'right', fontWeight: 700, fontSize: 13 }}>
+                      {Math.round(spinIntensity * 100)}%
+                    </span>
+                  </div>
+                )}
+                <ToggleRow
+                  label="Win Effects"
+                  icon={<Sparkles size={22} />}
+                  value={showWinAnimation}
+                  onChange={setShowWinAnimation}
+                />
+                <div style={{ height: 12 }} />
+                <ToggleRow
+                  label="Segment Header"
+                  icon={<Type size={22} />}
+                  value={showSegmentHeader}
+                  onChange={setShowSegmentHeader}
+                />
+              </div>
+            )}
+            {sheetTab === 'templates' && (
+              <div style={{ padding: '0 20px 32px', textAlign: 'center' }}>
+                <p style={{ fontSize: 14, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.55), margin: '12px 20px' }}>
+                  Prebuilt wheels are coming soon. You'll be able to pick a
+                  starter here and customize from there.
+                </p>
+              </div>
+            )}
           </SnappingSheet>
         )}
 
       </div>
-
-      {/* Gear menu */}
-      {showGearMenu && (
-        <DraggableSheet maxWidth={9999} onClose={() => setShowGearMenu(false)}>
-          <div style={{ padding: '0 24px 32px' }}>
-            <h3 style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', margin: '0 0 24px' }}>Spin Settings</h3>
-
-            <ToggleRow
-              label="Random Intensity"
-              icon={<Shuffle size={22} />}
-              value={isRandomIntensity}
-              onChange={setIsRandomIntensity}
-            />
-            <div style={{ height: 12 }} />
-
-            {!isRandomIntensity && (
-              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, gap: 8 }}>
-                <span style={{ width: 100, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>Intensity</span>
-                <input
-                  type="range"
-                  min={0} max={1} step={0.05}
-                  value={spinIntensity}
-                  onChange={e => setSpinIntensity(parseFloat(e.target.value))}
-                  style={{ flex: 1, accentColor: ON_SURFACE }}
-                />
-                <span style={{ width: 44, textAlign: 'right', fontWeight: 700, fontSize: 13 }}>
-                  {Math.round(spinIntensity * 100)}%
-                </span>
-              </div>
-            )}
-
-            <ToggleRow
-              label="Win Effects"
-              icon={<Sparkles size={22} />}
-              value={showWinAnimation}
-              onChange={setShowWinAnimation}
-            />
-            <div style={{ height: 12 }} />
-
-            <ToggleRow
-              label="Segment Header"
-              icon={<Type size={22} />}
-              value={showSegmentHeader}
-              onChange={setShowSegmentHeader}
-            />
-          </div>
-        </DraggableSheet>
-      )}
 
       {/* Per-tile context menu (right-click / long-press on a preview tile) */}
       {ctxMenuIndex !== null && (
@@ -1258,8 +1209,7 @@ export default function RouletteScreen({
               label="Edit wheel"
               onTap={() => {
                 setCtxMenuIndex(null);
-                setEditorTab(0);
-                setShowEditor(true);
+                setSheetTab('segments');
               }}
             />
             <CtxRow
@@ -1282,20 +1232,8 @@ export default function RouletteScreen({
         </DraggableSheet>
       )}
 
-      {/* Templates sheet — placeholder until we wire a real picker. */}
-      {showTemplates && (
-        <DraggableSheet maxWidth={9999} onClose={() => setShowTemplates(false)}>
-          <div style={{ padding: '0 24px 32px', textAlign: 'center' }}>
-            <h3 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 10px' }}>Templates</h3>
-            <p style={{ fontSize: 14, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.55), margin: '0 0 4px' }}>
-              Prebuilt wheels are coming soon. You'll be able to pick a starter
-              here and customize from there.
-            </p>
-          </div>
-        </DraggableSheet>
-      )}
 
-      {/* Rename wheel sheet — primary editing path on mobile. Each keystroke
+{/* Rename wheel sheet — primary editing path on mobile. Each keystroke
           propagates live via onRenameDraftChange; the sheet just needs to
           close and seal the undo entry. */}
       {renameIndex !== null && (
@@ -1453,6 +1391,167 @@ function AppBarTitleInput({
         cursor: 'text',
       }}
     />
+  );
+}
+
+// Floating chip bar pinned above the red footer or the open sheet
+// (whichever is taller). High z-index so it stays on top of the sheet.
+function PinnedChipBar({
+  activeTab,
+  onChange,
+  bottom,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onPlay,
+}: {
+  activeTab: 'segments' | 'style' | 'settings' | 'templates' | null;
+  onChange: (t: 'segments' | 'style' | 'settings' | 'templates') => void;
+  bottom: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onPlay: () => void;
+}) {
+  const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; Icon: typeof LayoutList }[] = [
+    { key: 'segments', label: 'Segments', Icon: LayoutList },
+    { key: 'style', label: 'Style', Icon: Paintbrush },
+    { key: 'settings', label: 'Settings', Icon: SettingsIcon },
+    { key: 'templates', label: 'Templates', Icon: LayoutGrid },
+  ];
+  return (
+    <div style={{
+      position: 'fixed',
+      left: 0,
+      right: 0,
+      bottom,
+      height: 48,
+      zIndex: 80,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '0 14px',
+      backgroundColor: '#FFFFFF',
+      borderTop: '1px solid #E4E4E7',
+    }}>
+      <div
+        className="no-scrollbar"
+        onWheel={e => {
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            e.currentTarget.scrollLeft += e.deltaY;
+            e.preventDefault();
+          }
+        }}
+        onMouseDown={e => {
+          if (e.button !== 0) return;
+          const row = e.currentTarget;
+          const startX = e.clientX;
+          const startScrollLeft = row.scrollLeft;
+          let didDrag = false;
+          const onMove = (me: MouseEvent) => {
+            const dx = me.clientX - startX;
+            if (!didDrag && Math.abs(dx) > 4) didDrag = true;
+            if (didDrag) row.scrollLeft = startScrollLeft - dx;
+          };
+          const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        }}
+        style={{
+          display: 'flex',
+          gap: 8,
+          minWidth: 0,
+          overflowX: 'auto',
+          flex: 1,
+          cursor: 'grab',
+          WebkitMaskImage:
+            'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+          maskImage:
+            'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+        }}
+      >
+        {items.map(({ key, label, Icon }) => {
+          const isActive = activeTab === key;
+          return (
+            <button
+              key={key}
+              onClick={() => onChange(key)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 14px',
+                borderRadius: 22,
+                border: 'none',
+                backgroundColor: isActive ? ON_SURFACE : '#F4F4F5',
+                color: isActive ? '#FFFFFF' : withAlpha(ON_SURFACE, 0.65),
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              <Icon size={14} />
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+        <button
+          onClick={onUndo}
+          disabled={!canUndo}
+          aria-label="Undo"
+          style={{
+            width: 32, height: 32,
+            borderRadius: 50,
+            backgroundColor: '#F4F4F5',
+            border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: canUndo ? 'pointer' : 'default',
+            opacity: canUndo ? 1 : 0.35,
+          }}
+        >
+          <Undo2 size={16} color={ON_SURFACE} />
+        </button>
+        <button
+          onClick={onRedo}
+          disabled={!canRedo}
+          aria-label="Redo"
+          style={{
+            width: 32, height: 32,
+            borderRadius: 50,
+            backgroundColor: '#F4F4F5',
+            border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: canRedo ? 'pointer' : 'default',
+            opacity: canRedo ? 1 : 0.35,
+          }}
+        >
+          <Redo2 size={16} color={ON_SURFACE} />
+        </button>
+        <button
+          onClick={onPlay}
+          aria-label="Play"
+          style={{
+            width: 32, height: 32,
+            borderRadius: 50,
+            backgroundColor: ON_SURFACE,
+            border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer',
+          }}
+        >
+          <Play size={14} color="#FFFFFF" fill="#FFFFFF" />
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -119,6 +119,7 @@ export default function WheelEditor({
   // Tab selection is controlled by the chips in the red footer via the
   // selectedTab prop; the internal fallback stays at 0 (Segments).
   const selectedTab = selectedTabProp ?? 0;
+  const [segmentsMode, setSegmentsMode] = useState<'simple' | 'complex'>('simple');
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
@@ -501,6 +502,75 @@ export default function WheelEditor({
     );
   };
 
+  // ── Simple mode — textarea, one segment per line ───────────────────────
+  // Each non-empty line becomes a segment. Existing segments are matched by
+  // index so color / weight / image stay intact when the user edits lines.
+  const simpleModeText = segments.map(s => s.text).join('\n');
+  const [simpleDraft, setSimpleDraft] = useState(simpleModeText);
+  // Sync the draft when segments change externally (undo/redo, switching
+  // wheel, etc.) and we're currently in simple mode.
+  useEffect(() => {
+    setSimpleDraft(segments.map(s => s.text).join('\n'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments.length, segments.map(s => s.text).join('\n')]);
+
+  const commitSimpleDraft = (value: string) => {
+    const lines = value.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const prev = stateRef.current.segments;
+    const nextSegments: SegmentData[] = lines.map((text, i) => {
+      const existing = prev[i];
+      if (existing) {
+        // Keep color / weight / image; just update text.
+        return existing.text === text ? existing : { ...existing, text };
+      }
+      return {
+        id: `${segmentIdCounter++}`,
+        text,
+        color: SEGMENT_COLORS[(prev.length + i) % SEGMENT_COLORS.length],
+        weight: 1,
+      };
+    });
+    // Only commit if something actually changed.
+    const same = nextSegments.length === prev.length && nextSegments.every((s, i) => s === prev[i]);
+    if (!same) {
+      set({ ...stateRef.current, segments: nextSegments });
+    }
+  };
+
+  const renderSimpleMode = () => (
+    <div>
+      <textarea
+        value={simpleDraft}
+        onChange={e => {
+          setSimpleDraft(e.target.value);
+          commitSimpleDraft(e.target.value);
+        }}
+        onBlur={() => commitSimpleDraft(simpleDraft)}
+        placeholder="One segment per line..."
+        rows={12}
+        style={{
+          width: '100%',
+          padding: '14px 16px',
+          borderRadius: 14,
+          border: `1.5px solid ${BORDER}`,
+          backgroundColor: '#F8F8F9',
+          fontSize: 16,
+          fontWeight: 500,
+          fontFamily: 'inherit',
+          color: ON_SURFACE,
+          outline: 'none',
+          resize: 'vertical',
+          boxSizing: 'border-box',
+          lineHeight: 1.5,
+        }}
+      />
+      <p style={{ fontSize: 12, color: withAlpha(ON_SURFACE, 0.45), margin: '8px 4px 0' }}>
+        One name per line. Switch to Complex to customize colors, weights, and images.
+      </p>
+      <div style={{ height: 24 }} />
+    </div>
+  );
+
   // Render style tab
   const renderStyleTab = () => (
     <div style={{ paddingTop: 16 }}>
@@ -582,50 +652,79 @@ export default function WheelEditor({
   );
 
   return (
-    <div style={{
-      overflowY: 'auto',
-      padding: '0 20px 16px',
-      height: '100%',
-    }}>
-      {/* Header — title only (close and rename live outside the sheet now) */}
-      <h2 style={{
-        fontSize: 22,
-        fontWeight: 700,
-        margin: 0,
-        padding: '4px 0 14px',
-      }}>
-        Edit wheel
-      </h2>
-
-      {/* Tab content — tab switching happens via the Segments/Style chips
-          in the red footer; no in-sheet tab bar. */}
+    <div style={{ padding: '4px 20px 16px' }}>
       {selectedTab === 1 ? renderStyleTab() : (
         <>
-          {segments.map((seg, i) => (
-            <div
-              key={seg.id}
-              ref={el => { segmentElsRef.current[i] = el; }}
-              style={{ opacity: draggingId === seg.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
-            >
-              {renderSegmentCard(seg, i)}
-            </div>
-          ))}
-          <div style={{ height: 12 }} />
-          <PushDownButton color={ON_SURFACE} onTap={addSegment}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              color: '#FFFFFF',
-            }}>
-              <Plus size={22} />
-              <span style={{ fontWeight: 700, fontSize: 15 }}>Add Segment</span>
-            </div>
-          </PushDownButton>
-          <div style={{ height: 32 }} />
+          <SimpleComplexToggle value={segmentsMode} onChange={setSegmentsMode} />
+          {segmentsMode === 'simple' ? renderSimpleMode() : (
+            <>
+              {segments.map((seg, i) => (
+                <div
+                  key={seg.id}
+                  ref={el => { segmentElsRef.current[i] = el; }}
+                  style={{ opacity: draggingId === seg.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
+                >
+                  {renderSegmentCard(seg, i)}
+                </div>
+              ))}
+              <div style={{ height: 12 }} />
+              <PushDownButton color={ON_SURFACE} onTap={addSegment}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  color: '#FFFFFF',
+                }}>
+                  <Plus size={22} />
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>Add Segment</span>
+                </div>
+              </PushDownButton>
+              <div style={{ height: 32 }} />
+            </>
+          )}
         </>
       )}
+    </div>
+  );
+}
+
+// Two-mode toggle pill for Segments: "Simple" (textarea) vs "Complex" (cards).
+function SimpleComplexToggle({ value, onChange }: { value: 'simple' | 'complex'; onChange: (v: 'simple' | 'complex') => void }) {
+  return (
+    <div style={{
+      display: 'flex',
+      backgroundColor: '#E4E4E7',
+      borderRadius: 14,
+      padding: 3,
+      marginBottom: 14,
+    }}>
+      {(['simple', 'complex'] as const).map(mode => {
+        const isActive = value === mode;
+        return (
+          <button
+            key={mode}
+            onClick={() => onChange(mode)}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 12,
+              border: 'none',
+              backgroundColor: isActive ? '#FFFFFF' : 'transparent',
+              color: isActive ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
+              fontSize: 14,
+              fontWeight: 700,
+              fontFamily: 'inherit',
+              textTransform: 'capitalize',
+              cursor: 'pointer',
+              boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              transition: 'all 0.15s',
+            }}
+          >
+            {mode}
+          </button>
+        );
+      })}
     </div>
   );
 }
