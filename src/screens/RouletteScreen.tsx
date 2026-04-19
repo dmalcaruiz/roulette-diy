@@ -6,7 +6,7 @@ import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../c
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Check, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, ArrowLeftFromLine, ArrowRightFromLine, Pencil } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { useHistory } from '../hooks/useHistory';
@@ -23,11 +23,9 @@ interface RouletteScreenProps {
   block: Block;
   editMode?: boolean;
   onBlockUpdated?: (block: Block) => void;
-  // When true, this screen is rendered as an overlay inside BlockScreen.
-  // The top bar's Check icon calls onDismiss instead of navigating back,
-  // and the publish sheet is moved out (handled by BlockScreen).
-  overlay?: boolean;
-  onDismiss?: () => void;
+  // Opens the publish/settings overlay. Called from the app bar's right-side
+  // icon. When omitted, the icon is hidden.
+  onRequestPublish?: () => void;
   // When this block is part of an Experience flow, the loaded step blocks
   // in order. The first entry is step 0; the block being edited is one of
   // these. If absent, the preview row shows just the current wheel.
@@ -42,7 +40,7 @@ interface RouletteScreenProps {
 }
 
 export default function RouletteScreen({
-  block, editMode = false, onBlockUpdated, overlay = false, onDismiss,
+  block, editMode = false, onBlockUpdated, onRequestPublish,
   flowSteps, flowExperience, onFlowChange,
 }: RouletteScreenProps) {
   const { user } = useAuth();
@@ -82,25 +80,38 @@ export default function RouletteScreen({
     setRenameDraft(current);
     setRenameIndex(idx);
   };
-  const commitRename = () => {
-    if (renameIndex === null) return;
-    const trimmed = renameDraft.trim();
-    setRenameIndex(null);
-    if (!trimmed) return;
-    const step = flowSteps?.[renameIndex];
-    const targetIsActive = step ? step.id === block.id : renameIndex === 0;
+  // Live rename — propagate every keystroke instantly. Active wheel uses
+  // editorHistory.patch so typing fills a single undo entry; others go
+  // through onBlockUpdated for an app-wide update.
+  const liveRenameByIndex = (index: number, name: string) => {
+    const step = flowSteps?.[index];
+    const targetIsActive = step ? step.id === block.id : index === 0;
     if (targetIsActive) {
-      if (trimmed === editorHistory.state.name) return;
-      editorHistory.set({ ...editorHistory.state, name: trimmed });
+      if (name === editorHistory.state.name) return;
+      editorHistory.patch({ name });
     } else if (step?.wheelConfig) {
-      const currentName = step.wheelConfig.name;
-      if (trimmed === currentName) return;
+      if (name === step.wheelConfig.name) return;
       onBlockUpdated?.({
         ...step,
-        name: trimmed,
-        wheelConfig: { ...step.wheelConfig, name: trimmed },
+        name,
+        wheelConfig: { ...step.wheelConfig, name },
       });
     }
+  };
+  const onRenameDraftChange = (value: string) => {
+    setRenameDraft(value);
+    if (renameIndex === null) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    liveRenameByIndex(renameIndex, trimmed);
+  };
+  const closeRenameSheet = () => {
+    if (renameIndex === null) return;
+    // Seal the undo entry if the active wheel was the one being renamed.
+    const step = flowSteps?.[renameIndex];
+    const targetIsActive = step ? step.id === block.id : renameIndex === 0;
+    if (targetIsActive) editorHistory.commit();
+    setRenameIndex(null);
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
@@ -214,11 +225,16 @@ export default function RouletteScreen({
     if (!user) return;
     const delta = computeFlowDelta(prev, s);
     if (delta.writes.length === 0 && delta.deletes.length === 0) return;
-    Promise.all([
-      ...delta.writes.map(b => saveDraft(user.uid, b)),
-      ...delta.deletes.map(id => deleteDraft(user.uid, id)),
-    ]).catch(err => dbg('RouletteScreen', 'flow-history:persist-fail', { err: String(err) }));
-  }, [user, onFlowChange]);
+    // Route writes through onBlockUpdated so App.blocks (and thus Profile
+    // list / feed) update immediately — not just Firestore. onBlockUpdated
+    // internally does the saveDraft.
+    for (const b of delta.writes) onBlockUpdated?.(b);
+    // Deletes still go directly — App's block list would retain them until
+    // the next reload, which is acceptable.
+    for (const id of delta.deletes) {
+      deleteDraft(user.uid, id).catch(err => dbg('RouletteScreen', 'flow-history:delete-fail', { err: String(err) }));
+    }
+  }, [user, onFlowChange, onBlockUpdated]);
 
   // No resetKey — RouletteScreen is unmounted by FullScreenSheet when the
   // overlay closes, so flow history is naturally scoped to a single edit
@@ -235,11 +251,12 @@ export default function RouletteScreen({
   const opLogRef = useRef<OpKind[]>([]);
   const opRedoLogRef = useRef<OpKind[]>([]);
   const editorDirtyRef = useRef(false);
+  const flowDirtyRef = useRef(false);
   // Reactive enablement for the buttons — refs alone don't trigger re-render.
   const [opCanUndo, setOpCanUndo] = useState(false);
   const [opCanRedo, setOpCanRedo] = useState(false);
   const syncOpFlags = () => {
-    setOpCanUndo(editorDirtyRef.current || opLogRef.current.length > 0);
+    setOpCanUndo(editorDirtyRef.current || flowDirtyRef.current || opLogRef.current.length > 0);
     setOpCanRedo(opRedoLogRef.current.length > 0);
   };
   const pushOp = (kind: OpKind) => {
@@ -267,10 +284,17 @@ export default function RouletteScreen({
 
   const unifiedUndo = () => {
     // Pending (uncommitted) edits are their own undo step — handled by the
-    // editor's own undo (strips the dirty entry) without touching the op log.
+    // relevant history's undo (strips the dirty entry) without touching the
+    // op log.
     if (editorDirtyRef.current) {
       editorHistory.undo();
       editorDirtyRef.current = false;
+      syncOpFlags();
+      return;
+    }
+    if (flowDirtyRef.current) {
+      flowHistory.undo();
+      flowDirtyRef.current = false;
       syncOpFlags();
       return;
     }
@@ -476,27 +500,18 @@ export default function RouletteScreen({
 
     let currentSource = sourceIndex;
     let didMove = false;
-    let menuOpened = false;
     setGrabbedIndex(sourceIndex);
     dbg('RouletteScreen', 'reorder:start', { index: sourceIndex });
 
-    // Auto-open the context menu if the user keeps holding without dragging.
-    // Fires 550ms after activation (~850ms total from initial press).
-    const autoMenuTimer = setTimeout(() => {
-      if (didMove || menuOpened) return;
-      menuOpened = true;
-      cleanup();
-      setGrabbedIndex(null);
-      setCtxMenuIndex(currentSource);
-    }, 550);
-
     const onMove = (me: PointerEvent) => {
-      if (menuOpened) return;
-      // Cancel the auto-menu once the user meaningfully moves.
+      // Require a meaningful movement from the grab-start position before
+      // we accept any swap. Without this, pressing near a tile's edge can
+      // trigger an immediate swap from sub-pixel pointer jitter — which
+      // then makes "long-press + release" commit a reorder instead of
+      // opening the context menu.
       const dx = me.clientX - startX;
       const dy = me.clientY - startY;
-      if (Math.hypot(dx, dy) > 8) clearTimeout(autoMenuTimer);
-
+      if (Math.hypot(dx, dy) < 10) return;
       const steps = flowStepsRef.current;
       const exp = flowExperienceRef.current;
       if (!steps || !exp?.experienceConfig) return;
@@ -536,35 +551,41 @@ export default function RouletteScreen({
     };
 
     const cleanup = () => {
-      clearTimeout(autoMenuTimer);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('pointercancel', onCancel);
     };
 
     const onUp = () => {
-      if (menuOpened) {
-        cleanup();
-        return;
-      }
+      dbg('RouletteScreen', 'reorder:onUp', { didMove, currentSource });
       cleanup();
       setGrabbedIndex(null);
       if (didMove) {
-        // Push the final snapshot through flow history — onChange handles
-        // local propagation + Firestore persistence + makes it undoable.
         const finalExp = flowExperienceRef.current;
         const finalSteps = flowStepsRef.current ?? [];
         if (finalExp) {
           commitFlowSet({ experience: finalExp, steps: finalSteps });
         }
       } else {
+        dbg('RouletteScreen', 'ctx:open-via-reorder-up', { index: currentSource });
         setCtxMenuIndex(currentSource);
+      }
+    };
+
+    const onCancel = () => {
+      dbg('RouletteScreen', 'reorder:onCancel', { didMove, currentSource });
+      cleanup();
+      setGrabbedIndex(null);
+      if (didMove) {
+        const finalExp = flowExperienceRef.current;
+        const finalSteps = flowStepsRef.current ?? [];
+        if (finalExp) commitFlowSet({ experience: finalExp, steps: finalSteps });
       }
     };
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('pointercancel', onCancel);
   }, [user, onFlowChange, cancelInertia]);
 
   // ── Context-menu actions (delete / duplicate / insert) ─────────────────
@@ -591,6 +612,7 @@ export default function RouletteScreen({
             if (change.nextSteps.length > 0) {
               const nextIdx = Math.min(index, change.nextSteps.length - 1);
               navigate(`/block/${change.nextSteps[nextIdx].id}`, {
+                replace: true,
                 state: {
                   block: change.nextSteps[nextIdx], editMode: true,
                   flowExperience: change.experience ?? undefined,
@@ -751,9 +773,14 @@ export default function RouletteScreen({
               // Exit straight out of the publish+overlay stack back to the
               // screen that invoked it (Profile, Feed, etc.) — skipping the
               // publish screen. When there's no prior history (deep link),
-              // fall back to home.
-              if (window.history.length > 1) navigate(-1);
-              else navigate('/');
+              // fall back to the Feed tab on home (clear the remembered tab
+              // so we don't land on Profile by accident).
+              if (window.history.length > 1) {
+                navigate(-1);
+              } else {
+                sessionStorage.removeItem('appShellTab');
+                navigate('/');
+              }
             }}
             style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}
             aria-label="Close editor"
@@ -761,18 +788,34 @@ export default function RouletteScreen({
             <X size={32} color="#FFFFFF" strokeWidth={2.5} />
           </button>
           <AppBarTitleInput
-            isInFlow={!!flowExperience}
-            flowName={flowExperience?.name ?? ''}
-            wheelName={editorHistory.state.name}
-            onCommitFlowName={(name) => {
-              if (!flowExperience) return;
-              commitFlowSet({
-                experience: { ...flowExperience, name },
-                steps: flowSteps ?? [],
-              });
+            value={flowExperience ? flowExperience.name : editorHistory.state.name}
+            placeholder={flowExperience ? 'Flow name' : 'Wheel name'}
+            onLiveChange={(name) => {
+              if (flowExperience) {
+                // Patch the experience through flow history so other views
+                // (profile, preview tiles) re-render this frame.
+                flowHistory.patch({ experience: { ...flowExperience, name } });
+                flowDirtyRef.current = true;
+              } else {
+                editorHistory.patch({ name });
+                editorDirtyRef.current = true;
+              }
+              syncOpFlags();
             }}
-            onCommitWheelName={(name) => {
-              editorHistory.set({ ...editorHistory.state, name });
+            onCommit={() => {
+              if (flowExperience) {
+                flowHistory.commit();
+                if (flowDirtyRef.current) {
+                  flowDirtyRef.current = false;
+                  pushOp('flow');
+                }
+              } else {
+                editorHistory.commit();
+                if (editorDirtyRef.current) {
+                  editorDirtyRef.current = false;
+                  pushOp('editor');
+                }
+              }
             }}
           />
           <div style={{ display: 'flex', gap: 4 }}>
@@ -781,18 +824,18 @@ export default function RouletteScreen({
                 <X size={32} color="#FFFFFF" />
               </button>
             )}
-            {!isPlayMode && overlay && (
+            {!isPlayMode && onRequestPublish && (
               <button
-                onClick={() => { flushAutoSave(); onDismiss?.(); }}
+                onClick={() => { flushAutoSave(); onRequestPublish(); }}
                 style={{
                   padding: 8,
                   background: 'none',
                   border: 'none',
                   cursor: 'pointer',
                 }}
-                aria-label="Done editing"
+                aria-label="Publish & settings"
               >
-                <Check size={32} color="#FFFFFF" strokeWidth={3} />
+                <Share2 size={28} color="#FFFFFF" strokeWidth={2.5} />
               </button>
             )}
           </div>
@@ -913,11 +956,14 @@ export default function RouletteScreen({
                   const items = step.wheelConfig?.items ?? [];
                   const previewItems = isActive ? activeConfig.items : items;
                   const wheelLabel = (isActive ? activeConfig.name : step.wheelConfig?.name) || step.name;
+                  // Live rename — called on every keystroke. Active wheel uses
+                  // editorHistory.patch so typing fills a single undo entry
+                  // instead of flooding one-per-keystroke; non-active wheels
+                  // write through onBlockUpdated so the app-wide view is
+                  // instantly consistent.
                   const onRenameWheel = (newName: string) => {
                     if (isActive) {
-                      // Goes through editor history so the rename is undoable
-                      // alongside other edits to this wheel.
-                      editorHistory.set({ ...editorHistory.state, name: newName });
+                      editorHistory.patch({ name: newName });
                     } else if (step.wheelConfig) {
                       onBlockUpdated?.({
                         ...step,
@@ -925,6 +971,10 @@ export default function RouletteScreen({
                         wheelConfig: { ...step.wheelConfig, name: newName },
                       });
                     }
+                  };
+                  // Seal the undo entry on blur.
+                  const onRenameCommit = () => {
+                    if (isActive) editorHistory.commit();
                   };
                   // On touch-primary devices, tapping the label opens the
                   // rename sheet directly. With a mouse/trackpad, it focuses
@@ -934,7 +984,11 @@ export default function RouletteScreen({
                     ? () => openRenameSheet(idx)
                     : (isActive ? undefined : () => {
                         flushAutoSave();
+                        // replace: true so switching previews doesn't push a
+                        // new history entry (otherwise X/back would just
+                        // unwind through each tile switch).
                         navigate(`/block/${step.id}`, {
+                          replace: true,
                           state: { block: step, editMode: true, flowExperience, flowSteps },
                         });
                       });
@@ -944,6 +998,7 @@ export default function RouletteScreen({
                       label={wheelLabel}
                       editable={!isTouchPrimary}
                       onLabelEdit={onRenameWheel}
+                      onLabelCommit={onRenameCommit}
                       onLabelFocus={onLabelFocus}
                     >
                       <PreviewTile
@@ -951,7 +1006,12 @@ export default function RouletteScreen({
                         active={isActive}
                         grabbed={grabbedIndex === idx}
                         innerRef={el => { tileElsRef.current[idx] = el; }}
-                        onClick={isActive ? undefined : () => {
+                        onClick={isActive ? () => {
+                          // Tapping the already-selected tile opens the
+                          // context menu (which has an "Edit wheel" action
+                          // at the top to jump into the Segments sheet).
+                          setCtxMenuIndex(idx);
+                        } : () => {
                           dbg('RouletteScreen', 'tile:tap', {
                             from: sid(block.id),
                             to: sid(step.id),
@@ -959,7 +1019,11 @@ export default function RouletteScreen({
                             flowSteps: sids(flowSteps),
                           });
                           flushAutoSave();
+                          // replace: true so switching previews doesn't push
+                          // a new history entry — X/back should exit the
+                          // editor, not unwind through each tile switch.
                           navigate(`/block/${step.id}`, {
+                            replace: true,
                             state: {
                               block: step,
                               editMode: true,
@@ -981,10 +1045,15 @@ export default function RouletteScreen({
                 <TileWithLabel
                   label={activeConfig.name || block.name}
                   editable={!isTouchPrimary}
-                  onLabelEdit={name => editorHistory.set({ ...editorHistory.state, name })}
+                  onLabelEdit={name => editorHistory.patch({ name })}
+                  onLabelCommit={() => editorHistory.commit()}
                   onLabelFocus={isTouchPrimary ? () => openRenameSheet(0) : undefined}
                 >
-                  <PreviewTile active onContextOpen={() => setCtxMenuIndex(0)}>
+                  <PreviewTile
+                    active
+                    onClick={() => setCtxMenuIndex(0)}
+                    onContextOpen={() => setCtxMenuIndex(0)}
+                  >
                     <WheelThumbnail items={activeConfig.items} size={72} />
                   </PreviewTile>
                 </TileWithLabel>
@@ -1088,7 +1157,7 @@ export default function RouletteScreen({
 
       {/* Gear menu */}
       {showGearMenu && (
-        <DraggableSheet onClose={() => setShowGearMenu(false)}>
+        <DraggableSheet maxWidth={9999} onClose={() => setShowGearMenu(false)}>
           <div style={{ padding: '0 24px 32px' }}>
             <h3 style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', margin: '0 0 24px' }}>Spin Settings</h3>
 
@@ -1136,25 +1205,24 @@ export default function RouletteScreen({
 
       {/* Per-tile context menu (right-click / long-press on a preview tile) */}
       {ctxMenuIndex !== null && (
-        <DraggableSheet onClose={() => setCtxMenuIndex(null)}>
+        <DraggableSheet maxWidth={9999} onClose={() => setCtxMenuIndex(null)}>
           <div style={{ padding: '0 20px 28px' }}>
             <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
               Wheel actions
             </h3>
             <CtxRow
+              icon={<LayoutList size={20} />}
+              label="Edit wheel"
+              onTap={() => {
+                setCtxMenuIndex(null);
+                setEditorTab(0);
+                setShowEditor(true);
+              }}
+            />
+            <CtxRow
               icon={<Pencil size={20} />}
               label="Rename wheel"
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); openRenameSheet(i); }}
-            />
-            <CtxRow
-              icon={<ArrowLeftFromLine size={20} />}
-              label="Insert wheel before"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertBefore', i); }}
-            />
-            <CtxRow
-              icon={<ArrowRightFromLine size={20} />}
-              label="Insert wheel after"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('insertAfter', i); }}
             />
             <CtxRow
               icon={<Copy size={20} />}
@@ -1171,9 +1239,11 @@ export default function RouletteScreen({
         </DraggableSheet>
       )}
 
-      {/* Rename wheel sheet — primary editing path on mobile */}
+      {/* Rename wheel sheet — primary editing path on mobile. Each keystroke
+          propagates live via onRenameDraftChange; the sheet just needs to
+          close and seal the undo entry. */}
       {renameIndex !== null && (
-        <DraggableSheet onClose={() => setRenameIndex(null)}>
+        <DraggableSheet maxWidth={9999} onClose={closeRenameSheet}>
           <div style={{ padding: '0 24px 32px' }}>
             <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 14px' }}>
               Rename wheel
@@ -1181,9 +1251,9 @@ export default function RouletteScreen({
             <input
               type="text"
               value={renameDraft}
-              onChange={e => setRenameDraft(e.target.value)}
+              onChange={e => onRenameDraftChange(e.target.value)}
               autoFocus
-              onKeyDown={e => { if (e.key === 'Enter') commitRename(); }}
+              onKeyDown={e => { if (e.key === 'Enter') closeRenameSheet(); }}
               placeholder="Wheel name"
               style={{
                 width: '100%',
@@ -1200,8 +1270,8 @@ export default function RouletteScreen({
                 marginBottom: 14,
               }}
             />
-            <PushDownButton color={PRIMARY} onTap={commitRename}>
-              <span style={{ color: '#FFF', fontSize: 15, fontWeight: 800 }}>Save</span>
+            <PushDownButton color={PRIMARY} onTap={closeRenameSheet}>
+              <span style={{ color: '#FFF', fontSize: 15, fontWeight: 800 }}>Done</span>
             </PushDownButton>
           </div>
         </DraggableSheet>
@@ -1215,21 +1285,27 @@ export default function RouletteScreen({
 // label focuses an inline input so the user can rename that wheel, and also
 // selects (activates) the wheel that owns the label so the edit targets the
 // right one. Fixed height keeps the + tile aligned with named tiles.
-function TileWithLabel({ label, editable, onLabelEdit, onLabelFocus, children }: {
+function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFocus, children }: {
   label: string;
   // When false (mobile), the label is a display-only clickable div — tapping
   // navigates to the parent wheel but doesn't start an inline edit. Renaming
   // happens via the context menu → rename sheet.
   editable?: boolean;
+  // Fires on every keystroke. Parent is responsible for using a cheap
+  // propagation mechanism (editor history patch for the active wheel, a
+  // full block update for others) so updates are instant.
   onLabelEdit?: (name: string) => void;
+  // Fires on blur — lets the parent seal the history entry (commit).
+  onLabelCommit?: () => void;
   onLabelFocus?: () => void;
   children: React.ReactNode;
 }) {
   const [draft, setDraft] = useState(label);
   useEffect(() => { setDraft(label); }, [label]);
-  const commit = () => {
-    const trimmed = draft.trim();
-    if (!trimmed || trimmed === label) { setDraft(label); return; }
+  const onDraftChange = (value: string) => {
+    setDraft(value);
+    const trimmed = value.trim();
+    if (!trimmed) return;
     onLabelEdit?.(trimmed);
   };
   const commonStyle: React.CSSProperties = {
@@ -1252,9 +1328,9 @@ function TileWithLabel({ label, editable, onLabelEdit, onLabelFocus, children }:
         <input
           type="text"
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={e => onDraftChange(e.target.value)}
           onFocus={onLabelFocus}
-          onBlur={commit}
+          onBlur={onLabelCommit}
           onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
           style={{
             ...commonStyle,
@@ -1279,34 +1355,32 @@ function TileWithLabel({ label, editable, onLabelEdit, onLabelFocus, children }:
 }
 
 // Top app-bar title: edits the flow name when editing a step of a flow, or
-// the wheel's own name when the block is standalone. Local draft avoids
-// spamming history / Firestore on every keystroke — we commit on blur.
+// the wheel's own name when the block is standalone. Live-commits each
+// keystroke so downstream views (preview tiles, profile, etc.) update
+// immediately; onCommit seals the undo entry on blur.
 function AppBarTitleInput({
-  isInFlow, flowName, wheelName, onCommitFlowName, onCommitWheelName,
+  value, placeholder, onLiveChange, onCommit,
 }: {
-  isInFlow: boolean;
-  flowName: string;
-  wheelName: string;
-  onCommitFlowName: (name: string) => void;
-  onCommitWheelName: (name: string) => void;
+  value: string;
+  placeholder: string;
+  onLiveChange: (name: string) => void;
+  onCommit: () => void;
 }) {
-  const displayed = isInFlow ? flowName : wheelName;
-  const [draft, setDraft] = useState(displayed);
-  useEffect(() => { setDraft(displayed); }, [displayed, isInFlow]);
-  const commit = () => {
-    const trimmed = draft.trim();
-    if (!trimmed) { setDraft(displayed); return; }
-    if (trimmed === displayed) return;
-    if (isInFlow) onCommitFlowName(trimmed);
-    else onCommitWheelName(trimmed);
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  const onChange = (next: string) => {
+    setDraft(next);
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === value) return;
+    onLiveChange(trimmed);
   };
   return (
     <input
       type="text"
       value={draft}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={commit}
-      placeholder={isInFlow ? 'Flow name' : 'Wheel name'}
+      onChange={e => onChange(e.target.value)}
+      onBlur={onCommit}
+      placeholder={placeholder}
       style={{
         flex: 1,
         minWidth: 0,
@@ -1432,9 +1506,6 @@ function PreviewTile({
   children: React.ReactNode;
 }) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Standalone-only: second timer that auto-opens the context menu if the user
-  // keeps holding after activation without dragging.
-  const menuAutoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didLongPressRef = useRef(false);
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
   // Standalone fallback: when there is no reorder handler (no flow), a
@@ -1450,10 +1521,6 @@ function PreviewTile({
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
-    }
-    if (menuAutoTimerRef.current) {
-      clearTimeout(menuAutoTimerRef.current);
-      menuAutoTimerRef.current = null;
     }
   };
 
@@ -1484,7 +1551,11 @@ function PreviewTile({
         longPressTimerRef.current = setTimeout(() => {
           didLongPressRef.current = true;
           longPressTimerRef.current = null;
-          onClick?.();
+          // Only fire onClick on activation for NON-active tiles — there it
+          // means "switch to this wheel" before entering reorder. For the
+          // already-active tile, onClick = "open context menu," which we
+          // only want on tap or release, never mid-hold.
+          if (!active) onClick?.();
           if (index !== undefined && onGrabStart) {
             // Flow tile: parent owns the grabbed visual via its grabbedIndex
             // (which it clears when the auto-menu fires). Don't also set a
@@ -1493,15 +1564,10 @@ function PreviewTile({
             const start = startPosRef.current;
             onGrabStart(index, start?.x ?? 0, start?.y ?? 0);
           } else if (onContextOpen) {
-            // Standalone — no reorder. Local flag drives the visual.
+            // Standalone — no reorder. Local flag drives the visual; release
+            // without drag opens the context menu (no time-based auto-open).
             setIsGrabbedLocal(true);
             primedForContextRef.current = true;
-            menuAutoTimerRef.current = setTimeout(() => {
-              menuAutoTimerRef.current = null;
-              primedForContextRef.current = false;
-              setIsGrabbedLocal(false); // release scale when menu auto-opens
-              onContextOpen();
-            }, 550);
           }
         }, 300);
       }) : undefined}

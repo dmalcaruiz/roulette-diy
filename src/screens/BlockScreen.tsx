@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Block } from '../models/types';
 import RouletteScreen from './RouletteScreen';
-import SpinningWheel, { type SpinningWheelHandle } from '../components/SpinningWheel';
+import WheelThumbnail from '../components/WheelThumbnail';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
 import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
@@ -15,7 +15,7 @@ import { dbg, sid, sids } from '../utils/debugLog';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  ArrowLeft, Pencil, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
+  ArrowLeft, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
   Share2, Lock, Trash2, Tag, FileText, Loader2, Compass,
 } from 'lucide-react';
 
@@ -40,10 +40,11 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
   const { user } = useAuth();
 
   const [block, setBlock] = useState<Block | null>(state?.block ?? null);
-  const [showEditor, setShowEditor] = useState(state?.editMode ?? false);
+  // Publish is now the overlay on top of the always-visible editor. Default
+  // closed — user opens it from RouletteScreen's app bar.
+  const [showPublish, setShowPublish] = useState(false);
   const [flowSteps, setFlowStepsRaw] = useState<CloudBlock[] | undefined>(state?.flowSteps);
   const [flowExperience, setFlowExperienceRaw] = useState<CloudBlock | undefined>(state?.flowExperience);
-  const wheelRef = useRef<SpinningWheelHandle>(null);
 
   // Wrapped setters — log every transition with caller stack so we can see
   // exactly who triggered a flow-state mutation.
@@ -78,6 +79,7 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
       flowExp: sid(state?.flowExperience?.id ?? null),
       flowSteps: sids(state?.flowSteps),
     });
+    return () => dbg('BlockScreen', 'unmount', { block: sid(state?.block?.id ?? null) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -92,7 +94,8 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
         flowSteps: sids(state.flowSteps),
       });
       setBlock(state.block);
-      setShowEditor(!!state.editMode);
+      // Route changes (e.g. switching flow step) shouldn't force the publish
+      // overlay open; keep whatever state it was in.
       if (state.flowExperience !== undefined) setFlowExperience(state.flowExperience, 'route-sync');
       if (state.flowSteps !== undefined) setFlowSteps(state.flowSteps, 'route-sync');
     }
@@ -197,11 +200,17 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
   }, [block?.id, state?.editMode]);
 
   const handleBlockUpdated = useCallback((updated: Block) => {
-    setBlock(updated);
-    // Keep the in-memory flowSteps mirror in sync with the edit. Otherwise
-    // the preview tile for this block shows its pre-edit config until the
-    // next flow-load fetch from Firestore (causing a visible flash on
-    // wheel-switch).
+    // Only replace the current `block` when the update targets it. Flow
+    // ops also pass through here (the experience doc + other step blocks),
+    // and we mustn't swap the active wheel for, say, the parent Experience
+    // — that was the "flash then blank" bug.
+    setBlock(prev => (prev && prev.id === updated.id ? updated : prev));
+    // Patch flowExperience if the update is the parent Experience doc.
+    setFlowExperienceRaw(prev => (prev && prev.id === updated.id
+      ? ({ ...prev, ...updated } as CloudBlock)
+      : prev));
+    // Keep the in-memory flowSteps mirror in sync with the edit so previews
+    // don't flash stale state until the next Firestore fetch.
     setFlowStepsRaw(prev => {
       if (!prev) return prev;
       const idx = prev.findIndex(s => s.id === updated.id);
@@ -214,74 +223,43 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
     onBlockUpdated?.(updated);
   }, [onBlockUpdated]);
 
-  if (!block) return <div>Block not found</div>;
-
   // Update the parent Experience doc. Local flowExperience is patched
   // optimistically; the Firestore write rides the same saveDraft path as
-  // wheel edits (via App.handleBlockUpdated).
+  // wheel edits (via App.handleBlockUpdated). Declared BEFORE the early
+  // return so the hook order is stable across renders.
   const handleFlowExperienceUpdated = useCallback((updated: Block) => {
     setFlowExperienceRaw(prev => (prev && prev.id === updated.id ? { ...prev, ...updated } as CloudBlock : prev));
     onBlockUpdated?.(updated);
   }, [onBlockUpdated]);
 
+  if (!block) return <div>Block not found</div>;
+
   return (
     <>
-      <BlockViewLayer
+      {/* Edit screen is the always-visible base. */}
+      <RouletteScreen
         block={block}
-        flowExperience={flowExperience}
-        onFlowExperienceUpdated={handleFlowExperienceUpdated}
-        wheelRef={wheelRef}
-        onBack={() => navigate(-1)}
-        onEdit={async () => {
-          // When the block is part of a flow, always open the editor on the
-          // first wheel — regardless of which step the user navigated here
-          // from. The preview row lets them switch after.
-          let steps = flowSteps;
-          let exp = flowExperience;
-          const parentId = (block as Block & { parentExperienceId?: string | null }).parentExperienceId;
-          if (parentId && !steps && user) {
-            const experience = await getDraft(user.uid, parentId);
-            if (experience) {
-              exp = experience;
-              const loaded = await loadFlowStepBlocks({ uid: user.uid, experience });
-              steps = loaded.filter((s): s is CloudBlock => s !== null);
-            }
-          }
-          if (steps && steps.length > 0 && steps[0].id !== block.id) {
-            navigate(`/block/${steps[0].id}`, {
-              state: {
-                block: steps[0],
-                editMode: true,
-                flowExperience: exp,
-                flowSteps: steps,
-              },
-            });
-            return;
-          }
-          setShowEditor(true);
-        }}
+        editMode
+        onRequestPublish={() => setShowPublish(true)}
         onBlockUpdated={handleBlockUpdated}
+        flowSteps={flowSteps}
+        flowExperience={flowExperience}
+        onFlowChange={(exp, steps) => {
+          dbg('BlockScreen', 'onFlowChange', { exp: sid(exp?.id ?? null), steps: sids(steps) });
+          setFlowExperience(exp, 'onFlowChange');
+          setFlowSteps(steps, 'onFlowChange');
+        }}
       />
 
-      {/* Non-draggable full-screen overlay sheet containing the editor */}
-      <FullScreenSheet visible={showEditor}>
-        {/* Intentionally no key here — RouletteScreen stays mounted across
-            flow switches to avoid re-animating the internal editor sheet.
-            When block.id changes, RouletteScreen's own effects reset
-            currentConfig and the editor's useHistory stack. */}
-        <RouletteScreen
+      {/* Publish / settings overlay — slides up over the editor. */}
+      <FullScreenSheet visible={showPublish}>
+        <BlockViewLayer
           block={block}
-          editMode
-          overlay
-          onDismiss={() => setShowEditor(false)}
-          onBlockUpdated={handleBlockUpdated}
-          flowSteps={flowSteps}
           flowExperience={flowExperience}
-          onFlowChange={(exp, steps) => {
-            dbg('BlockScreen', 'onFlowChange', { exp: sid(exp?.id ?? null), steps: sids(steps) });
-            setFlowExperience(exp, 'onFlowChange');
-            setFlowSteps(steps, 'onFlowChange');
-          }}
+          flowSteps={flowSteps}
+          onFlowExperienceUpdated={handleFlowExperienceUpdated}
+          onBack={() => setShowPublish(false)}
+          onBlockUpdated={handleBlockUpdated}
         />
       </FullScreenSheet>
     </>
@@ -291,20 +269,17 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
 // ── Backdrop/view layer — preview + settings ─────────────────────────────
 
 function BlockViewLayer({
-  block, flowExperience, onFlowExperienceUpdated,
-  wheelRef, onBack, onEdit, onBlockUpdated,
+  block, flowExperience, flowSteps, onFlowExperienceUpdated,
+  onBack, onBlockUpdated,
 }: {
   block: Block;
   flowExperience?: CloudBlock;
+  flowSteps?: CloudBlock[];
   onFlowExperienceUpdated?: (b: Block) => void;
-  wheelRef: React.RefObject<SpinningWheelHandle | null>;
   onBack: () => void;
-  onEdit: () => void;
   onBlockUpdated: (b: Block) => void;
 }) {
   const config = block.wheelConfig;
-  const screenWidth = window.innerWidth;
-  const wheelSize = Math.min(screenWidth - 40, 420);
 
   // Local draft for the title — avoids hitting saveDraft on every keystroke.
   // Flushes to onBlockUpdated on blur. Re-syncs if the block prop changes.
@@ -368,7 +343,28 @@ function BlockViewLayer({
         <input
           type="text"
           value={flowExperience ? flowNameDraft : nameDraft}
-          onChange={e => (flowExperience ? setFlowNameDraft : setNameDraft)(e.target.value)}
+          onChange={e => {
+            const v = e.target.value;
+            if (flowExperience) {
+              setFlowNameDraft(v);
+              const trimmed = v.trim();
+              if (trimmed && trimmed !== flowExperience.name) {
+                // Propagate each keystroke to App.blocks + Firestore so the
+                // profile / flow-step labels update immediately.
+                onFlowExperienceUpdated?.({ ...flowExperience, name: trimmed });
+              }
+            } else {
+              setNameDraft(v);
+              const trimmed = v.trim();
+              if (trimmed && trimmed !== block.name) {
+                onBlockUpdated({
+                  ...block,
+                  name: trimmed,
+                  wheelConfig: block.wheelConfig ? { ...block.wheelConfig, name: trimmed } : block.wheelConfig,
+                });
+              }
+            }
+          }}
           onBlur={flowExperience ? commitFlowName : commitName}
           placeholder={flowExperience ? 'Flow name' : 'Wheel name'}
           style={{
@@ -391,46 +387,61 @@ function BlockViewLayer({
         <div style={{ width: 42, height: 42 }} />
       </div>
 
-      {/* Wheel preview */}
+      {/* Compact preview strip — matches the edit-screen tile style so the
+          publish view reads as the same flow, just in a summary form. */}
       <div style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center',
-        padding: '4px 20px 20px',
-      }}>
-        {config ? (
-          <SpinningWheel
-            ref={wheelRef}
-            items={config.items}
-            onFinished={() => {}}
-            size={wheelSize}
-            textSizeMultiplier={config.textSize}
-            headerTextSizeMultiplier={config.headerTextSize}
-            imageSize={config.imageSize}
-            cornerRadius={config.cornerRadius}
-            innerCornerStyle={config.innerCornerStyle}
-            centerInset={config.centerInset}
-            strokeWidth={config.strokeWidth}
-            showBackgroundCircle={config.showBackgroundCircle}
-            centerMarkerSize={config.centerMarkerSize}
-            spinIntensity={0.5}
-            isRandomIntensity
-            headerTextColor={ON_SURFACE}
-            overlayColor="#000000"
-            showWinAnimation
-          />
-        ) : null}
-
-        <div style={{ width: '100%', maxWidth: 420, marginTop: 18 }}>
-          <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
-            <span style={{ color: '#FFF', fontSize: 20, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
-          </PushDownButton>
-          <div style={{ height: 10 }} />
-          <PushDownButton color={ON_SURFACE} onTap={onEdit}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#FFF' }}>
-              <Pencil size={18} />
-              <span style={{ fontSize: 15, fontWeight: 700 }}>Edit wheel</span>
+        display: 'flex',
+        gap: 10,
+        overflowX: 'auto',
+        padding: '6px 16px 18px',
+      }} className="no-scrollbar">
+        {(flowSteps && flowSteps.length > 0 ? flowSteps : (config ? [{
+          id: block.id,
+          wheelConfig: config,
+          name: block.name,
+        }] : [])).map(step => {
+          const items = step.wheelConfig?.items ?? [];
+          const label = step.wheelConfig?.name || step.name;
+          return (
+            <div
+              key={step.id}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+                flexShrink: 0,
+              }}
+            >
+              <div style={{
+                width: 88,
+                height: 88,
+                borderRadius: 16,
+                backgroundColor: '#FFFFFF',
+                border: `2px solid ${BORDER}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+                <WheelThumbnail items={items} size={72} />
+              </div>
+              <div style={{
+                width: 88,
+                height: 18,
+                fontSize: 11,
+                fontWeight: 600,
+                color: withAlpha(ON_SURFACE, 0.7),
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                textAlign: 'center',
+                lineHeight: '18px',
+              }}>
+                {label}
+              </div>
             </div>
-          </PushDownButton>
-        </div>
+          );
+        })}
       </div>
 
       {/* Settings sections */}

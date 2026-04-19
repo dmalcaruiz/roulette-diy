@@ -87,6 +87,7 @@ export default function App() {
   }, [user, reload]);
 
   const navigateToBlock = useCallback((block: Block, editMode = false) => {
+    dbg('App.navigateToBlock', 'go', { block: sid(block.id), type: block.type, editMode });
     navigate(`/block/${block.id}`, { state: { block, editMode } });
   }, [navigate]);
 
@@ -102,6 +103,13 @@ export default function App() {
     // with full flow context so BlockScreen renders the publish screen +
     // editor overlay for that wheel (instead of ExperienceBuilderScreen).
     const openFlowAtStep0 = (experience: CloudBlock, stepBlocks: CloudBlock[]) => {
+      dbg('App.openForEditing', 'navigate-step0', {
+        url: `/block/${stepBlocks[0].id}`,
+        step0: sid(stepBlocks[0].id),
+        step0Type: stepBlocks[0].type,
+        exp: sid(experience.id),
+        stepsCount: stepBlocks.length,
+      });
       navigate(`/block/${stepBlocks[0].id}`, {
         state: {
           block: stepBlocks[0],
