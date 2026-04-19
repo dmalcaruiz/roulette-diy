@@ -45,3 +45,12 @@ a {
   text-decoration: none;
   color: inherit;
 }
+
+/* Scroll containers that shouldn't show the scrollbar (e.g. preview tile rows). */
+.no-scrollbar {
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* legacy IE/Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;                /* Chrome, Safari, Edge Chromium */
+}

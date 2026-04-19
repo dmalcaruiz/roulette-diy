@@ -864,6 +864,7 @@ export default function RouletteScreen({
                 so adding a new wheel extends the chain linearly. */}
             <div
               ref={previewRowRef}
+              className="no-scrollbar"
               onMouseDown={handleRowMouseDown}
               onWheel={handleRowWheel}
               style={{ display: 'flex', gap: 10, minWidth: 0, overflowX: 'auto', cursor: 'grab' }}
@@ -1423,6 +1424,10 @@ function PreviewTile({
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
         userSelect: 'none',
+        WebkitUserSelect: 'none',
+        // Suppress the iOS long-press callout (copy/save/select) that
+        // otherwise fires on top of our own long-press gesture.
+        WebkitTouchCallout: 'none',
         // While grabbed (long-press active), kill native touch pan so the
         // row doesn't scroll under the user's finger during reorder/menu-hold.
         touchAction: effectiveGrabbed ? 'none' : 'manipulation',
