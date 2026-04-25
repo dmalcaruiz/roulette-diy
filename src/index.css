@@ -70,10 +70,13 @@ a {
   user-select: text;
 }
 
-/* Wheel swap-in animation (main preview and newly-added flow tiles). */
+/* Wheel swap-in animation (main preview and newly-added flow tiles).
+   Stays fully opaque the whole time — opacity:0→1 caused a brief white
+   flash on remount because the canvas paints one frame later than React's
+   commit. Scale alone keeps the wheel visible without flicker. */
 @keyframes wheel-fade-in {
-  from { opacity: 0; transform: scale(0.94); }
-  to   { opacity: 1; transform: scale(1); }
+  from { transform: scale(0.94); }
+  to   { transform: scale(1); }
 }
 @keyframes tile-pop-in {
   0%   { opacity: 0; transform: scale(0.6); }
@@ -91,4 +94,21 @@ a {
 @keyframes slide-in-from-left {
   from { transform: translateX(-60%); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Editor exit — slides the entire RouletteScreen down off the bottom edge
+   when the user taps the close X. The component triggers a state change and
+   waits this duration before actually navigating, so the slide-out plays
+   over the still-mounted screen. */
+@keyframes slide-out-down {
+  from { transform: translateY(0); }
+  to   { transform: translateY(100%); }
+}
+
+/* Editor entrance — counterpart to slide-out-down. Plays once when the
+   editor mounts so the screen slides up from the bottom edge over the
+   already-mounted AppShell underneath. */
+@keyframes slide-in-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
 }

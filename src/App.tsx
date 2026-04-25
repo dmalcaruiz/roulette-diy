@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Block, BlockType, newRouletteBlock, newListRandomizerBlock, newExperienceBlock } from './models/types';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { Block, BlockType, newRouletteBlock, newListRandomizerBlock } from './models/types';
 import { loadDrafts, saveDraft, deleteDraft, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
 import { dbg, sid, sids } from './utils/debugLog';
 import { useAuth } from './contexts/AuthContext';
@@ -9,19 +9,22 @@ import ProfileSetupScreen from './screens/ProfileSetupScreen';
 import CreateSheet from './screens/CreateSheet';
 import BlockScreen from './screens/BlockScreen';
 import ListRandomizerScreen from './screens/ListRandomizerScreen';
-import ExperienceBuilderScreen from './screens/ExperienceBuilderScreen';
 import FeedScreen from './screens/FeedScreen';
 import WheelDetailScreen from './screens/WheelDetailScreen';
 import UserProfileScreen from './screens/UserProfileScreen';
 import MyProfileScreen from './screens/MyProfileScreen';
 import DiagnosticsScreen from './screens/DiagnosticsScreen';
+import ExperiencePlayScreen from './screens/ExperiencePlayScreen';
 import { withAlpha } from './utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER } from './utils/constants';
 import { PlusCircle, Compass, User } from 'lucide-react';
 
 export default function App() {
-  const { user, profile, authLoading, profileLoading } = useAuth();
+  const { user, profile, authLoading, profileLoading, isAnonymous, anonymousAuthBlocked } = useAuth();
   const [blocks, setBlocks] = useState<CloudBlock[]>([]);
+  // True until the first drafts fetch returns (success OR failure). Lets the
+  // Profile tab show shimmer tiles instead of the empty state during cold load.
+  const [blocksLoaded, setBlocksLoaded] = useState(false);
   const [showCreateSheet, setShowCreateSheet] = useState(false);
   const navigate = useNavigate();
 
@@ -32,12 +35,16 @@ export default function App() {
       setBlocks(drafts);
     } catch (e) {
       console.error('Failed to load drafts:', e);
+    } finally {
+      setBlocksLoaded(true);
     }
   }, [user]);
 
-  // Run migration + initial load once we have an authenticated user + profile.
+  // Run migration + initial load once we have a user (anonymous or permanent).
+  // Anonymous users still get to load/create drafts under their anon uid; once
+  // they link to Google, the same uid carries the data forward.
   useEffect(() => {
-    if (!user || !profile) return;
+    if (!user) return;
     (async () => {
       try {
         const { migrated } = await migrateLocalBlocksIfNeeded(user.uid);
@@ -45,9 +52,10 @@ export default function App() {
         await reload();
       } catch (e) {
         console.error('Migration/reload failed:', e);
+        setBlocksLoaded(true);
       }
     })();
-  }, [user, profile, reload]);
+  }, [user, reload]);
 
   const handleBlockUpdated = useCallback(async (updated: Block) => {
     if (!user) return;
@@ -80,16 +88,77 @@ export default function App() {
     reload();
   }, [user, reload]);
 
-  const handleBlockDelete = useCallback(async (id: string) => {
+  const handleBlockDelete = useCallback((id: string) => {
     if (!user) return;
-    await deleteDraft(user.uid, id);
-    reload();
-  }, [user, reload]);
+    // Optimistic: drop the block from local state immediately so any
+    // visible list (Profile, recent, flow preview rows) updates this frame.
+    // The Firestore delete fires in the background; on failure the next
+    // natural reload reconciles.
+    setBlocks(prev => prev.filter(b => b.id !== id));
+    deleteDraft(user.uid, id).catch(e => console.error('deleteDraft failed:', e));
+  }, [user]);
 
-  const navigateToBlock = useCallback((block: Block, editMode = false) => {
-    dbg('App.navigateToBlock', 'go', { block: sid(block.id), type: block.type, editMode });
-    navigate(`/block/${block.id}`, { state: { block, editMode } });
+  // Helper: given an Experience and its resolved step blocks, jump to the
+  // first step's wheel screen with full flow context attached. BlockScreen
+  // renders the wheel + the steps preview row at the bottom — that preview
+  // row IS the Experience editor, replacing the old ExperienceBuilderScreen.
+  const openFlowAtStep0 = useCallback((experience: CloudBlock, stepBlocks: CloudBlock[], editMode: boolean) => {
+    navigate(`/block/${stepBlocks[0].id}`, {
+      state: {
+        block: stepBlocks[0],
+        editMode,
+        flowExperience: experience,
+        flowSteps: stepBlocks,
+      },
+    });
   }, [navigate]);
+
+  // Open an Experience by jumping to its first wheel-step. If the Experience
+  // has no steps yet, bootstrap a fresh roulette as step 0 so the user lands
+  // in the wheel editor immediately — the steps preview row in BlockScreen is
+  // the only Experience surface now.
+  const openExperienceFlow = useCallback(async (experience: CloudBlock, editMode: boolean) => {
+    if (!user) return;
+    const steps = experience.experienceConfig?.steps ?? [];
+    const resolved = steps
+      .map(s => blocks.find(b => b.id === s.blockId))
+      .filter((b): b is CloudBlock => !!b);
+
+    if (resolved.length > 0) {
+      openFlowAtStep0(experience, resolved, editMode);
+      return;
+    }
+
+    // Empty Experience — bootstrap a starter wheel + link it back as step 0.
+    const starterWheel: CloudBlock = {
+      ...newRouletteBlock(),
+      parentExperienceId: experience.id,
+    };
+    const updatedExperience: CloudBlock = {
+      ...experience,
+      experienceConfig: {
+        ...(experience.experienceConfig ?? { steps: [] }),
+        steps: [{ blockId: starterWheel.id }],
+      },
+    };
+    await Promise.all([
+      saveDraft(user.uid, starterWheel),
+      saveDraft(user.uid, updatedExperience),
+    ]);
+    await reload();
+    openFlowAtStep0(updatedExperience, [starterWheel], editMode);
+  }, [user, blocks, reload, openFlowAtStep0]);
+
+  const navigateToBlock = useCallback((block: CloudBlock, editMode = false) => {
+    dbg('App.navigateToBlock', 'go', { block: sid(block.id), type: block.type, editMode });
+    // Experience tiles unify under the wheel screen — never route to the old
+    // ExperienceBuilderScreen anymore.
+    if (block.type === 'experience') {
+      void openExperienceFlow(block, editMode);
+      return;
+    }
+    navigate(`/block/${block.id}`, { state: { block, editMode } });
+  }, [navigate, openExperienceFlow]);
 
   // Open a block for editing. If it's part of a flow, resolve the parent
   // Experience + all step blocks locally (we already have them in `blocks`)
@@ -98,27 +167,6 @@ export default function App() {
   const openForEditing = useCallback((block: CloudBlock) => {
     const parentId = block.parentExperienceId;
     dbg('App.openForEditing', 'enter', { block: sid(block.id), parent: sid(parentId ?? null), type: block.type });
-
-    // Helper: given an Experience and its step blocks, jump to the first step
-    // with full flow context so BlockScreen renders the publish screen +
-    // editor overlay for that wheel (instead of ExperienceBuilderScreen).
-    const openFlowAtStep0 = (experience: CloudBlock, stepBlocks: CloudBlock[]) => {
-      dbg('App.openForEditing', 'navigate-step0', {
-        url: `/block/${stepBlocks[0].id}`,
-        step0: sid(stepBlocks[0].id),
-        step0Type: stepBlocks[0].type,
-        exp: sid(experience.id),
-        stepsCount: stepBlocks.length,
-      });
-      navigate(`/block/${stepBlocks[0].id}`, {
-        state: {
-          block: stepBlocks[0],
-          editMode: true,
-          flowExperience: experience,
-          flowSteps: stepBlocks,
-        },
-      });
-    };
 
     // Child wheel tapped — resolve its parent flow and open step 0.
     if (parentId) {
@@ -132,75 +180,99 @@ export default function App() {
           dbg('App.openForEditing', 'resolved-flow-via-child', {
             exp: sid(experience.id), step0: sid(stepBlocks[0].id), steps: sids(stepBlocks),
           });
-          openFlowAtStep0(experience, stepBlocks);
+          openFlowAtStep0(experience, stepBlocks, true);
           return;
         }
       }
       dbg('App.openForEditing', 'flow-unresolved-fallback', { block: sid(block.id) });
     }
 
-    // Experience itself tapped — resolve its steps and open step 0's wheel
-    // in the publish screen rather than the ExperienceBuilder.
+    // Experience itself tapped — always resolves to step 0's wheel via
+    // openExperienceFlow (which bootstraps a starter wheel if empty).
     if (block.type === 'experience') {
-      const steps = block.experienceConfig?.steps ?? [];
-      const stepBlocks = steps
-        .map(s => blocks.find(b => b.id === s.blockId))
-        .filter((b): b is CloudBlock => !!b);
-      if (stepBlocks.length > 0) {
-        dbg('App.openForEditing', 'resolved-flow-via-parent', {
-          exp: sid(block.id), step0: sid(stepBlocks[0].id), steps: sids(stepBlocks),
-        });
-        openFlowAtStep0(block, stepBlocks);
-        return;
-      }
-      dbg('App.openForEditing', 'experience-empty-fallback', { block: sid(block.id) });
+      void openExperienceFlow(block, true);
+      return;
     }
 
     dbg('App.openForEditing', 'standalone-navigate', { block: sid(block.id) });
     navigateToBlock(block, true);
-  }, [blocks, navigate, navigateToBlock]);
+  }, [blocks, openFlowAtStep0, openExperienceFlow, navigateToBlock]);
 
   const handleCreateType = useCallback(async (type: BlockType) => {
-    if (!user) return;
+    // If anonymous sign-in is still resolving (background HTTP from
+    // AuthContext), wait briefly for it to land before saving. The user
+    // sees the create sheet close instantly; the actual draft creation
+    // happens once the uid is available.
+    let activeUser = user;
+    if (!activeUser) {
+      const { auth } = await import('./firebase');
+      const { onAuthStateChanged } = await import('firebase/auth');
+      activeUser = await new Promise<NonNullable<typeof user>>(resolve => {
+        const unsub = onAuthStateChanged(auth, (u) => { if (u) { unsub(); resolve(u); } });
+      });
+    }
     setShowCreateSheet(false);
+
     let newBlock: Block;
     switch (type) {
-      case 'roulette': newBlock = newRouletteBlock(); break;
-      case 'listRandomizer': newBlock = newListRandomizerBlock(); break;
-      case 'experience': newBlock = newExperienceBlock(); break;
+      case 'roulette':
+      case 'experience':
+        newBlock = newRouletteBlock();
+        break;
+      case 'listRandomizer':
+        newBlock = newListRandomizerBlock();
+        break;
+      default:
+        newBlock = newRouletteBlock(); // unreachable, satisfies TS
     }
-    await saveDraft(user.uid, newBlock);
-    await reload();
-    // Land on the publish/preview screen — user taps "Edit wheel" to open
-    // the editor overlay. Keeps Create consistent with tile-tap flow.
-    navigateToBlock(newBlock, false);
-  }, [user, reload, navigateToBlock]);
+    // Optimistic: add the new block to local state and navigate immediately.
+    // The Firestore write happens in the background — no two-round-trip wait
+    // (saveDraft + reload) before the user sees the wheel screen. If the
+    // write fails the next reload will reconcile.
+    setBlocks(prev => [...prev, newBlock as CloudBlock]);
+    navigateToBlock(newBlock as CloudBlock, false);
+    saveDraft(activeUser.uid, newBlock).catch(e => console.error('saveDraft failed:', e));
+  }, [user, navigateToBlock]);
 
   // Gating ────────────────────────────────────────────────────────────────
+  // Anonymous-first: AuthContext kicks off signInAnonymously in the
+  // background but does NOT block first paint on it. The shell renders
+  // immediately; surfaces that need a uid (Create, Profile blocks) gracefully
+  // wait for `user` to populate.
   if (authLoading) return null;
-  if (!user) return <LoginScreen onLoginSuccess={() => {}} />;
-  if (profileLoading) return null;
-  if (!profile) return <ProfileSetupScreen />;
+  // Fallback: anonymous provider disabled in Firebase — show Google sign-in
+  // so the user can still get in.
+  if (!user && anonymousAuthBlocked) return <LoginScreen onLoginSuccess={() => {}} />;
+  // Profile setup is a permanent-user gate, not an anonymous-user gate.
+  if (user && !isAnonymous && profileLoading) return null;
+  if (user && !isAnonymous && !profile) return <ProfileSetupScreen />;
 
   return (
     <>
+      {/* AppShell is the persistent base layer. Detail screens (block, wheel,
+          play, profile, diagnostics) render as fixed-position overlays on top
+          via the Routes below, so when an overlay slides out (e.g. the editor
+          X) the home content underneath is already visible — no white flash. */}
+      <AppShell
+        blocks={blocks}
+        blocksLoaded={blocksLoaded}
+        onCreateBlock={() => setShowCreateSheet(true)}
+        onBlockTap={block => navigateToBlock(block)}
+        onBlockEdit={openForEditing}
+        onBlockDuplicate={handleBlockDuplicate}
+        onBlockDelete={handleBlockDelete}
+      />
       <Routes>
-        <Route path="/" element={
-          <AppShell
-            blocks={blocks}
-            onCreateBlock={() => setShowCreateSheet(true)}
-            onBlockTap={block => navigateToBlock(block)}
-            onBlockEdit={openForEditing}
-            onBlockDuplicate={handleBlockDuplicate}
-            onBlockDelete={handleBlockDelete}
-          />
-        } />
+        <Route path="/" element={null} />
         <Route path="/block/:id" element={
-          <BlockRoute blocks={blocks} onBlockUpdated={handleBlockUpdated} />
+          <RouteOverlay>
+            <BlockRoute blocks={blocks} onBlockUpdated={handleBlockUpdated} onBlockDelete={handleBlockDelete} />
+          </RouteOverlay>
         } />
-        <Route path="/wheel/:wheelId" element={<WheelDetailScreen />} />
-        <Route path="/u/:handle" element={<UserProfileScreen />} />
-        <Route path="/diagnostics" element={<DiagnosticsScreen />} />
+        <Route path="/wheel/:wheelId" element={<RouteOverlay><WheelDetailScreen /></RouteOverlay>} />
+        <Route path="/u/:handle" element={<RouteOverlay><UserProfileScreen /></RouteOverlay>} />
+        <Route path="/e/:id/play" element={<RouteOverlay><ExperiencePlayScreen /></RouteOverlay>} />
+        <Route path="/diagnostics" element={<RouteOverlay><DiagnosticsScreen /></RouteOverlay>} />
       </Routes>
       {showCreateSheet && (
         <CreateSheet
@@ -212,7 +284,24 @@ export default function App() {
   );
 }
 
-function BlockRoute({ blocks, onBlockUpdated }: { blocks: Block[]; onBlockUpdated: (b: Block) => void }) {
+// Fixed-position wrapper for full-screen detail routes. Sits above the
+// always-mounted AppShell so the home content is the background revealed
+// during slide-out animations. NO background of its own — the child screen
+// supplies its own bg, and once the child slides off the AppShell shows
+// through directly.
+function RouteOverlay({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      zIndex: 50,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function BlockRoute({ blocks, onBlockUpdated, onBlockDelete }: { blocks: Block[]; onBlockUpdated: (b: Block) => void; onBlockDelete: (id: string) => void }) {
   const location = useLocation();
   const state = location.state as { block: Block; editMode: boolean } | null;
 
@@ -222,16 +311,22 @@ function BlockRoute({ blocks, onBlockUpdated }: { blocks: Block[]; onBlockUpdate
 
   switch (block.type) {
     case 'roulette':
-      return <BlockScreen onBlockUpdated={onBlockUpdated} />;
+      return <BlockScreen onBlockUpdated={onBlockUpdated} onBlockDelete={onBlockDelete} />;
     case 'listRandomizer':
       return <ListRandomizerScreen block={block} editMode={editMode} onBlockUpdated={onBlockUpdated} />;
     case 'experience':
-      return <ExperienceBuilderScreen block={block} allBlocks={blocks} onBlockUpdated={onBlockUpdated} />;
+      // Defensive fallback: every Experience tile-tap should resolve through
+      // openExperienceFlow and land on a wheel-step. If we somehow get here
+      // with a raw Experience block (deep link, hot-reload, stale state),
+      // route to home so the user re-opens it via a tile and the unified
+      // wheel-screen path. The old ExperienceBuilderScreen is no longer used.
+      return <Navigate to="/" replace />;
   }
 }
 
 interface AppShellProps {
   blocks: CloudBlock[];
+  blocksLoaded: boolean;
   onCreateBlock: () => void;
   onBlockTap: (block: CloudBlock) => void;
   onBlockEdit: (block: CloudBlock) => void;
@@ -239,7 +334,7 @@ interface AppShellProps {
   onBlockDelete: (id: string) => void;
 }
 
-function AppShell({ blocks, onCreateBlock, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete }: AppShellProps) {
+function AppShell({ blocks, blocksLoaded, onCreateBlock, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete }: AppShellProps) {
   // Persist the selected tab across AppShell remounts (e.g. when the user
   // navigates to /block/:id and then presses back, AppShell re-mounts at /
   // and would otherwise reset to Feed).
@@ -260,6 +355,7 @@ function AppShell({ blocks, onCreateBlock, onBlockTap, onBlockEdit, onBlockDupli
         {tab === 1 && (
           <MyProfileScreen
             blocks={blocks}
+            blocksLoaded={blocksLoaded}
             onBlockTap={onBlockTap}
             onBlockEdit={onBlockEdit}
             onBlockDuplicate={onBlockDuplicate}

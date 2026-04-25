@@ -23,6 +23,11 @@ interface RouletteScreenProps {
   block: Block;
   editMode?: boolean;
   onBlockUpdated?: (block: Block) => void;
+  // Optimistic delete callback — host (App) drops the id from its blocks
+  // state immediately and persists in the background. Used for flow ops
+  // (deleting a step / unwrapping the parent Experience when its last
+  // step goes) so the profile / list views update this frame.
+  onBlockDelete?: (id: string) => void;
   // Opens the publish/settings overlay. Called from the app bar's right-side
   // icon. When omitted, the icon is hidden.
   onRequestPublish?: () => void;
@@ -40,7 +45,7 @@ interface RouletteScreenProps {
 }
 
 export default function RouletteScreen({
-  block, editMode = false, onBlockUpdated, onRequestPublish,
+  block, editMode = false, onBlockUpdated, onBlockDelete, onRequestPublish,
   flowSteps, flowExperience, onFlowChange,
 }: RouletteScreenProps) {
   const { user } = useAuth();
@@ -64,8 +69,12 @@ export default function RouletteScreen({
   const [spinIntensity, setSpinIntensity] = useState(0.5);
   const [isRandomIntensity, setIsRandomIntensity] = useState(true);
   const [showWinAnimation, setShowWinAnimation] = useState(true);
-  const [showSegmentHeader, setShowSegmentHeader] = useState(true);
-  const [showSpinButton, setShowSpinButton] = useState(true);
+  const [showSegmentHeader, setShowSegmentHeader] = useState(false);
+  const [showSpinButton, setShowSpinButton] = useState(false);
+  // When the X is pressed we set this to true to play the slide-out-down
+  // animation before actually navigating. The screen unmounts after the
+  // animation finishes so the user sees the editor slide off the bottom.
+  const [isClosing, setIsClosing] = useState(false);
   // Inner editor sheet starts closed. The user reveals it by tapping a chip
   // (Segments / Style / Settings) in the red footer. This keeps the overlay's
   // opening uncluttered — you see the wheel first, then choose to edit.
@@ -254,12 +263,18 @@ export default function RouletteScreen({
     // list / feed) update immediately — not just Firestore. onBlockUpdated
     // internally does the saveDraft.
     for (const b of delta.writes) onBlockUpdated?.(b);
-    // Deletes still go directly — App's block list would retain them until
-    // the next reload, which is acceptable.
+    // Deletes go through onBlockDelete which updates App.blocks optimistically
+    // AND deletes from Firestore in the background — so when the last step
+    // of an Experience is removed, both the wheel id and the parent
+    // Experience id disappear from the profile this frame.
     for (const id of delta.deletes) {
-      deleteDraft(user.uid, id).catch(err => dbg('RouletteScreen', 'flow-history:delete-fail', { err: String(err) }));
+      if (onBlockDelete) {
+        onBlockDelete(id);
+      } else {
+        deleteDraft(user.uid, id).catch(err => dbg('RouletteScreen', 'flow-history:delete-fail', { err: String(err) }));
+      }
     }
-  }, [user, onFlowChange, onBlockUpdated]);
+  }, [user, onFlowChange, onBlockUpdated, onBlockDelete]);
 
   // No resetKey — RouletteScreen is unmounted by FullScreenSheet when the
   // overlay closes, so flow history is naturally scoped to a single edit
@@ -503,6 +518,25 @@ export default function RouletteScreen({
   //  - Midpoint hit-testing via getBoundingClientRect for smoother swaps.
   const tileElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
+  // Tracks every wheel id that has already been rendered as a preview tile
+  // in this RouletteScreen instance. We skip the tile pop-in animation for
+  // any id we've seen before so the first wheel doesn't re-pop when the JSX
+  // path changes from standalone-tile to flow-tile on the first +-add.
+  const mountedTileIdsRef = useRef<Set<string>>(new Set());
+  // Snapshot the seen-set at render time so we can use it within this render
+  // to decide skipPopIn (vs the post-render mutation below).
+  const seenTileIds = mountedTileIdsRef.current;
+  // After every commit, mark the tile ids that just rendered as "seen" — the
+  // sentinel '__plus__' covers the always-present + tile so it doesn't
+  // re-pop when the standalone → flow JSX path swap happens.
+  useEffect(() => {
+    if (flowSteps && flowSteps.length > 0) {
+      flowSteps.forEach(s => mountedTileIdsRef.current.add(s.id));
+    } else if (block) {
+      mountedTileIdsRef.current.add(block.id);
+    }
+    mountedTileIdsRef.current.add('__plus__');
+  });
   // Always-current refs so the window-level handlers created at grab-start
   // can see the latest flow state after subsequent swaps.
   const flowExperienceRef = useRef(flowExperience);
@@ -556,6 +590,14 @@ export default function RouletteScreen({
     if (!startFlowSteps || !startFlowExp) {
       // Standalone (no flow) — long-press still selects; no reorder possible.
       // Release behavior falls back to context menu via onContextOpen.
+      return;
+    }
+
+    // Single-step flow — reorder is meaningless. Skip the grab visual
+    // entirely (which would otherwise scale-up the tile and rely on a
+    // pointerup to clear it) and just open the context menu.
+    if (startFlowSteps.length <= 1) {
+      setCtxMenuIndex(sourceIndex);
       return;
     }
 
@@ -702,11 +744,16 @@ export default function RouletteScreen({
       } else {
         // Standalone wheel — no flow context.
         if (action === 'delete') {
-          // Optimistic: navigate home immediately, persist in the background.
+          // Optimistic: navigate home immediately, persist + drop from
+          // App.blocks in the background.
           navigate('/');
-          deleteDraft(user.uid, block.id).catch(err => {
-            dbg('RouletteScreen', 'ctx:delete:standalone-fail', { err: String(err) });
-          });
+          if (onBlockDelete) {
+            onBlockDelete(block.id);
+          } else {
+            deleteDraft(user.uid, block.id).catch(err => {
+              dbg('RouletteScreen', 'ctx:delete:standalone-fail', { err: String(err) });
+            });
+          }
           return;
         }
         if (action === 'duplicate') {
@@ -740,7 +787,7 @@ export default function RouletteScreen({
       dbg('RouletteScreen', 'ctx:build-fail', { action, err: e instanceof Error ? e.message : String(e) });
       alert(e instanceof Error ? e.message : 'Action failed.');
     }
-  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, flushAutoSave]);
+  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, onBlockDelete, flushAutoSave]);
 
   // Dynamic wheel sizing — the wheel + sheet area is a flex column:
   //   child1 (flex:1): app bar + wheel + red container (red grows with sheet)
@@ -793,6 +840,13 @@ export default function RouletteScreen({
       height: '100dvh',
       backgroundColor: isEditMode && !isMobile ? '#FFFFFF' : backgroundColor,
       overflow: 'hidden',
+      // Slide the entire editor in/out from the bottom edge. slide-in-up
+      // plays once on mount over the always-mounted AppShell underneath;
+      // slide-out-down plays when the close X is pressed and the navigate
+      // call is delayed by setTimeout to match this duration.
+      animation: isClosing
+        ? 'slide-out-down 0.26s cubic-bezier(0.32, 0.72, 0, 1) forwards'
+        : 'slide-in-up 0.26s cubic-bezier(0.32, 0.72, 0, 1) both',
     }}>
       {/* Desktop sidebar editor */}
       {isEditMode && !isMobile && (
@@ -850,18 +904,20 @@ export default function RouletteScreen({
         }}>
           <button
             onClick={() => {
+              if (isClosing) return; // ignore double-taps during the exit animation
               flushAutoSave();
-              // Exit straight out of the publish+overlay stack back to the
-              // screen that invoked it (Profile, Feed, etc.) — skipping the
-              // publish screen. When there's no prior history (deep link),
-              // fall back to the Feed tab on home (clear the remembered tab
-              // so we don't land on Profile by accident).
-              if (window.history.length > 1) {
-                navigate(-1);
-              } else {
-                sessionStorage.removeItem('appShellTab');
-                navigate('/');
-              }
+              setIsClosing(true);
+              // Wait for the slide-out-down animation to finish before
+              // navigating, so the user actually sees the editor slide off
+              // the bottom. Duration matches the keyframe (260ms).
+              setTimeout(() => {
+                if (window.history.length > 1) {
+                  navigate(-1);
+                } else {
+                  sessionStorage.removeItem('appShellTab');
+                  navigate('/');
+                }
+              }, 260);
             }}
             style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}
             aria-label="Close editor"
@@ -1042,7 +1098,21 @@ export default function RouletteScreen({
               className="no-scrollbar"
               onMouseDown={handleRowMouseDown}
               onWheel={handleRowWheel}
-              style={{ display: 'flex', flexShrink: 0, gap: 10, minWidth: 0, overflowX: 'auto', paddingLeft: 14, cursor: 'grab' }}
+              style={{
+                display: 'flex',
+                flexShrink: 0,
+                gap: 10,
+                minWidth: 0,
+                overflowX: 'auto',
+                // Setting overflow-x to anything but visible forces overflow-y
+                // to clip per CSS spec — that crops the grabbed tile's scale
+                // halo + shadow. Padding gives the lifted state room INSIDE
+                // the row's content box so it never reaches the clip edge.
+                // 16 top / 13 bottom — slight top weight nudges the previews
+                // a touch below dead-center.
+                padding: '16px 0 13px 14px',
+                cursor: 'grab',
+              }}
             >
               {flowSteps && flowSteps.length > 0 ? (
                 flowSteps.map((step, idx) => {
@@ -1101,6 +1171,7 @@ export default function RouletteScreen({
                         index={idx}
                         active={isActive}
                         grabbed={grabbedIndex === idx}
+                        skipPopIn={seenTileIds.has(step.id)}
                         innerRef={el => { tileElsRef.current[idx] = el; }}
                         onClick={isActive ? () => {
                           // Tapping the already-selected tile opens the
@@ -1150,6 +1221,7 @@ export default function RouletteScreen({
                 >
                   <PreviewTile
                     active
+                    skipPopIn={seenTileIds.has(block.id)}
                     onClick={() => setCtxMenuIndex(0)}
                     onContextOpen={() => setCtxMenuIndex(0)}
                   >
@@ -1159,6 +1231,7 @@ export default function RouletteScreen({
               )}
               <TileWithLabel label="">
               <PreviewTile
+                skipPopIn={seenTileIds.has('__plus__')}
                 onClick={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
                   dbg('RouletteScreen', 'plus:click', {
@@ -1791,7 +1864,7 @@ function ToggleRow({ label, icon, value, onChange }: {
 
 function PreviewTile({
   onClick, onContextOpen, onGrabStart,
-  index, active, grabbed, innerRef, shouldSuppressClick, children,
+  index, active, grabbed, innerRef, shouldSuppressClick, skipPopIn, children,
 }: {
   onClick?: () => void;
   // Right-click handler (no hold required).
@@ -1810,6 +1883,10 @@ function PreviewTile({
   // Returns true if the click should be ignored — used to skip tile navigate
   // immediately after a row drag-to-scroll mouse gesture.
   shouldSuppressClick?: () => boolean;
+  // When true, skip the tile-pop-in entrance animation. Used so existing
+  // wheels don't re-pop when the standalone-tile JSX is replaced by the
+  // flow-tile JSX (e.g. on the very first +-add).
+  skipPopIn?: boolean;
   children: React.ReactNode;
 }) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1904,8 +1981,11 @@ function PreviewTile({
         borderRadius: 16,
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
-        // Pop-in animation fires on initial mount (tile added or sheet opened).
-        animation: 'tile-pop-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1)',
+        // Pop-in animation fires on initial mount (tile added or sheet opened),
+        // but is suppressed for tiles whose wheel id was already on screen —
+        // prevents the existing first wheel from re-popping when the JSX
+        // path swaps from standalone-tile to flow-tile on the first +-add.
+        animation: skipPopIn ? undefined : 'tile-pop-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1)',
         userSelect: 'none',
         WebkitUserSelect: 'none',
         // Suppress the iOS long-press callout (copy/save/select) that

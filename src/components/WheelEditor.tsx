@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { oklchShadow, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
@@ -132,9 +132,59 @@ export default function WheelEditor({
   };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const draggingIdRef = useRef<string | null>(null);
+  // Live pointer-follow offset for the row currently being dragged. Tracks
+  // (pointerY - dragStartY) minus an accumulated reorder delta — so when the
+  // row jumps to a new natural slot at a snap threshold, the visible position
+  // stays continuous under the pointer instead of teleporting with the slot.
+  const [dragOffsetY, setDragOffsetY] = useState(0);
+  const reorderDeltaRef = useRef(0);
+  const rowHeightRef = useRef(0);
+  // FLIP animation bookkeeping: snapshot each row's screen-Y before every
+  // commit, then on the next layout reverse-translate from the old position
+  // and animate to the new one. Makes the non-dragged rows visibly slide
+  // into their new slots when the dragged row crosses a threshold.
+  const prevRowTopsRef = useRef<Record<string, number>>({});
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
+  draggingIdRef.current = draggingId;
+
+  // FLIP: after every render where segment positions changed, find rows that
+  // moved and animate them from their old screen-Y to their new one. We skip
+  // the dragged row (it has its own pointer-tracking translateY) and any
+  // currently-mid-animation row would be replaced by the new one — fine,
+  // these are short. Runs every render but only does work on actual moves.
+  useLayoutEffect(() => {
+    const els = segmentElsRef.current;
+    const newTops: Record<string, number> = {};
+    segments.forEach((seg, i) => {
+      const el = els[i];
+      if (el) newTops[seg.id] = el.getBoundingClientRect().top;
+    });
+
+    const prev = prevRowTopsRef.current;
+    segments.forEach((seg, i) => {
+      if (seg.id === draggingIdRef.current) return; // dragged row owns its own transform
+      const el = els[i];
+      if (!el) return;
+      const oldTop = prev[seg.id];
+      const newTop = newTops[seg.id];
+      if (oldTop === undefined || newTop === undefined) return;
+      const delta = oldTop - newTop;
+      if (Math.abs(delta) < 1) return;
+      // Reverse-translate to old position with no transition,
+      // then on next frame animate back to identity.
+      el.style.transition = 'none';
+      el.style.transform = `translateY(${delta}px)`;
+      // Force a reflow so the browser applies the pre-state before transitioning.
+      void el.offsetHeight;
+      el.style.transition = 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)';
+      el.style.transform = '';
+    });
+
+    prevRowTopsRef.current = newTops;
+  }, [segments]);
 
   // Keep a ref to current state for use in pointer handlers
   const stateRef = useRef(state);
@@ -207,6 +257,11 @@ export default function WheelEditor({
         if (Math.abs(dy) > 8) {
           decided = true;
           dragActivated = true;
+          // Measure the row height once so we can compensate for slot jumps
+          // while keeping the dragged row glued to the pointer.
+          const el = segmentElsRef.current[index];
+          rowHeightRef.current = el?.offsetHeight ?? 0;
+          reorderDeltaRef.current = 0;
           setDraggingId(dragId);
           setExpandedIndex(null);
         } else if (Math.abs(dx) > 8) {
@@ -219,6 +274,11 @@ export default function WheelEditor({
       }
 
       if (!dragActivated) return;
+
+      // Live pointer-follow for the dragged row. Subtracting the cumulative
+      // reorder delta keeps the row visually under the pointer even after a
+      // slot jump (when its natural position has shifted by ±rowHeight).
+      setDragOffsetY((me.clientY - startY) - reorderDeltaRef.current);
 
       let target = segmentsRef.current.length - 1;
       const els = segmentElsRef.current;
@@ -234,11 +294,16 @@ export default function WheelEditor({
       target = Math.max(0, Math.min(target, segmentsRef.current.length - 1));
 
       if (target !== currentIndex) {
+        const direction = target - currentIndex;
         const newSegs = [...segmentsRef.current];
         const [moved] = newSegs.splice(currentIndex, 1);
         newSegs.splice(target, 0, moved);
         // Use patch for live visual feedback during drag
         patch({ segments: newSegs });
+        // Compensate offset by the slot delta so the row stays glued to the
+        // pointer across the snap.
+        reorderDeltaRef.current += direction * rowHeightRef.current;
+        setDragOffsetY((me.clientY - startY) - reorderDeltaRef.current);
         currentIndex = target;
       }
     };
@@ -249,6 +314,8 @@ export default function WheelEditor({
 
       if (dragActivated) {
         setDraggingId(null);
+        setDragOffsetY(0);
+        reorderDeltaRef.current = 0;
         // Commit the reorder as a discrete action
         commit();
       }
@@ -668,15 +735,35 @@ export default function WheelEditor({
           <SimpleComplexToggle value={segmentsMode} onChange={setSegmentsMode} />
           {segmentsMode === 'simple' ? renderSimpleMode() : (
             <>
-              {segments.map((seg, i) => (
-                <div
-                  key={seg.id}
-                  ref={el => { segmentElsRef.current[i] = el; }}
-                  style={{ opacity: draggingId === seg.id ? 0.4 : 1, transition: 'opacity 0.15s' }}
-                >
-                  {renderSegmentCard(seg, i)}
-                </div>
-              ))}
+              {segments.map((seg, i) => {
+                const isDraggingThis = draggingId === seg.id;
+                // For non-dragged rows we leave transform/transition entirely
+                // unset by React — FLIP writes them directly to the DOM in a
+                // useLayoutEffect, and we don't want React to clobber those
+                // values on the next re-render.
+                const baseStyle: React.CSSProperties = {
+                  position: 'relative',
+                  zIndex: isDraggingThis ? 5 : 1,
+                  opacity: isDraggingThis ? 0.85 : 1,
+                };
+                const draggingStyle: React.CSSProperties = isDraggingThis ? {
+                  transform: `translateY(${dragOffsetY}px)`,
+                  // No transform-transition on the dragged row — it must
+                  // follow the pointer instantly, no easing.
+                  transition: 'opacity 0.15s',
+                  boxShadow: '0 8px 18px rgba(0,0,0,0.18)',
+                  borderRadius: 14,
+                } : {};
+                return (
+                  <div
+                    key={seg.id}
+                    ref={el => { segmentElsRef.current[i] = el; }}
+                    style={{ ...baseStyle, ...draggingStyle }}
+                  >
+                    {renderSegmentCard(seg, i)}
+                  </div>
+                );
+              })}
               <div style={{ height: 12 }} />
               <PushDownButton color={ON_SURFACE} onTap={addSegment}>
                 <div style={{

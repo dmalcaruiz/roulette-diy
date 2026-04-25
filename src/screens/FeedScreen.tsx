@@ -5,6 +5,7 @@ import type { WheelCard } from '../types/wheel';
 import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { Trophy, Heart, MessageCircle } from 'lucide-react';
+import Skeleton from '../components/Skeleton';
 
 type FeedTab = 'all' | 'challenges';
 
@@ -47,6 +48,16 @@ export default function FeedScreen() {
       </div>
 
       <div style={{ padding: '0 12px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Skeleton placeholders during the very first fetch — user sees the
+            shape of the feed immediately instead of a blank space. */}
+        {items.length === 0 && loading && (
+          <>
+            <WheelCardSkeleton />
+            <WheelCardSkeleton />
+            <WheelCardSkeleton />
+            <WheelCardSkeleton />
+          </>
+        )}
         {items.map(w => (
           <WheelCardRow key={w.id} wheel={w} onTap={() => navigate(`/wheel/${w.id}`)} />
         ))}
@@ -89,6 +100,31 @@ function TabChip({ active, label, onTap, icon }: {
     }}>
       {icon} {label}
     </button>
+  );
+}
+
+function WheelCardSkeleton() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 12,
+        padding: 12,
+        borderRadius: 16,
+        border: `1.5px solid ${BORDER}`,
+        backgroundColor: '#FFF',
+      }}
+    >
+      <Skeleton width={80} height={80} radius={12} style={{ flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
+        <Skeleton width="65%" height={16} radius={6} />
+        <Skeleton width="40%" height={12} radius={6} />
+        <div style={{ display: 'flex', gap: 14, marginTop: 6 }}>
+          <Skeleton width={36} height={12} radius={6} />
+          <Skeleton width={36} height={12} radius={6} />
+        </div>
+      </div>
+    </div>
   );
 }
 

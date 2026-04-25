@@ -4,10 +4,11 @@ import { Block } from '../models/types';
 import RouletteScreen from './RouletteScreen';
 import WheelThumbnail from '../components/WheelThumbnail';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
+import ConfirmSheet from '../components/ConfirmSheet';
 import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
-import { publishWheel, unpublishWheel, syncPublishedWheel } from '../services/publishService';
+import { publishExperience, unpublishExperience, syncPublishedExperience } from '../services/publishedExperienceService';
 import { uploadImage } from '../services/uploadService';
 import { getDraft, type CloudBlock } from '../services/blockService';
 import { loadFlowStepBlocks } from '../services/flowService';
@@ -21,6 +22,7 @@ import {
 
 interface BlockScreenProps {
   onBlockUpdated?: (block: Block) => void;
+  onBlockDelete?: (id: string) => void;
 }
 
 // Full navigation payload. `flowExperience` / `flowSteps` are optional —
@@ -33,7 +35,7 @@ interface BlockRouteState {
   flowSteps?: CloudBlock[];
 }
 
-export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
+export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScreenProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as BlockRouteState | null;
@@ -242,6 +244,7 @@ export default function BlockScreen({ onBlockUpdated }: BlockScreenProps) {
         editMode
         onRequestPublish={() => setShowPublish(true)}
         onBlockUpdated={handleBlockUpdated}
+        onBlockDelete={onBlockDelete}
         flowSteps={flowSteps}
         flowExperience={flowExperience}
         onFlowChange={(exp, steps) => {
@@ -506,6 +509,7 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showUnpublishConfirm, setShowUnpublishConfirm] = useState(false);
 
   // TODO: when isPublished, hydrate local state from the remote wheel doc so
   // toggles reflect the live state. For now this section shows controls to
@@ -516,7 +520,11 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
     if (isChallenge && !prompt.trim()) { setErr('Challenge needs a prompt.'); return; }
     setBusy(true); setErr(null);
     try {
-      const wheelId = await publishWheel({
+      // Every publish goes through the Experience pipeline: standalone
+      // roulette/list drafts get auto-wrapped as a one-step Experience. The
+      // returned id is a published_experiences/{id} — readable publicly at
+      // /e/{id}/play.
+      const experienceId = await publishExperience({
         author: profile,
         draft: block,
         isChallenge,
@@ -524,8 +532,8 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
         coverUrl: null,
       });
       if (coverFile) {
-        const coverUrl = await uploadImage({ purpose: 'wheel-cover', source: coverFile, wheelId });
-        await setDoc(doc(db, 'wheels', wheelId), { coverUrl, updatedAtServer: serverTimestamp() }, { merge: true });
+        const coverUrl = await uploadImage({ purpose: 'wheel-cover', source: coverFile, wheelId: experienceId });
+        await setDoc(doc(db, 'published_experiences', experienceId), { coverUrl, updatedAtServer: serverTimestamp() }, { merge: true });
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Publish failed.');
@@ -538,7 +546,7 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
     if (!profile || !publishedWheelId || busy) return;
     setBusy(true); setErr(null);
     try {
-      await syncPublishedWheel({ uid: profile.uid, wheelId: publishedWheelId });
+      await syncPublishedExperience({ uid: profile.uid, experienceId: publishedWheelId });
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Sync failed.');
     } finally {
@@ -546,12 +554,13 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
     }
   };
 
-  const onUnpublish = async () => {
+  const onUnpublish = () => setShowUnpublishConfirm(true);
+
+  const doUnpublish = async () => {
     if (!profile || !publishedWheelId || busy) return;
-    if (!confirm('Unpublish this wheel? It will no longer appear on the Feed.')) return;
     setBusy(true); setErr(null);
     try {
-      await unpublishWheel({ uid: profile.uid, wheelId: publishedWheelId });
+      await unpublishExperience({ uid: profile.uid, experienceId: publishedWheelId });
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
@@ -560,6 +569,7 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
   };
 
   return (
+    <>
     <Section title="Publishing" icon={<Share2 size={16} />}>
       {isPublished ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -615,6 +625,17 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
       )}
       {err && <p style={{ color: '#EF4444', fontSize: 13, margin: '10px 0 0' }}>{err}</p>}
     </Section>
+    {showUnpublishConfirm && (
+      <ConfirmSheet
+        title="Unpublish this Experience?"
+        message="It will no longer be playable at its public URL. Your draft stays untouched."
+        confirmLabel="Unpublish"
+        destructive
+        onConfirm={doUnpublish}
+        onClose={() => setShowUnpublishConfirm(false)}
+      />
+    )}
+    </>
   );
 }
 

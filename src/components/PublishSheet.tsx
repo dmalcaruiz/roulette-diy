@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import DraggableSheet from './DraggableSheet';
+import SignInSheet from './SignInSheet';
 import { PushDownButton, InsetTextField } from './PushDownButton';
 import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
-import { publishWheel } from '../services/publishService';
+import { publishExperience } from '../services/publishedExperienceService';
 import { uploadImage } from '../services/uploadService';
 import type { Block } from '../models/types';
 import { CheckCircle, Circle, ImageIcon, Loader2, Trophy } from 'lucide-react';
@@ -16,12 +17,41 @@ interface PublishSheetProps {
 }
 
 export default function PublishSheet({ draft, onClose, onPublished }: PublishSheetProps) {
-  const { profile } = useAuth();
+  const { profile, isAnonymous } = useAuth();
   const [isChallenge, setIsChallenge] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [showSignIn, setShowSignIn] = useState(false);
+
+  // Publishing requires a real account + a profile (handle/displayName) so the
+  // wheel has an author. Anonymous users see a sign-in CTA instead of the
+  // publish form.
+  if (isAnonymous || !profile) {
+    return (
+      <>
+        <DraggableSheet onClose={onClose}>
+          <div style={{ padding: '0 24px 32px' }}>
+            <h3 style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', margin: '0 0 12px' }}>
+              Sign in to publish
+            </h3>
+            <p style={{ fontSize: 14, color: withAlpha(ON_SURFACE, 0.6), textAlign: 'center', margin: '0 0 24px', lineHeight: 1.4 }}>
+              Publishing needs a profile so viewers know who made it. Your Experience stays as a draft for you either way.
+            </p>
+            <PushDownButton color={PRIMARY} onTap={() => setShowSignIn(true)}>
+              <span style={{ color: '#FFF', fontWeight: 700, fontSize: 16, padding: '0 18px' }}>
+                Continue with Google
+              </span>
+            </PushDownButton>
+          </div>
+        </DraggableSheet>
+        {showSignIn && (
+          <SignInSheet reason="publish" onClose={() => setShowSignIn(false)} />
+        )}
+      </>
+    );
+  }
 
   const canSubmit = !!profile && !submitting && (!isChallenge || prompt.trim().length > 0);
 
@@ -35,11 +65,10 @@ export default function PublishSheet({ draft, onClose, onPublished }: PublishShe
     setSubmitting(true);
     setErr(null);
     try {
-      let coverUrl: string | undefined;
-      // Cover image must be uploaded AFTER we know the wheel ID, but the upload
-      // purpose 'wheel-cover' wants wheelId. Solution: publish first with no cover,
-      // then upload + patch. For v1 we skip cover if it's heavy — keep it simple.
-      const wheelId = await publishWheel({
+      // All publishing now flows through publishExperience: a draft Experience
+      // is published as-is, and a draft roulette/list is auto-wrapped as a
+      // one-step Experience so every public play URL is /e/:id/play.
+      const experienceId = await publishExperience({
         author: profile,
         draft,
         isChallenge,
@@ -47,20 +76,19 @@ export default function PublishSheet({ draft, onClose, onPublished }: PublishShe
         coverUrl: null,
       });
       if (coverFile) {
-        coverUrl = await uploadImage({
+        const coverUrl = await uploadImage({
           purpose: 'wheel-cover',
           source: coverFile,
-          wheelId,
+          wheelId: experienceId, // upload service is wheel-named for now; reuse the id
         });
-        // Patch the cover URL via a second write. Rules allow the author to update their own wheel.
         const { doc, setDoc, serverTimestamp } = await import('firebase/firestore');
         const { db } = await import('../firebase');
-        await setDoc(doc(db, 'wheels', wheelId), {
+        await setDoc(doc(db, 'published_experiences', experienceId), {
           coverUrl,
           updatedAtServer: serverTimestamp(),
         }, { merge: true });
       }
-      onPublished(wheelId);
+      onPublished(experienceId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to publish.');
     } finally {
@@ -72,7 +100,7 @@ export default function PublishSheet({ draft, onClose, onPublished }: PublishShe
     <DraggableSheet onClose={onClose}>
       <div style={{ padding: '0 24px 32px' }}>
         <h3 style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', margin: '0 0 24px' }}>
-          Publish wheel
+          Publish Experience
         </h3>
 
         {/* Challenge toggle */}

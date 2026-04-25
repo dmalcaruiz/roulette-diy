@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
+import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 
@@ -171,8 +171,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset]);
 
-  // Initial paint and repaint on prop changes
-  useEffect(() => {
+  // Initial paint and repaint on prop changes — useLayoutEffect (not
+  // useEffect) so the canvas is drawn synchronously after layout BEFORE the
+  // browser paints the frame. With useEffect there's a one-frame gap where
+  // the canvas exists but is unpainted, which on a remount (e.g. tapping +
+  // to add a new wheel) shows up as a white flash.
+  useLayoutEffect(() => {
     paint();
   }, [paint]);
 

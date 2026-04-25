@@ -87,6 +87,28 @@ service cloud.firestore {
       }
     }
 
+    // ── published_experiences/{id} — public, multi-step Experience flows ─
+    // Read by anyone (this is what the /e/:id/play URL loads — no auth, no
+    // friction, droppable into OBS). Author-only writes; counter deltas
+    // (likesCount/playsCount/etc.) allowed from anyone via transactions.
+    match /published_experiences/{experienceId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if (signedIn() && resource.data.authorId == request.auth.uid)
+        || onlyCounterDeltas(['likesCount', 'commentsCount', 'savesCount', 'playsCount']);
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+
+      // Per-play results. Anyone can submit one (that's the whole point of
+      // an audience-engagement flow). Read is open so the author can build
+      // a results dashboard without extra auth coordination.
+      match /results/{resultId} {
+        allow read: if true;
+        allow create: if true;
+        allow update, delete: if false;
+      }
+    }
+
     // ── reports/{reportId} — moderation inbox ─────────────────────────
     match /reports/{reportId} {
       allow create: if signedIn()
