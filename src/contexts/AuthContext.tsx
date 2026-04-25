@@ -4,7 +4,9 @@ import {
   signInAnonymously,
   signOut as fbSignOut,
   linkWithPopup,
+  linkWithRedirect,
   signInWithPopup,
+  signInWithRedirect,
   type User,
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
@@ -100,9 +102,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = async () => {
     // If we have an anonymous user, prefer linking — keeps the same uid so
-    // their drafts and Experiences come with them. Falls back to a regular
-    // popup sign-in if linking fails (e.g. credential already in use).
+    // their drafts and Experiences come with them. Fall back to a regular
+    // popup sign-in if linking fails (e.g. credential already in use), and
+    // fall back to a full-page redirect if the popup is blocked (some
+    // browsers / extensions / strict COOP setups refuse the popup).
     const current = auth.currentUser;
+    const isPopupBlocked = (e: any) =>
+      e?.code === 'auth/popup-blocked' ||
+      e?.code === 'auth/popup-closed-by-user' ||
+      e?.code === 'auth/cancelled-popup-request';
+
     if (current?.isAnonymous) {
       try {
         await linkWithPopup(current, googleProvider);
@@ -112,14 +121,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Another account already exists for this Google identity. Sign in
           // to it directly; the anon uid is abandoned (data not migrated yet
           // — that's a follow-up).
-          await signInWithPopup(auth, googleProvider);
-          return;
+          try {
+            await signInWithPopup(auth, googleProvider);
+            return;
+          } catch (e2: any) {
+            if (e2?.code === 'auth/popup-blocked') {
+              await signInWithRedirect(auth, googleProvider);
+              return;
+            }
+            if (e2?.code === 'auth/popup-closed-by-user') return;
+            throw e2;
+          }
         }
         if (e?.code === 'auth/popup-closed-by-user') return;
+        if (e?.code === 'auth/popup-blocked') {
+          // Linking via popup blocked — switch to redirect. linkWithRedirect
+          // resolves on the next page load via getRedirectResult; the auth
+          // listener will pick up the linked user automatically.
+          await linkWithRedirect(current, googleProvider);
+          return;
+        }
         throw e;
       }
     }
-    await signInWithPopup(auth, googleProvider);
+
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (e: any) {
+      if (e?.code === 'auth/popup-blocked') {
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
+      if (isPopupBlocked(e)) return; // closed/cancelled — silently no-op
+      throw e;
+    }
   };
 
   const signOut = async () => {
