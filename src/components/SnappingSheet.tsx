@@ -85,6 +85,18 @@ export default function SnappingSheet({
     requestAnimationFrame(() => startAnimationTracking());
   }, [visible, initialSnap, startAnimationTracking]);
 
+  // Keep mounted while a close animation runs so the height transition can
+  // play out instead of unmounting the sheet immediately when visible flips.
+  const [keepMounted, setKeepMounted] = useState(false);
+  useEffect(() => {
+    if (!visible) {
+      setKeepMounted(true);
+      const t = setTimeout(() => setKeepMounted(false), 500);
+      return () => clearTimeout(t);
+    }
+    setKeepMounted(false);
+  }, [visible]);
+
   // ── Handle grab bar drag ──────────────────────────────────────────
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     startYRef.current = e.clientY;
@@ -192,7 +204,7 @@ export default function SnappingSheet({
     }
   }, [snapPositions, onCollapsed, startAnimationTracking]);
 
-  if (!visible && displayHeight <= 0) return null;
+  if (!visible && !keepMounted && displayHeight <= 0) return null;
 
   return (
     <div

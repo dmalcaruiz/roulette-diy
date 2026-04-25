@@ -4,7 +4,7 @@ import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
-import { withAlpha } from '../utils/colorUtils';
+import { withAlpha, oklchShadow } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
@@ -747,7 +747,7 @@ export default function RouletteScreen({
   //   child2 (flex-shrink:0, 48px): chip bar
   // Red container absorbs sheet height so the wheel shrinks in lockstep.
   const RED_BASE = 136;   // red container minimum (preview row + padding)
-  const CHIP_H = 48;      // pinned chip bar
+  const CHIP_H = 56;      // pinned chip bar
   const SPIN_H = 76;      // spin button + margin
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
@@ -1020,7 +1020,7 @@ export default function RouletteScreen({
             width: '100%',
             height: redBoxHeight,
             opacity: isPlayMode ? 0 : 1,
-            backgroundColor: 'red',
+            backgroundColor: '#FFFFFF',
             // visible (not hidden) so the pop-in scale and grabbed box-shadow
             // can extend past the red box without being clipped.
             overflow: 'visible',
@@ -1029,7 +1029,7 @@ export default function RouletteScreen({
             flexDirection: 'column',
             // Center the preview row vertically inside the red box.
             justifyContent: 'center',
-            padding: '12px 16px 14px',
+            padding: '12px 0 11px',
             boxSizing: 'border-box',
           }}>
             {/* Preview row: [wheel 1] … [wheel N] [+ icon].
@@ -1042,7 +1042,7 @@ export default function RouletteScreen({
               className="no-scrollbar"
               onMouseDown={handleRowMouseDown}
               onWheel={handleRowWheel}
-              style={{ display: 'flex', flexShrink: 0, gap: 10, minWidth: 0, overflowX: 'auto', cursor: 'grab' }}
+              style={{ display: 'flex', flexShrink: 0, gap: 10, minWidth: 0, overflowX: 'auto', paddingLeft: 14, cursor: 'grab' }}
             >
               {flowSteps && flowSteps.length > 0 ? (
                 flowSteps.map((step, idx) => {
@@ -1211,7 +1211,22 @@ export default function RouletteScreen({
                   });
                 }}
               >
-                <Plus size={32} color="rgba(255,255,255,0.85)" />
+                <div
+                  aria-label="Add wheel"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    backgroundColor: ON_SURFACE,
+                    WebkitMaskImage: 'url(/images/addl.svg)',
+                    WebkitMaskRepeat: 'no-repeat',
+                    WebkitMaskSize: 'contain',
+                    WebkitMaskPosition: 'center',
+                    maskImage: 'url(/images/addl.svg)',
+                    maskRepeat: 'no-repeat',
+                    maskSize: 'contain',
+                    maskPosition: 'center',
+                  }}
+                />
               </PreviewTile>
               </TileWithLabel>
             </div>
@@ -1237,7 +1252,7 @@ export default function RouletteScreen({
             covering it. */}
         {isMobile && (
           <SnappingSheet
-            bottomOffset={48}
+            bottomOffset={56}
             visible={sheetTab !== null}
             snapPositions={[0, 400, screenHeight - 105]}
             initialSnap={1}
@@ -1440,7 +1455,7 @@ function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFoc
     height: 18,
     fontSize: 11,
     fontWeight: 600,
-    color: 'rgba(255,255,255,0.85)',
+    color: withAlpha(ON_SURFACE, 0.75),
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -1539,7 +1554,7 @@ function PinnedChipBar({
   onPlay,
 }: {
   activeTab: 'segments' | 'style' | 'settings' | 'templates' | null;
-  onChange: (t: 'segments' | 'style' | 'settings' | 'templates') => void;
+  onChange: (t: 'segments' | 'style' | 'settings' | 'templates' | null) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -1552,15 +1567,33 @@ function PinnedChipBar({
     { key: 'settings', label: 'Settings', Icon: SettingsIcon },
     { key: 'templates', label: 'Templates', Icon: LayoutGrid },
   ];
+  // ── Bar spacing recipe ────────────────────────────────────────────────
+  // Bar height: 56px. alignItems: 'flex-end' bottom-aligns every child so
+  // each button's `marginBottom` directly defines its own bottom spacing,
+  // and the top spacing falls out as `56 − height − marginBottom`.
+  //
+  // The pattern: smaller buttons sit lower (more breathing above), larger
+  // buttons sit higher (less breathing above). Top is always 2px less than
+  // bottom for the same button (optical lift). Re-use these values in any
+  // new bottom-bar with PushDown buttons:
+  //
+  //   Button         total H   marginBottom   → top / bottom space
+  //   Chip pill      38        10               8  / 10
+  //   Round (38)     42         8               6  /  8
+  //   Round (42)     46         6               4  /  6
+  //
+  // To resize the bar, keep `(56 − height − marginBottom)` symmetric across
+  // buttons (i.e. shift all marginBottoms by the same delta as the bar).
+  // ──────────────────────────────────────────────────────────────────────
   return (
     <div style={{
       flexShrink: 0,
       width: '100%',
-      height: 48,
+      height: 56,
       display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '0 14px',
+      alignItems: 'flex-end',
+      gap: 12,
+      padding: 0,
       backgroundColor: '#FFFFFF',
       borderTop: '1px solid #E4E4E7',
       boxSizing: 'border-box',
@@ -1596,92 +1629,79 @@ function PinnedChipBar({
         }}
         style={{
           display: 'flex',
-          gap: 8,
+          gap: 4,
           minWidth: 0,
           overflowX: 'auto',
+          overflowY: 'visible',
           flex: 1,
           cursor: 'grab',
+          paddingLeft: 14,
           WebkitMaskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), transparent 100%)',
           maskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), transparent 100%)',
         }}
       >
         {items.map(({ key, label, Icon }) => {
           const isActive = activeTab === key;
           return (
-            <button
+            <PushDownButton
               key={key}
-              onClick={() => onChange(key)}
-              style={{
+              onTap={() => onChange(isActive ? null : key)}
+              color={isActive ? ON_SURFACE : '#F4F4F5'}
+              borderRadius={26}
+              height={38}
+              bottomBorderWidth={4}
+              style={{ flexShrink: 0, marginBottom: 10 }}
+            >
+              <div style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6,
-                padding: '8px 14px',
-                borderRadius: 22,
-                border: 'none',
-                backgroundColor: isActive ? ON_SURFACE : '#F4F4F5',
+                gap: 7,
+                padding: '0 17px',
                 color: isActive ? '#FFFFFF' : withAlpha(ON_SURFACE, 0.65),
                 fontWeight: 700,
-                fontSize: 13,
-                cursor: 'pointer',
+                fontSize: 16,
                 whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}
-            >
-              <Icon size={14} />
-              {label}
-            </button>
+              }}>
+                <Icon size={17} />
+                {label}
+              </div>
+            </PushDownButton>
           );
         })}
       </div>
-      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-        <button
-          onClick={onUndo}
-          disabled={!canUndo}
-          aria-label="Undo"
-          style={{
-            width: 32, height: 32,
-            borderRadius: 50,
-            backgroundColor: '#F4F4F5',
-            border: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: canUndo ? 'pointer' : 'default',
-            opacity: canUndo ? 1 : 0.35,
-          }}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, flexShrink: 0, paddingRight: 14 }}>
+        <PushDownButton
+          onTap={canUndo ? onUndo : undefined}
+          color="#F4F4F5"
+          borderRadius={50}
+          height={42}
+          bottomBorderWidth={4}
+          style={{ width: 38, marginBottom: 8 }}
         >
-          <Undo2 size={16} color={ON_SURFACE} />
-        </button>
-        <button
-          onClick={onRedo}
-          disabled={!canRedo}
-          aria-label="Redo"
-          style={{
-            width: 32, height: 32,
-            borderRadius: 50,
-            backgroundColor: '#F4F4F5',
-            border: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: canRedo ? 'pointer' : 'default',
-            opacity: canRedo ? 1 : 0.35,
-          }}
+          <Undo2 size={19} color={ON_SURFACE} style={{ opacity: canUndo ? 1 : 0.35 }} />
+        </PushDownButton>
+        <PushDownButton
+          onTap={canRedo ? onRedo : undefined}
+          color="#F4F4F5"
+          borderRadius={50}
+          height={42}
+          bottomBorderWidth={4}
+          style={{ width: 38, marginBottom: 8 }}
         >
-          <Redo2 size={16} color={ON_SURFACE} />
-        </button>
-        <button
-          onClick={onPlay}
-          aria-label="Play"
-          style={{
-            width: 32, height: 32,
-            borderRadius: 50,
-            backgroundColor: ON_SURFACE,
-            border: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer',
-          }}
+          <Redo2 size={19} color={ON_SURFACE} style={{ opacity: canRedo ? 1 : 0.35 }} />
+        </PushDownButton>
+        <PushDownButton
+          onTap={onPlay}
+          color={ON_SURFACE}
+          borderRadius={50}
+          height={46}
+          bottomBorderWidth={4}
+          style={{ width: 42, marginLeft: 8, marginBottom: 6 }}
         >
-          <Play size={14} color="#FFFFFF" fill="#FFFFFF" />
-        </button>
+          <Play size={20} color="#FFFFFF" fill="#FFFFFF" />
+        </PushDownButton>
       </div>
     </div>
   );
@@ -1879,13 +1899,9 @@ function PreviewTile({
       }) : undefined}
       style={{
         width: 88,
-        height: 88,
+        height: 92,
+        position: 'relative',
         borderRadius: 16,
-        backgroundColor: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)',
-        border: `2px solid ${active ? '#FFFFFF' : 'rgba(255,255,255,0.2)'}`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
         // Pop-in animation fires on initial mount (tile added or sheet opened).
@@ -1899,12 +1915,41 @@ function PreviewTile({
         // row doesn't scroll under the user's finger during reorder/menu-hold.
         touchAction: effectiveGrabbed ? 'none' : 'manipulation',
         transform: effectiveGrabbed ? 'scale(1.08)' : 'scale(1)',
+        // While grabbed, a soft elevation shadow makes the tile read as
+        // lifted off the row.
         boxShadow: effectiveGrabbed ? '0 6px 16px rgba(0,0,0,0.35)' : 'none',
         transition: 'transform 0.12s ease, box-shadow 0.12s ease',
         zIndex: effectiveGrabbed ? 2 : undefined,
       }}
     >
-      {children}
+      {/* Bottom layer — same 3D recipe as PushDownButton: a darker face
+          peeks out 4px below the top layer, with a faint outer stroke
+          (~25% alpha of the same shadow color) for the soft halo. */}
+      <div style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 88,
+        borderRadius: 16,
+        backgroundColor: oklchShadow(active ? PRIMARY : '#F4F4F5'),
+        boxShadow: `0 0 0 3.5px ${oklchShadow(active ? PRIMARY : '#F4F4F5')}40`,
+      }} />
+      {/* Top layer — the face. */}
+      <div style={{
+        position: 'relative',
+        height: 88,
+        width: 88,
+        borderRadius: 16,
+        backgroundColor: '#F4F4F5',
+        border: active ? `3px solid ${PRIMARY}` : `3px solid #E4E4E7`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+      }}>
+        {children}
+      </div>
     </div>
   );
 }
