@@ -252,10 +252,24 @@ export default function RouletteScreen({
     return { writes, deletes };
   };
 
+  // Set to true by finishRelease just before commitFlowSet, so the redundant
+  // onFlowChange call from flowHistory's [hist] useEffect is skipped — we
+  // already called onFlowChange directly with the same args. Without this
+  // dedupe, the late useEffect-driven call would fire AFTER our rAF-clear of
+  // isCommitting, causing the BlockScreen → RouletteScreen prop chain to
+  // re-render with `flowSteps` again, which (combined with the App.setBlocks
+  // cascade from onBlockUpdated below) caused React to remount the active
+  // PreviewTile and re-fire its tile-pop-in animation — i.e. the bounce.
+  const skipNextHistoryOnChangeRef = useRef(false);
+
   const handleFlowHistoryChange = useCallback((s: FlowHistState) => {
     const prev = appliedFlowRef.current;
     appliedFlowRef.current = s;
-    onFlowChange?.(s.experience, s.steps);
+    if (skipNextHistoryOnChangeRef.current) {
+      skipNextHistoryOnChangeRef.current = false;
+    } else {
+      onFlowChange?.(s.experience, s.steps);
+    }
     if (!user) return;
     const delta = computeFlowDelta(prev, s);
     if (delta.writes.length === 0 && delta.deletes.length === 0) return;
@@ -518,6 +532,31 @@ export default function RouletteScreen({
   //  - Midpoint hit-testing via getBoundingClientRect for smoother swaps.
   const tileElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
+  // Live pointer-follow offset for the grabbed tile. Plain (pointerX - startX)
+  // — no slot-swap compensation needed because the array isn't reordered
+  // during the drag; the tile stays in its original DOM slot the whole time.
+  const [dragOffsetX, setDragOffsetX] = useState(0);
+  // Where the grabbed tile WILL drop on release. While dragging, the
+  // neighbors between source and dropTarget shift left/right by one slot to
+  // open an empty spot for the drop.
+  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
+  // Phase-1 settling: after release, the grabbed tile animates from the
+  // pointer to the drop slot via translateX (with the same easing as a
+  // regular drag-back). While true, transition timing for the grabbed
+  // tile flips from 0s (instant pointer-follow) to 0.22s (settle glide).
+  const [isSettling, setIsSettling] = useState(false);
+  // Phase-2 commit window: true for exactly one paint frame while the
+  // array reorder lands. During that frame every tile's `transform` value
+  // changes (from finalOffset / slotOffset back to 0) at the same moment
+  // its natural DOM position shifts. We must NOT animate that transform
+  // change — the natural position shift already moves the tile to its
+  // resting spot, so animating the transform on top would re-translate
+  // past the rest spot and bounce back. Reset to false on next rAF.
+  const [isCommitting, setIsCommitting] = useState(false);
+  // Pending phase-2 commit timer. Cleared if a new grab starts before the
+  // settle finishes — prevents the in-flight commit from clobbering fresh
+  // drag state with the previous drop's reorder.
+  const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks every wheel id that has already been rendered as a preview tile
   // in this RouletteScreen instance. We skip the tile pop-in animation for
   // any id we've seen before so the first wheel doesn't re-pop when the JSX
@@ -537,6 +576,71 @@ export default function RouletteScreen({
     }
     mountedTileIdsRef.current.add('__plus__');
   });
+
+  // (FLIP removed — release uses a two-phase approach instead. See onUp:
+  // phase 1 animates the grabbed tile's translateX to its drop slot via
+  // the existing React-controlled transition, then phase 2 commits the
+  // array reorder atomically — at which point every tile's new natural
+  // position already matches its phase-1 visible position, so no visual
+  // jump occurs and no FLIP is needed.)
+
+  // ── DEBUG: trace the row's render+layout state across the release ──
+  // Logs every render with the relevant state, then in a useLayoutEffect
+  // logs the post-commit bounding rect, inline transform, and inline
+  // transition for each preview tile. Drop a tile and look for the moment
+  // a tile's `boundingLeft` jumps unexpectedly — that's the bounce frame.
+  const renderCounterRef = useRef(0);
+  renderCounterRef.current += 1;
+  if (flowSteps && flowSteps.length > 0) {
+    // Full step ids per render so we can see exactly when keys change.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[Reorder] render #${renderCounterRef.current}`,
+      `grabbedIndex=${grabbedIndex} dropTargetIndex=${dropTargetIndex} dragOffsetX=${dragOffsetX}`,
+      `isSettling=${isSettling} isCommitting=${isCommitting}`,
+      `\n  flowSteps=[${flowSteps.map(s => s.id).join(' | ')}]`,
+    );
+  }
+  useLayoutEffect(() => {
+    if (!flowSteps || flowSteps.length === 0) return;
+    const els = tileElsRef.current;
+    flowSteps.forEach((step, i) => {
+      const el = els[i];
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const inner = el.querySelector('div') as HTMLElement | null;
+      const wrapperStyle = (el as HTMLElement).style;
+      // Bypass dbg's truncation — print the full transform/transition
+      // strings so we can spot a pop-in scale(0.6) or stale FLIP value.
+      const wrapperComputed = window.getComputedStyle(el);
+      const innerRect = inner?.getBoundingClientRect();
+      const innerComputed = inner ? window.getComputedStyle(inner) : null;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[Reorder] layout #${renderCounterRef.current} idx=${i} id=${step.id}`,
+        `\n  wrapper: rect.left=${Math.round(rect.left)} rect.width=${Math.round(rect.width)} inlineTransform=${wrapperStyle.transform || '∅'} computedTransform=${wrapperComputed.transform} computedAnim=${wrapperComputed.animationName}`,
+        `\n  inner:   rect.left=${innerRect ? Math.round(innerRect.left) : '∅'} rect.width=${innerRect ? Math.round(innerRect.width) : '∅'} inlineTransform=${inner?.style.transform || '∅'} computedTransform=${innerComputed?.transform} computedAnim=${innerComputed?.animationName}`,
+      );
+    });
+  });
+
+  // Slot-shift offset for a non-grabbed neighbor at index `i` while the user
+  // is dragging the tile at `sourceIndex` toward `dropTargetIndex`. Tiles
+  // between source and target shift one slot toward source, opening an
+  // empty slot at target where the grabbed tile will land on release.
+  const SLOT_WIDTH = 98; // tile (88) + gap (10)
+  const computeSlotOffset = (i: number): number => {
+    if (grabbedIndex === null || dropTargetIndex === null) return 0;
+    if (i === grabbedIndex) return 0; // grabbed tile owns its own transform
+    if (dropTargetIndex > grabbedIndex) {
+      // Dragging right — tiles in (source, target] shift left.
+      if (i > grabbedIndex && i <= dropTargetIndex) return -SLOT_WIDTH;
+    } else if (dropTargetIndex < grabbedIndex) {
+      // Dragging left — tiles in [target, source) shift right.
+      if (i >= dropTargetIndex && i < grabbedIndex) return SLOT_WIDTH;
+    }
+    return 0;
+  };
   // Always-current refs so the window-level handlers created at grab-start
   // can see the latest flow state after subsequent swaps.
   const flowExperienceRef = useRef(flowExperience);
@@ -544,47 +648,23 @@ export default function RouletteScreen({
   flowExperienceRef.current = flowExperience;
   flowStepsRef.current = flowSteps;
 
-  // Reorder animation — when a swap shuffles the array, the tiles whose
-  // index changed re-play the poppy bounce (matches `tile-pop-in` in
-  // index.css). Compared by index (not rect) so the grabbed tile's
-  // scale(1.08) — which shifts its bounding rect — doesn't trigger the
-  // animation by itself. The grabbed tile keeps scale(1.08) at the final
-  // keyframe so it doesn't snap back to 1.
-  const prevTileIndicesRef = useRef<Map<string, number>>(new Map());
-  useLayoutEffect(() => {
-    if (!flowSteps) {
-      prevTileIndicesRef.current.clear();
-      return;
-    }
-    const newIndices = new Map<string, number>();
-    flowSteps.forEach((step, idx) => {
-      const oldIdx = prevTileIndicesRef.current.get(step.id);
-      if (oldIdx !== undefined && oldIdx !== idx) {
-        const el = tileElsRef.current[idx];
-        if (el) {
-          const isGrabbed = idx === grabbedIndex;
-          const peak = isGrabbed ? 1.16 : 1.06;
-          const settle = isGrabbed ? 1.08 : 1;
-          el.animate(
-            [
-              { opacity: 0, transform: 'scale(0.6)' },
-              { opacity: 1, transform: `scale(${peak})`, offset: 0.6 },
-              { opacity: 1, transform: `scale(${settle})` },
-            ],
-            { duration: 320, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' },
-          );
-        }
-      }
-      newIndices.set(step.id, idx);
-    });
-    prevTileIndicesRef.current = newIndices;
-  });
+  // (Removed: an old reorder-pop-animation effect that fired el.animate()
+  // on tiles whose array index changed. It started keyframes at scale(0.6),
+  // which was the source of the post-commit bounce. The new two-phase
+  // release in handleGrabStart already animates the drop smoothly, so this
+  // legacy effect is no longer needed.)
 
   const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
     // Lock scroll: stop momentum glide + tear down any in-progress mouse
     // drag-to-scroll so the row freezes the moment the grab activates.
     cancelInertia();
     rowDragCleanupRef.current?.();
+    // Cancel any pending phase-2 settle from the previous drop — its
+    // finishRelease would otherwise fire mid-grab and stomp this state.
+    if (settleTimeoutRef.current) {
+      clearTimeout(settleTimeoutRef.current);
+      settleTimeoutRef.current = null;
+    }
     const startFlowSteps = flowStepsRef.current;
     const startFlowExp = flowExperienceRef.current;
     if (!startFlowSteps || !startFlowExp) {
@@ -601,56 +681,48 @@ export default function RouletteScreen({
       return;
     }
 
-    let currentSource = sourceIndex;
-    let didMove = false;
+    let currentTarget = sourceIndex;
+    let dragged = false; // true once the pointer crosses the activation threshold
     setGrabbedIndex(sourceIndex);
+    setDragOffsetX(0);
+    setDropTargetIndex(sourceIndex);
     dbg('RouletteScreen', 'reorder:start', { index: sourceIndex });
 
     const onMove = (me: PointerEvent) => {
-      // Require a meaningful movement from the grab-start position before
-      // we accept any swap. Without this, pressing near a tile's edge can
-      // trigger an immediate swap from sub-pixel pointer jitter — which
-      // then makes "long-press + release" commit a reorder instead of
-      // opening the context menu.
       const dx = me.clientX - startX;
       const dy = me.clientY - startY;
+      // Plain follow — the grabbed tile sits in its original DOM slot and
+      // is offset by (pointerX - startX). No slot-swap compensation needed.
+      setDragOffsetX(dx);
+
+      // Require a meaningful movement from the grab-start position before
+      // we shift neighbors. Avoids twitchy slot indicators on sub-pixel
+      // jitter at the start of a press. The first time we cross the
+      // threshold we mark this gesture as a drag — even if the user later
+      // releases over the source slot, we treat it as a "no-op reorder"
+      // rather than a long-press, so the context menu stays closed.
       if (Math.hypot(dx, dy) < 10) return;
+      dragged = true;
       const steps = flowStepsRef.current;
-      const exp = flowExperienceRef.current;
-      if (!steps || !exp?.experienceConfig) return;
+      if (!steps) return;
 
-      // Midpoint hit-test across the live tile refs.
-      let target = steps.length - 1;
-      const els = tileElsRef.current;
-      for (let i = 0; i < steps.length; i++) {
-        const el = els[i];
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (me.clientX < rect.left + rect.width / 2) {
-          target = i;
-          break;
-        }
-      }
-      target = Math.max(0, Math.min(target, steps.length - 1));
-      if (target === currentSource) return;
-
-      const nextSteps = [...steps];
-      const [movedStep] = nextSteps.splice(currentSource, 1);
-      nextSteps.splice(target, 0, movedStep);
-
-      const entries = exp.experienceConfig.steps;
-      const nextEntries = [...entries];
-      const [movedEntry] = nextEntries.splice(currentSource, 1);
-      nextEntries.splice(target, 0, movedEntry);
-      const nextExp: CloudBlock = {
-        ...exp,
-        experienceConfig: { ...exp.experienceConfig, steps: nextEntries },
-      };
-
-      currentSource = target;
-      didMove = true;
-      onFlowChange?.(nextExp, nextSteps);
-      setGrabbedIndex(target);
+      // Compute drop target from the pointer's offset relative to the
+      // source tile's natural center, measured in slot widths. This lets
+      // target === source when the pointer is over the source slot itself
+      // (so dropping back in place is reachable + the context-menu
+      // shortcut fires correctly), and avoids the asymmetry of skipping
+      // the source from a midpoint-iteration hit-test.
+      const sourceEl = tileElsRef.current[sourceIndex];
+      if (!sourceEl) return;
+      const sourceRect = sourceEl.getBoundingClientRect();
+      const sourceCenter = sourceRect.left + sourceRect.width / 2;
+      const offsetSlots = Math.round((me.clientX - sourceCenter) / SLOT_WIDTH);
+      const target = Math.max(0, Math.min(steps.length - 1, sourceIndex + offsetSlots));
+      if (target === currentTarget) return;
+      currentTarget = target;
+      // Re-render: neighbors between source and target shift sideways by
+      // one slot to open an empty drop spot at `target`.
+      setDropTargetIndex(target);
     };
 
     const cleanup = () => {
@@ -659,30 +731,90 @@ export default function RouletteScreen({
       window.removeEventListener('pointercancel', onCancel);
     };
 
-    const onUp = () => {
-      dbg('RouletteScreen', 'reorder:onUp', { didMove, currentSource });
-      cleanup();
+    // Two-phase release. Phase 1 animates the grabbed tile to its drop slot
+    // via translateX (same transition the rest of the row uses), without
+    // touching the array. Phase 2, after the animation finishes, commits
+    // the array reorder atomically — at that moment every tile's new
+    // natural position already equals where it's currently rendered, so
+    // there is no visual jump and no FLIP is needed.
+    const finishRelease = (commit: boolean) => {
+      const steps = flowStepsRef.current;
+      const exp = flowExperienceRef.current;
+      if (commit && steps && exp?.experienceConfig) {
+        const nextSteps = [...steps];
+        const [movedStep] = nextSteps.splice(sourceIndex, 1);
+        nextSteps.splice(currentTarget, 0, movedStep);
+        const nextEntries = [...exp.experienceConfig.steps];
+        const [movedEntry] = nextEntries.splice(sourceIndex, 1);
+        nextEntries.splice(currentTarget, 0, movedEntry);
+        const nextExp: CloudBlock = {
+          ...exp,
+          experienceConfig: { ...exp.experienceConfig, steps: nextEntries },
+        };
+        onFlowChange?.(nextExp, nextSteps);
+        // Mark the upcoming flowHistory.set's onChange (fired late via its
+        // [hist] useEffect) as redundant — we just called onFlowChange and
+        // a second call with the same content would re-render BlockScreen
+        // and cascade into a PreviewTile remount + pop-in re-fire.
+        skipNextHistoryOnChangeRef.current = true;
+        commitFlowSet({ experience: nextExp, steps: nextSteps });
+      }
       setGrabbedIndex(null);
-      if (didMove) {
-        const finalExp = flowExperienceRef.current;
-        const finalSteps = flowStepsRef.current ?? [];
-        if (finalExp) {
-          commitFlowSet({ experience: finalExp, steps: finalSteps });
-        }
+      setDragOffsetX(0);
+      setDropTargetIndex(null);
+      setIsSettling(false);
+    };
+
+    const onUp = () => {
+      dbg('RouletteScreen', 'reorder:onUp', { sourceIndex, currentTarget, dragged });
+      cleanup();
+      if (currentTarget !== sourceIndex) {
+        // Phase 1: glide the grabbed tile from current pointer offset to
+        // the drop slot's offset. The dropTargetIndex stays put, so
+        // neighbors hold their drag positions throughout. The 0.22s
+        // matches every other transition in the row.
+        const finalOffset = (currentTarget - sourceIndex) * SLOT_WIDTH;
+        dbg('Reorder', 'phase1:start', { sourceIndex, currentTarget, finalOffset });
+        setIsSettling(true);
+        setDragOffsetX(finalOffset);
+        settleTimeoutRef.current = setTimeout(() => {
+          settleTimeoutRef.current = null;
+          dbg('Reorder', 'phase2:timeout-fired', { sourceIndex, currentTarget });
+          // Suppress transform transitions for the commit frame, then
+          // re-enable on next rAF so subsequent ops animate normally.
+          setIsCommitting(true);
+          finishRelease(true);
+          requestAnimationFrame(() => {
+            dbg('Reorder', 'phase2:rAF-cleared');
+            setIsCommitting(false);
+          });
+        }, 220);
       } else {
-        dbg('RouletteScreen', 'ctx:open-via-reorder-up', { index: currentSource });
-        setCtxMenuIndex(currentSource);
+        // No move OR drag-back-to-source.
+        if (!dragged) {
+          dbg('RouletteScreen', 'ctx:open-via-reorder-up', { index: sourceIndex });
+          setCtxMenuIndex(sourceIndex);
+        }
+        dbg('Reorder', 'no-commit', { sourceIndex, dragged });
+        finishRelease(false);
       }
     };
 
     const onCancel = () => {
-      dbg('RouletteScreen', 'reorder:onCancel', { didMove, currentSource });
+      dbg('RouletteScreen', 'reorder:onCancel', { sourceIndex, currentTarget });
       cleanup();
-      setGrabbedIndex(null);
-      if (didMove) {
-        const finalExp = flowExperienceRef.current;
-        const finalSteps = flowStepsRef.current ?? [];
-        if (finalExp) commitFlowSet({ experience: finalExp, steps: finalSteps });
+      if (currentTarget !== sourceIndex) {
+        const finalOffset = (currentTarget - sourceIndex) * SLOT_WIDTH;
+        setIsSettling(true);
+        setDragOffsetX(finalOffset);
+        settleTimeoutRef.current = setTimeout(() => {
+          settleTimeoutRef.current = null;
+          setIsCommitting(true);
+          finishRelease(true);
+          requestAnimationFrame(() => setIsCommitting(false));
+        }, 220);
+      } else {
+        finishRelease(false);
       }
     };
 
@@ -1166,13 +1298,19 @@ export default function RouletteScreen({
                       onLabelEdit={onRenameWheel}
                       onLabelCommit={onRenameCommit}
                       onLabelFocus={onLabelFocus}
+                      // Wrapper ref is what FLIP animates on reorder (sliding
+                      // non-grabbed neighbors into their new slots). The
+                      // inner PreviewTile keeps its own React-managed
+                      // transform so the lift+scale aren't overwritten.
+                      wrapperRef={el => { tileElsRef.current[idx] = el; }}
                     >
                       <PreviewTile
                         index={idx}
                         active={isActive}
-                        grabbed={grabbedIndex === idx}
+                        grabbed={grabbedIndex === idx && !isSettling}
+                        dragOffsetX={grabbedIndex === idx ? dragOffsetX : computeSlotOffset(idx)}
+                        instantTransform={isCommitting}
                         skipPopIn={seenTileIds.has(step.id)}
-                        innerRef={el => { tileElsRef.current[idx] = el; }}
                         onClick={isActive ? () => {
                           // Tapping the already-selected tile opens the
                           // context menu (which has an "Edit wheel" action
@@ -1500,7 +1638,7 @@ export default function RouletteScreen({
 // label focuses an inline input so the user can rename that wheel, and also
 // selects (activates) the wheel that owns the label so the edit targets the
 // right one. Fixed height keeps the + tile aligned with named tiles.
-function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFocus, children }: {
+function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFocus, wrapperRef, children }: {
   label: string;
   // When false (mobile), the label is a display-only clickable div — tapping
   // navigates to the parent wheel but doesn't start an inline edit. Renaming
@@ -1513,6 +1651,10 @@ function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFoc
   // Fires on blur — lets the parent seal the history entry (commit).
   onLabelCommit?: () => void;
   onLabelFocus?: () => void;
+  // Optional wrapper ref so the parent can FLIP-animate this tile's whole
+  // (preview + label) box without fighting the inner PreviewTile's React-
+  // managed transform/transition styles.
+  wrapperRef?: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
 }) {
   const [draft, setDraft] = useState(label);
@@ -1537,7 +1679,10 @@ function TileWithLabel({ label, editable, onLabelEdit, onLabelCommit, onLabelFoc
   };
   const isEditable = editable && !!onLabelEdit;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+    <div
+      ref={wrapperRef}
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}
+    >
       {children}
       {isEditable ? (
         <input
@@ -1864,7 +2009,7 @@ function ToggleRow({ label, icon, value, onChange }: {
 
 function PreviewTile({
   onClick, onContextOpen, onGrabStart,
-  index, active, grabbed, innerRef, shouldSuppressClick, skipPopIn, children,
+  index, active, grabbed, dragOffsetX = 0, instantTransform, innerRef, shouldSuppressClick, skipPopIn, children,
 }: {
   onClick?: () => void;
   // Right-click handler (no hold required).
@@ -1877,6 +2022,14 @@ function PreviewTile({
   // True when this tile is the one currently being dragged in a reorder.
   // Driven by parent state since the grabbed position shifts as tiles swap.
   grabbed?: boolean;
+  // Live pointer-follow offset (parent-managed). Applied as translateX so
+  // the grabbed tile glides under the user's finger between slot swaps.
+  dragOffsetX?: number;
+  // When true, transform changes are applied with no transition for one
+  // frame. Used during the post-settle commit so the natural-position
+  // shift from the array reorder doesn't trigger a parallel transform
+  // animation (which would visibly bounce past the resting spot).
+  instantTransform?: boolean;
   // Callback ref so parent can collect a { index -> element } map for
   // midpoint hit-testing during reorder.
   innerRef?: (el: HTMLDivElement | null) => void;
@@ -1892,6 +2045,17 @@ function PreviewTile({
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didLongPressRef = useRef(false);
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Per-instance debug: capture stack on mount/unmount + a stable instance id.
+  const instanceIdRef = useRef(Math.random().toString(36).slice(2, 6));
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[PreviewTile#${instanceIdRef.current}] MOUNT idx=${index} active=${active}`);
+    return () => {
+      // eslint-disable-next-line no-console
+      console.log(`[PreviewTile#${instanceIdRef.current}] UNMOUNT idx=${index}`);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Standalone fallback: when there is no reorder handler (no flow), a
   // long-press still needs to open the context menu on release.
   const primedForContextRef = useRef(false);
@@ -1994,11 +2158,26 @@ function PreviewTile({
         // While grabbed (long-press active), kill native touch pan so the
         // row doesn't scroll under the user's finger during reorder/menu-hold.
         touchAction: effectiveGrabbed ? 'none' : 'manipulation',
-        transform: effectiveGrabbed ? 'scale(1.08)' : 'scale(1)',
-        // While grabbed, a soft elevation shadow makes the tile read as
-        // lifted off the row.
+        // Always keep `transform` in the transition list — only the
+        // duration toggles (0s while grabbed so the live pointer-follow
+        // is instant; 0.22s otherwise). If transition-property itself
+        // were swapped between grabbed and not-grabbed, the same-commit
+        // value change on release would land before the new transition
+        // list activates, and the tile would snap instead of glide.
+        // `instantTransform` overrides duration to 0s for one frame
+        // during the post-settle reorder commit.
+        transition: (effectiveGrabbed || instantTransform)
+          ? 'transform 0s, box-shadow 0.12s ease'
+          : 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease',
+        // Grabbed tile follows the pointer in real time (translateX tracks
+        // the finger, no transition so it's instant). Non-grabbed tiles use
+        // dragOffsetX as a slot-shift indicator: while a sibling is being
+        // dragged across them, neighbors slide one slot in the appropriate
+        // direction to open an empty drop spot at the eventual landing.
+        transform: effectiveGrabbed
+          ? `translateX(${dragOffsetX}px) scale(1.08)`
+          : `translateX(${dragOffsetX}px) scale(1)`,
         boxShadow: effectiveGrabbed ? '0 6px 16px rgba(0,0,0,0.35)' : 'none',
-        transition: 'transform 0.12s ease, box-shadow 0.12s ease',
         zIndex: effectiveGrabbed ? 2 : undefined,
       }}
     >
