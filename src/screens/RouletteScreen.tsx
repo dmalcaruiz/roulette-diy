@@ -584,45 +584,10 @@ export default function RouletteScreen({
   // position already matches its phase-1 visible position, so no visual
   // jump occurs and no FLIP is needed.)
 
-  // ── DEBUG: trace the row's render+layout state across the release ──
-  // Logs every render with the relevant state, then in a useLayoutEffect
-  // logs the post-commit bounding rect, inline transform, and inline
-  // transition for each preview tile. Drop a tile and look for the moment
-  // a tile's `boundingLeft` jumps unexpectedly — that's the bounce frame.
-  const renderCounterRef = useRef(0);
-  renderCounterRef.current += 1;
-  if (flowSteps && flowSteps.length > 0) {
-    // Full step ids per render so we can see exactly when keys change.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[Reorder] render #${renderCounterRef.current}`,
-      `grabbedIndex=${grabbedIndex} dropTargetIndex=${dropTargetIndex} dragOffsetX=${dragOffsetX}`,
-      `isSettling=${isSettling} isCommitting=${isCommitting}`,
-      `\n  flowSteps=[${flowSteps.map(s => s.id).join(' | ')}]`,
-    );
-  }
-  useLayoutEffect(() => {
-    if (!flowSteps || flowSteps.length === 0) return;
-    const els = tileElsRef.current;
-    flowSteps.forEach((step, i) => {
-      const el = els[i];
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const inner = el.querySelector('div') as HTMLElement | null;
-      const wrapperStyle = (el as HTMLElement).style;
-      // Bypass dbg's truncation — print the full transform/transition
-      // strings so we can spot a pop-in scale(0.6) or stale FLIP value.
-      const wrapperComputed = window.getComputedStyle(el);
-      const innerRect = inner?.getBoundingClientRect();
-      const innerComputed = inner ? window.getComputedStyle(inner) : null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[Reorder] layout #${renderCounterRef.current} idx=${i} id=${step.id}`,
-        `\n  wrapper: rect.left=${Math.round(rect.left)} rect.width=${Math.round(rect.width)} inlineTransform=${wrapperStyle.transform || '∅'} computedTransform=${wrapperComputed.transform} computedAnim=${wrapperComputed.animationName}`,
-        `\n  inner:   rect.left=${innerRect ? Math.round(innerRect.left) : '∅'} rect.width=${innerRect ? Math.round(innerRect.width) : '∅'} inlineTransform=${inner?.style.transform || '∅'} computedTransform=${innerComputed?.transform} computedAnim=${innerComputed?.animationName}`,
-      );
-    });
-  });
+  // (Reorder render/layout debug logging removed — the post-commit bounce
+  // was traced to a leftover el.animate() useLayoutEffect that fired
+  // scale(0.6) keyframes on tiles whose array index changed. With that
+  // legacy effect deleted the row drops cleanly without per-render logs.)
 
   // Slot-shift offset for a non-grabbed neighbor at index `i` while the user
   // is dragging the tile at `sourceIndex` toward `dropTargetIndex`. Tiles
@@ -774,28 +739,18 @@ export default function RouletteScreen({
         // neighbors hold their drag positions throughout. The 0.22s
         // matches every other transition in the row.
         const finalOffset = (currentTarget - sourceIndex) * SLOT_WIDTH;
-        dbg('Reorder', 'phase1:start', { sourceIndex, currentTarget, finalOffset });
         setIsSettling(true);
         setDragOffsetX(finalOffset);
         settleTimeoutRef.current = setTimeout(() => {
           settleTimeoutRef.current = null;
-          dbg('Reorder', 'phase2:timeout-fired', { sourceIndex, currentTarget });
           // Suppress transform transitions for the commit frame, then
           // re-enable on next rAF so subsequent ops animate normally.
           setIsCommitting(true);
           finishRelease(true);
-          requestAnimationFrame(() => {
-            dbg('Reorder', 'phase2:rAF-cleared');
-            setIsCommitting(false);
-          });
+          requestAnimationFrame(() => setIsCommitting(false));
         }, 220);
       } else {
-        // No move OR drag-back-to-source.
-        if (!dragged) {
-          dbg('RouletteScreen', 'ctx:open-via-reorder-up', { index: sourceIndex });
-          setCtxMenuIndex(sourceIndex);
-        }
-        dbg('Reorder', 'no-commit', { sourceIndex, dragged });
+        if (!dragged) setCtxMenuIndex(sourceIndex);
         finishRelease(false);
       }
     };
@@ -2045,17 +2000,6 @@ function PreviewTile({
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didLongPressRef = useRef(false);
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
-  // Per-instance debug: capture stack on mount/unmount + a stable instance id.
-  const instanceIdRef = useRef(Math.random().toString(36).slice(2, 6));
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log(`[PreviewTile#${instanceIdRef.current}] MOUNT idx=${index} active=${active}`);
-    return () => {
-      // eslint-disable-next-line no-console
-      console.log(`[PreviewTile#${instanceIdRef.current}] UNMOUNT idx=${index}`);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Standalone fallback: when there is no reorder handler (no flow), a
   // long-press still needs to open the context menu on release.
   const primedForContextRef = useRef(false);
