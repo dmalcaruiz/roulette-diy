@@ -99,6 +99,13 @@ export default function RouletteScreen({
     }
     prevSheetTabRef.current = next;
     setSheetTab(next);
+    // When closing via the chip path (tapping the active chip), match the
+    // X button behavior: reset sheetHeight immediately so the wheel grows
+    // back to its full size in step with the sheet sliding down. Without
+    // this, the wheel-area sizing only catches up via SnappingSheet's
+    // height-polling rAF, which occasionally lands short and leaves the
+    // wheel smaller than its open-screen baseline.
+    if (next === null) setSheetHeight(0);
   }, []);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
