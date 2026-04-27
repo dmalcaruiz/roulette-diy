@@ -4,9 +4,9 @@ import {
   signInAnonymously,
   signOut as fbSignOut,
   linkWithPopup,
-  linkWithRedirect,
   signInWithPopup,
-  signInWithRedirect,
+  signInWithCredential,
+  GoogleAuthProvider,
   type User,
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
@@ -101,14 +101,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithGoogle = async () => {
-    // If we have an anonymous user, prefer linking — keeps the same uid so
-    // their drafts and Experiences come with them. Fall back to a regular
-    // popup sign-in if linking fails (e.g. credential already in use), and
-    // fall back to a full-page redirect if the popup is blocked (some
-    // browsers / extensions / strict COOP setups refuse the popup).
+    // Popup-only flow. Two cases:
+    //   (a) we have an anonymous user → linkWithPopup, which preserves the
+    //       same uid so their drafts come with them.
+    //   (b) no user OR a non-anonymous user → signInWithPopup.
+    //
+    // If linkWithPopup throws `auth/credential-already-in-use`, the Google
+    // identity is already tied to a different Firebase account. We can't
+    // open a second popup (the user's click gesture is consumed by the
+    // first one), but we don't need to: the failed link error carries the
+    // OAuth credential we already obtained. Extract it via
+    // GoogleAuthProvider.credentialFromError and sign in with it directly
+    // — no popup, no redirect, no second user click required. The anon
+    // uid is abandoned in the process (data on it is currently lost; a
+    // cross-uid migration is a follow-up).
     const current = auth.currentUser;
-    const isPopupBlocked = (e: any) =>
-      e?.code === 'auth/popup-blocked' ||
+    const popupCancelled = (e: any) =>
       e?.code === 'auth/popup-closed-by-user' ||
       e?.code === 'auth/cancelled-popup-request';
 
@@ -117,28 +125,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await linkWithPopup(current, googleProvider);
         return;
       } catch (e: any) {
+        if (popupCancelled(e)) return;
         if (e?.code === 'auth/credential-already-in-use') {
-          // Another account already exists for this Google identity. Sign in
-          // to it directly; the anon uid is abandoned (data not migrated yet
-          // — that's a follow-up).
-          try {
-            await signInWithPopup(auth, googleProvider);
-            return;
-          } catch (e2: any) {
-            if (e2?.code === 'auth/popup-blocked') {
-              await signInWithRedirect(auth, googleProvider);
-              return;
-            }
-            if (e2?.code === 'auth/popup-closed-by-user') return;
-            throw e2;
-          }
-        }
-        if (e?.code === 'auth/popup-closed-by-user') return;
-        if (e?.code === 'auth/popup-blocked') {
-          // Linking via popup blocked — switch to redirect. linkWithRedirect
-          // resolves on the next page load via getRedirectResult; the auth
-          // listener will pick up the linked user automatically.
-          await linkWithRedirect(current, googleProvider);
+          const credential = GoogleAuthProvider.credentialFromError(e);
+          if (!credential) throw e; // shouldn't happen, but bail
+          // Sign in to the existing account using the credential we just
+          // obtained. signInWithCredential replaces the current (anon)
+          // session with the existing real user — no popup, no redirect.
+          await signInWithCredential(auth, credential);
           return;
         }
         throw e;
@@ -148,11 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (e: any) {
-      if (e?.code === 'auth/popup-blocked') {
-        await signInWithRedirect(auth, googleProvider);
-        return;
-      }
-      if (isPopupBlocked(e)) return; // closed/cancelled — silently no-op
+      if (popupCancelled(e)) return;
       throw e;
     }
   };

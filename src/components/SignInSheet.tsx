@@ -35,7 +35,11 @@ export default function SignInSheet({ reason = 'default', onClose, onSignedIn }:
       onClose();
     } catch (e: any) {
       console.error('Google sign-in failed:', e);
-      setErr('Sign-in failed. Please try again.');
+      if (e?.code === 'auth/popup-blocked') {
+        setErr('Your browser blocked the sign-in popup. Allow popups for this site, then try again.');
+      } else {
+        setErr('Sign-in failed. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
