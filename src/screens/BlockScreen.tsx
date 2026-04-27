@@ -169,6 +169,12 @@ export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScre
   const redirectedOnceRef = useRef(false);
   useEffect(() => {
     if (redirectedOnceRef.current) { dbg('BlockScreen', 'redirect:already-done'); return; }
+    // In-app navigation always passes flowSteps in route state (profile,
+    // tile-tap, +-add). Those paths already pick the intended step at the
+    // navigation source, so we don't need to override here. Only fire the
+    // Firestore-backed redirect for true deep links — URL pastes, browser
+    // refreshes, shared links — which arrive without flowSteps state.
+    if (state?.flowSteps) { dbg('BlockScreen', 'redirect:skip-in-app-nav'); return; }
     if (!state?.editMode) return;
     if (!block || !user) return;
     const parentId = (block as Block & { parentExperienceId?: string | null }).parentExperienceId;

@@ -584,10 +584,19 @@ export default function RouletteScreen({
   // position already matches its phase-1 visible position, so no visual
   // jump occurs and no FLIP is needed.)
 
-  // (Reorder render/layout debug logging removed — the post-commit bounce
-  // was traced to a leftover el.animate() useLayoutEffect that fired
-  // scale(0.6) keyframes on tiles whose array index changed. With that
-  // legacy effect deleted the row drops cleanly without per-render logs.)
+  // ── Reorder debug logging ──────────────────────────────────────────
+  // Logs the row's flowSteps id ordering whenever it changes. Combined
+  // with the [Tile#id] MOUNT/UNMOUNT logs in PreviewTile, you can see
+  // whether React preserved instances across a reorder or recreated them.
+  const prevFlowOrderRef = useRef<string>('');
+  useEffect(() => {
+    const order = (flowSteps ?? []).map(s => s.id).join(' | ');
+    if (order !== prevFlowOrderRef.current) {
+      // eslint-disable-next-line no-console
+      console.log(`[Row] order changed\n  prev=[${prevFlowOrderRef.current}]\n  next=[${order}]`);
+      prevFlowOrderRef.current = order;
+    }
+  }, [flowSteps]);
 
   // Slot-shift offset for a non-grabbed neighbor at index `i` while the user
   // is dragging the tile at `sourceIndex` toward `dropTargetIndex`. Tiles
@@ -739,18 +748,28 @@ export default function RouletteScreen({
         // neighbors hold their drag positions throughout. The 0.22s
         // matches every other transition in the row.
         const finalOffset = (currentTarget - sourceIndex) * SLOT_WIDTH;
+        // eslint-disable-next-line no-console
+        console.log(`[Reorder] phase1:start source=${sourceIndex} target=${currentTarget} finalOffset=${finalOffset}`);
         setIsSettling(true);
         setDragOffsetX(finalOffset);
         settleTimeoutRef.current = setTimeout(() => {
           settleTimeoutRef.current = null;
+          // eslint-disable-next-line no-console
+          console.log(`[Reorder] phase2:commit source=${sourceIndex} target=${currentTarget}`);
           // Suppress transform transitions for the commit frame, then
           // re-enable on next rAF so subsequent ops animate normally.
           setIsCommitting(true);
           finishRelease(true);
-          requestAnimationFrame(() => setIsCommitting(false));
+          requestAnimationFrame(() => {
+            // eslint-disable-next-line no-console
+            console.log(`[Reorder] phase2:rAF-cleared`);
+            setIsCommitting(false);
+          });
         }, 220);
       } else {
         if (!dragged) setCtxMenuIndex(sourceIndex);
+        // eslint-disable-next-line no-console
+        console.log(`[Reorder] no-commit source=${sourceIndex} dragged=${dragged}`);
         finishRelease(false);
       }
     };
@@ -1100,6 +1119,14 @@ export default function RouletteScreen({
               wheel (or a new wheel is appended and navigated-to). */}
           <div
             key={block.id}
+            onAnimationStart={(e) => {
+              // eslint-disable-next-line no-console
+              console.log(`[WheelCanvas] animation START name=${e.animationName} block=${block.id} wheelTransition=${wheelTransition ?? '∅'}`);
+            }}
+            onAnimationEnd={(e) => {
+              // eslint-disable-next-line no-console
+              console.log(`[WheelCanvas] animation END   name=${e.animationName} block=${block.id}`);
+            }}
             style={{
               animation: wheelTransition === 'right'
                 ? 'slide-in-from-right 0.5s cubic-bezier(0.32, 0.72, 0, 1) both'
@@ -1266,6 +1293,7 @@ export default function RouletteScreen({
                         dragOffsetX={grabbedIndex === idx ? dragOffsetX : computeSlotOffset(idx)}
                         instantTransform={isCommitting}
                         skipPopIn={seenTileIds.has(step.id)}
+                        debugId={step.id}
                         onClick={isActive ? () => {
                           // Tapping the already-selected tile opens the
                           // context menu (which has an "Edit wheel" action
@@ -1315,6 +1343,7 @@ export default function RouletteScreen({
                   <PreviewTile
                     active
                     skipPopIn={seenTileIds.has(block.id)}
+                    debugId={block.id}
                     onClick={() => setCtxMenuIndex(0)}
                     onContextOpen={() => setCtxMenuIndex(0)}
                   >
@@ -1325,6 +1354,7 @@ export default function RouletteScreen({
               <TileWithLabel label="">
               <PreviewTile
                 skipPopIn={seenTileIds.has('__plus__')}
+                debugId="+"
                 onClick={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
                   dbg('RouletteScreen', 'plus:click', {
@@ -1964,7 +1994,7 @@ function ToggleRow({ label, icon, value, onChange }: {
 
 function PreviewTile({
   onClick, onContextOpen, onGrabStart,
-  index, active, grabbed, dragOffsetX = 0, instantTransform, innerRef, shouldSuppressClick, skipPopIn, children,
+  index, active, grabbed, dragOffsetX = 0, instantTransform, innerRef, shouldSuppressClick, skipPopIn, debugId, children,
 }: {
   onClick?: () => void;
   // Right-click handler (no hold required).
@@ -1995,6 +2025,9 @@ function PreviewTile({
   // wheels don't re-pop when the standalone-tile JSX is replaced by the
   // flow-tile JSX (e.g. on the very first +-add).
   skipPopIn?: boolean;
+  // Step id (or "+" for the add tile) — passed only so mount/unmount
+  // logs can identify which wheel a tile represents across remounts.
+  debugId?: string;
   children: React.ReactNode;
 }) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2007,6 +2040,19 @@ function PreviewTile({
   // For flow tiles the parent also passes `grabbed`, which wins; for
   // standalone tiles (no parent state), this is the only source.
   const [isGrabbedLocal, setIsGrabbedLocal] = useState(false);
+  // Mount / unmount tracing — distinguishes "React preserved the instance
+  // and re-rendered" (no log) from "React unmounted the old and mounted a
+  // new" (UNMOUNT then MOUNT log).
+  const tileInstanceIdRef = useRef(Math.random().toString(36).slice(2, 6));
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log(`[Tile#${tileInstanceIdRef.current}] MOUNT idx=${index} debugId=${debugId ?? '?'}`);
+    return () => {
+      // eslint-disable-next-line no-console
+      console.log(`[Tile#${tileInstanceIdRef.current}] UNMOUNT idx=${index} debugId=${debugId ?? '?'}`);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const effectiveGrabbed = !!grabbed || isGrabbedLocal;
 
   const clearLongPress = () => {
