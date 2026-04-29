@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Block, BlockType, newRouletteBlock, newListRandomizerBlock } from './models/types';
-import { loadDrafts, saveDraft, deleteDraft, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
+import { loadDrafts, saveDraft, deleteDraft, saveDraftOrder, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
 import { dbg, sid, sids } from './utils/debugLog';
 import { useAuth } from './contexts/AuthContext';
 import LoginScreen from './screens/LoginScreen';
@@ -87,6 +87,41 @@ export default function App() {
     await saveDraft(user.uid, duplicate);
     reload();
   }, [user, reload]);
+
+  // Profile-tab drag-reorder commit. `orderedIds` is the new order of the
+  // *displayed* (top-level, non-child) blocks. We re-sort blocks state so
+  // top-level blocks follow that order while keeping child blocks adjacent
+  // to their parent (preserving the children's relative order). The
+  // Firestore write writes a fresh `order` index for every block in the
+  // new sequence, so loadDrafts(orderBy('order')) returns this exact order
+  // on the next cold load.
+  const handleBlockReorder = useCallback((orderedIds: string[]) => {
+    if (!user) return;
+    setBlocks(prev => {
+      const byId = new Map(prev.map(b => [b.id, b]));
+      const childrenByParent = new Map<string, CloudBlock[]>();
+      for (const b of prev) {
+        if (b.parentExperienceId) {
+          const arr = childrenByParent.get(b.parentExperienceId) ?? [];
+          arr.push(b);
+          childrenByParent.set(b.parentExperienceId, arr);
+        }
+      }
+      const next: CloudBlock[] = [];
+      for (const id of orderedIds) {
+        const b = byId.get(id);
+        if (!b) continue;
+        next.push(b);
+        const kids = childrenByParent.get(b.id);
+        if (kids) next.push(...kids);
+      }
+      // Persist in the background; on failure the next reload reconciles.
+      saveDraftOrder(user.uid, next.map(b => b.id)).catch(e => {
+        console.error('saveDraftOrder failed:', e);
+      });
+      return next;
+    });
+  }, [user]);
 
   const handleBlockDelete = useCallback((id: string) => {
     if (!user) return;
@@ -261,6 +296,7 @@ export default function App() {
         onBlockEdit={openForEditing}
         onBlockDuplicate={handleBlockDuplicate}
         onBlockDelete={handleBlockDelete}
+        onBlockReorder={handleBlockReorder}
       />
       <Routes>
         <Route path="/" element={null} />
@@ -332,9 +368,10 @@ interface AppShellProps {
   onBlockEdit: (block: CloudBlock) => void;
   onBlockDuplicate: (block: CloudBlock) => void;
   onBlockDelete: (id: string) => void;
+  onBlockReorder: (orderedIds: string[]) => void;
 }
 
-function AppShell({ blocks, blocksLoaded, onCreateBlock, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete }: AppShellProps) {
+function AppShell({ blocks, blocksLoaded, onCreateBlock, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete, onBlockReorder }: AppShellProps) {
   // Persist the selected tab across AppShell remounts (e.g. when the user
   // navigates to /block/:id and then presses back, AppShell re-mounts at /
   // and would otherwise reset to Feed).
@@ -360,6 +397,7 @@ function AppShell({ blocks, blocksLoaded, onCreateBlock, onBlockTap, onBlockEdit
             onBlockEdit={onBlockEdit}
             onBlockDuplicate={onBlockDuplicate}
             onBlockDelete={onBlockDelete}
+            onBlockReorder={onBlockReorder}
           />
         )}
       </div>

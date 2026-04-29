@@ -18,10 +18,11 @@ interface MyProfileScreenProps {
   onBlockEdit: (block: CloudBlock) => void;
   onBlockDuplicate: (block: CloudBlock) => void;
   onBlockDelete: (id: string) => void;
+  onBlockReorder?: (orderedIds: string[]) => void;
 }
 
 export default function MyProfileScreen({
-  blocks, blocksLoaded, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete,
+  blocks, blocksLoaded, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete, onBlockReorder,
 }: MyProfileScreenProps) {
   const navigate = useNavigate();
   const { user, profile, isAnonymous, signOut } = useAuth();
@@ -46,6 +47,7 @@ export default function MyProfileScreen({
           onBlockTap={onBlockTap}
           onBlockDuplicate={onBlockDuplicate}
           onBlockDelete={onBlockDelete}
+          onBlockReorder={onBlockReorder}
         />
         {showSignIn && (
           <SignInSheet reason="save" onClose={() => setShowSignIn(false)} />
@@ -129,6 +131,7 @@ export default function MyProfileScreen({
           onBlockEdit={onBlockEdit}
           onBlockDuplicate={onBlockDuplicate}
           onBlockDelete={onBlockDelete}
+          onReorder={onBlockReorder}
         />
         )}
       </div>
@@ -256,10 +259,11 @@ interface AnonymousProfileProps {
   onBlockEdit: (block: CloudBlock) => void;
   onBlockDuplicate: (block: CloudBlock) => void;
   onBlockDelete: (id: string) => void;
+  onBlockReorder?: (orderedIds: string[]) => void;
 }
 
 function AnonymousProfile({
-  blocks, blocksLoaded, onSignIn, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete,
+  blocks, blocksLoaded, onSignIn, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete, onBlockReorder,
 }: AnonymousProfileProps) {
   return (
     <div style={{ height: '100%', overflowY: 'auto', backgroundColor: '#FFF' }}>
@@ -313,6 +317,7 @@ function AnonymousProfile({
             onBlockEdit={onBlockEdit}
             onBlockDuplicate={onBlockDuplicate}
             onBlockDelete={onBlockDelete}
+            onReorder={onBlockReorder}
           />
         )}
       </div>
