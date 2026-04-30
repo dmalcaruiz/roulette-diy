@@ -103,21 +103,14 @@ export default function SwipeableActionCell({
     if (!isDraggingRef.current) return;
 
     let newOffset = startOffsetRef.current + dx;
-    // Forbid over-drag past a side snap. When the gesture started from a
-    // snapped state (offset already at a non-zero rest position), further
-    // motion in the same direction is clamped to the start — the cell
-    // can drag back toward rest (and through to the opposite side if
-    // those actions exist), but can't go deeper into the side it's
-    // already at. From rest (start = 0) all motion is unrestricted up
-    // to the per-side max.
-    if (startOffsetRef.current < 0) {
-      newOffset = Math.max(newOffset, startOffsetRef.current);
-    } else if (startOffsetRef.current > 0) {
-      newOffset = Math.min(newOffset, startOffsetRef.current);
-    }
-    const maxRight = leadingActions.length > 0 ? 300 : 0;
-    const maxLeft = trailingActions.length > 0 ? 300 : 0;
-    newOffset = Math.max(-maxLeft, Math.min(maxRight, newOffset));
+    // Cap travel at the snap position on each side — the card cannot be
+    // dragged past where it would rest after release, regardless of
+    // whether the gesture started from rest or from an existing snap.
+    // The snap is the hard end-of-track; no rubber-band, no full-swipe
+    // overshoot. (`expandOnFullSwipe` actions still fire via tap.)
+    const trailingSnap = trailingActions.length > 0 ? trailingActions.length * 60 + 6 : 0;
+    const leadingSnap = leadingActions.length > 0 ? leadingActions.length * 60 + 6 : 0;
+    newOffset = Math.max(-trailingSnap, Math.min(leadingSnap, newOffset));
     setOffset(newOffset);
     // Track the revealed side so the action buttons stay mounted during a
     // cancel-back-to-rest animation. Don't reset at exactly 0 mid-drag —

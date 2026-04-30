@@ -20,6 +20,16 @@ const EXPERIENCE_COLOR = '#c827d4';
 // neighbor offsets land in the gap naturally.
 const ROW_GAP = 10;
 
+// Color scheme mirrors PreviewTile in RouletteScreen so the row reads as
+// the same kind of 3D card surface: top face + bottom face + halo all
+// derived from the same `#F4F4F5` light-gray, with `#E4E4E7` for the top
+// face's inner stroke.
+const BLOCK_TOP_BG = '#F4F4F5';
+const BLOCK_INNER_STROKE = '#E4E4E7';
+// The card's bottom-face/halo color, hoisted so BlockRow can compose it
+// into the row's combined boxShadow alongside the drop shadow.
+const BLOCK_HALO_COLOR = oklchShadow(BLOCK_TOP_BG);
+
 function colorForType(type: BlockType): string {
   switch (type) {
     case 'roulette': return ROULETTE_COLOR;
@@ -471,12 +481,17 @@ function BlockRow({
         zIndex: isGrabbed ? 5 : undefined,
         transform,
         transition,
-        boxShadow: isGrabbed ? '0 12px 24px rgba(0,0,0,0.18)' : 'none',
-        // Matches the halo's outer radius (bottom-face radius 21 + 3.5
-        // halo spread = 24.5), so the drag-shadow rounds at the same
-        // arc as the visible card's outer halo edge — no rounded-cutout
-        // mismatch where the page background peeks through.
-        borderRadius: 24.5,
+        // Mirrors PreviewTile in RouletteScreen: the halo (3.5px ring at
+        // 25% alpha) is rendered as the row's *outer* boxShadow, sitting
+        // OUTSIDE the row's box. The drop shadow, when grabbed, is
+        // composited on top — and emerges from the row's edge directly
+        // (no spread/inset trick), because the row's box now matches the
+        // visible container exactly (top face + bottom face peek, no
+        // halo padding inside).
+        boxShadow: isGrabbed
+          ? `0 0 0 3.5px ${BLOCK_HALO_COLOR}40, 0 12px 24px rgba(0,0,0,0.18)`
+          : `0 0 0 3.5px ${BLOCK_HALO_COLOR}40`,
+        borderRadius: 21,
         // While grabbed, kill native touch pan so the page doesn't scroll
         // under the user's finger during reorder.
         touchAction: isGrabbed ? 'none' : undefined,
@@ -521,7 +536,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
   asFlow?: boolean;
   allBlocks?: CloudBlock[];
 }) {
-  const bottomColor = oklchShadow('#FFFFFF');
+  const bottomColor = BLOCK_HALO_COLOR;
   const typeColor = asFlow ? EXPERIENCE_COLOR : colorForType(block.type);
   const TypeIcon = asFlow ? Compass : iconForType(block.type);
   const isPublished = !!block.publishedWheelId;
@@ -550,39 +565,30 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
   })();
 
   return (
-    // Outer wrapper reserves room on every side where the bottom face's
-    // 3.5px halo ring would otherwise extend past the SwipeableActionCell's
-    // overflow:hidden clip box: 3.5px on left/right, and (peek 6.5 + halo
-    // 3.5) = 10px on bottom. The top face uses a negative horizontal
-    // margin to span back to the original card width — only the bottom
-    // face is inset, so its halo fills the reserved padding cleanly.
-    <div onClick={onTap} style={{ cursor: 'pointer', padding: '0 3.5px 10px' }}>
+    // paddingBottom: 6.5 reserves room inside the SwipeableActionCell's
+    // overflow:hidden clip box for the bottom face's peek to render. The
+    // halo ring is now on the BlockRow itself (as an outer boxShadow), so
+    // we don't need any horizontal padding here — the halo extends outside
+    // the row entirely, mirroring how PreviewTile in RouletteScreen lets
+    // its bottom-layer halo extend outside the tile root.
+    <div onClick={onTap} style={{ cursor: 'pointer', paddingBottom: 6.5 }}>
       <div style={{ position: 'relative' }}>
-        {/* Bottom face — matches the preview tile's bottom-layer recipe:
-            same color as the fill, with a 3.5px halo ring at 25% alpha.
-            Top is shifted up by 3.5 (the halo's spread) so the halo's
-            outer rounded shape extends all the way to the BlockRow's
-            top edge — without that, a thin strip at the top of the row
-            would have no halo and the page background would show through
-            BlockRow's rounded corners while the row was lifted by the
-            drag-shadow. The bottom face sits behind the top face, so
-            the extra 3.5 of vertical extent isn't visible — only the
-            halo it generates reaches the row edge. */}
+        {/* Bottom face — solid color only; the halo ring lives on the
+            BlockRow's outer boxShadow and extends past the SwipeableAction-
+            Cell's clip box. Peeks 6.5px below the top face. */}
         <div style={{
           position: 'absolute',
-          left: 0, right: 0, top: 3.5, bottom: -6.5,
+          left: 0, right: 0, top: 6.5, bottom: -6.5,
           borderRadius: 21,
           backgroundColor: bottomColor,
-          boxShadow: `0 0 0 3.5px ${bottomColor}40`,
         }} />
-        {/* Top face — sits inside the wrapper's 3.5px horizontal padding
-            so the bottom face's halo ring fills that gap and lines up
-            with the outer edges. */}
+        {/* Top face — same recipe as PreviewTile's top layer:
+            #F4F4F5 fill with a 3px #E4E4E7 inner stroke. */}
         <div style={{
           position: 'relative',
           borderRadius: 21,
-          backgroundColor: '#FFFFFF',
-          border: `2.5px solid ${BORDER}`,
+          backgroundColor: BLOCK_TOP_BG,
+          border: `3px solid ${BLOCK_INNER_STROKE}`,
           padding: '12px 14px',
           display: 'flex',
           alignItems: 'center',
