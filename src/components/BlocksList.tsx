@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { CloudBlock } from '../services/blockService';
 import { BlockType, getBlockTypeLabel, getBlockItemCountLabel } from '../models/types';
 import WheelThumbnail from './WheelThumbnail';
@@ -133,6 +133,39 @@ export default function BlocksList({
     rowHeights: number[];
     sourceSlotHeight: number; // sourceRow box height + ROW_GAP
   } | null>(null);
+
+  // Lock the parent scroll container while a row is being dragged. Without
+  // this, a touch pan on a phone would scroll the page under the user's
+  // finger — the dragged row would visually drift and the snapshot-based
+  // hit-test would mis-target the drop slot. Walks up the DOM from the
+  // grabbed row to find every scrollable ancestor and freezes them all
+  // (overflow:hidden + touch-action:none), restoring on release.
+  useEffect(() => {
+    if (grabbedIndex === null) return;
+    const el = rowElsRef.current[grabbedIndex];
+    if (!el) return;
+    const frozen: { el: HTMLElement; prevOverflow: string; prevTouchAction: string }[] = [];
+    let cur: HTMLElement | null = el.parentElement;
+    while (cur) {
+      const cs = getComputedStyle(cur);
+      if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflowX)) {
+        frozen.push({
+          el: cur,
+          prevOverflow: cur.style.overflow,
+          prevTouchAction: cur.style.touchAction,
+        });
+        cur.style.overflow = 'hidden';
+        cur.style.touchAction = 'none';
+      }
+      cur = cur.parentElement;
+    }
+    return () => {
+      frozen.forEach(({ el, prevOverflow, prevTouchAction }) => {
+        el.style.overflow = prevOverflow;
+        el.style.touchAction = prevTouchAction;
+      });
+    };
+  }, [grabbedIndex]);
 
   // Slot-shift offset for a non-grabbed row at index `i` while the user
   // is dragging the row at `sourceIndex` toward `dropTargetIndex`. Rows

@@ -1224,7 +1224,12 @@ export default function RouletteScreen({
                 flexShrink: 0,
                 gap: 10,
                 minWidth: 0,
-                overflowX: 'auto',
+                // Lock horizontal scroll while a tile is being dragged —
+                // on touch devices, native pan would otherwise slide the
+                // row under the user's finger, throwing off hit-testing
+                // and the drop indicator. Re-enables on release.
+                overflowX: grabbedIndex !== null ? 'hidden' : 'auto',
+                touchAction: grabbedIndex !== null ? 'none' : undefined,
                 // Setting overflow-x to anything but visible forces overflow-y
                 // to clip per CSS spec — that crops the grabbed tile's scale
                 // halo + shadow. Padding gives the lifted state room INSIDE
