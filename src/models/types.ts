@@ -24,7 +24,10 @@ export interface WheelConfig {
   centerMarkerSize: number;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
-  segmentsMode?: 'simple' | 'complex';
+  // 'list'  = textarea, one segment per line (former 'simple').
+  // 'cards' = expandable cards with full per-segment controls (former
+  //           'complex'). Default for new wheels.
+  segmentsMode?: 'list' | 'cards';
 }
 
 export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfig {
@@ -42,7 +45,7 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     centerMarkerSize: 200,
     innerCornerStyle: 'none',
     centerInset: 50,
-    segmentsMode: 'simple',
+    segmentsMode: 'cards',
     ...overrides,
   };
 }

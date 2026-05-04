@@ -12,6 +12,13 @@ interface SnappingSheetProps {
   onCollapsed?: () => void;
   /** Called with current height in px as sheet moves */
   onHeightChange?: (h: number) => void;
+  /** Returns true when sheet drag gestures should be suppressed. Checked
+   *  synchronously inside every pointer handler, so a competing gesture
+   *  inside the sheet (e.g. drag-to-reorder a list item) can flip the
+   *  lock via a ref and have it picked up on the very next pointermove
+   *  — no React-render delay. Any in-flight scroll-drag is released the
+   *  first time a locked move arrives. */
+  isDragLocked?: () => boolean;
   children: React.ReactNode;
   visible: boolean;
 }
@@ -22,6 +29,7 @@ export default function SnappingSheet({
   bottomOffset = 0,
   onCollapsed,
   onHeightChange,
+  isDragLocked,
   children,
   visible,
 }: SnappingSheetProps) {
@@ -97,15 +105,36 @@ export default function SnappingSheet({
     setKeepMounted(false);
   }, [visible]);
 
+  // Cancels any in-flight handle-drag or scroll-drag. Called synchronously
+  // from the pointer handlers the moment isDragLocked() goes true, so the
+  // sheet snaps back to its current snap target rather than stranding
+  // mid-drag with no further events arriving.
+  const releaseInFlightDrag = useCallback(() => {
+    if (dragging) {
+      setDragging(false);
+      setDragOffset(0);
+    }
+    if (isScrollDraggingRef.current) {
+      isScrollDraggingRef.current = false;
+      scrollDragActiveRef.current = false;
+      scrollDragPointerIdRef.current = null;
+      setScrollDragOffset(0);
+      const scrollEl = scrollRef.current;
+      if (scrollEl) scrollEl.style.overflowY = 'auto';
+    }
+  }, [dragging]);
+
   // ── Handle grab bar drag ──────────────────────────────────────────
   const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (isDragLocked?.()) return;
     startYRef.current = e.clientY;
     startHeightRef.current = targetHeight;
     setDragging(true);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [targetHeight]);
+  }, [targetHeight, isDragLocked]);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (isDragLocked?.()) { releaseInFlightDrag(); return; }
     if (!dragging) return;
     const dy = e.clientY - startYRef.current;
     setDragOffset(dy);
@@ -113,7 +142,7 @@ export default function SnappingSheet({
     // same React commit as the sheet itself — otherwise the red footer lags
     // by a frame behind the sheet during drag.
     onHeightChangeRef.current?.(startHeightRef.current - dy);
-  }, [dragging]);
+  }, [dragging, isDragLocked, releaseInFlightDrag]);
 
   const onPointerUp = useCallback(() => {
     if (!dragging) return;
@@ -123,15 +152,17 @@ export default function SnappingSheet({
 
   // ── Scroll-to-drag handoff on content area ────────────────────────
   const onScrollPointerDown = useCallback((e: React.PointerEvent) => {
+    if (isDragLocked?.()) return;
     scrollDragStartYRef.current = e.clientY;
     scrollDragPointerIdRef.current = e.pointerId;
     scrollDragActiveRef.current = false;
     returnToScrollRef.current = false;
     isScrollDraggingRef.current = false;
     setScrollDragOffset(0);
-  }, []);
+  }, [isDragLocked]);
 
   const onScrollPointerMove = useCallback((e: React.PointerEvent) => {
+    if (isDragLocked?.()) { releaseInFlightDrag(); return; }
     if (scrollDragPointerIdRef.current !== e.pointerId) return;
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
@@ -164,7 +195,7 @@ export default function SnappingSheet({
       setScrollDragOffset(0);
       e.preventDefault();
     }
-  }, [targetHeight]);
+  }, [targetHeight, isDragLocked, releaseInFlightDrag]);
 
   const onScrollPointerUp = useCallback(() => {
     const scrollEl = scrollRef.current;

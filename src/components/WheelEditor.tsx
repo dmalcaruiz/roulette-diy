@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { oklchShadow, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
@@ -32,7 +32,7 @@ export interface EditorState {
   centerMarkerSize: number;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
-  segmentsMode: 'simple' | 'complex';
+  segmentsMode: 'list' | 'cards';
 }
 
 interface WheelEditorProps {
@@ -45,6 +45,11 @@ interface WheelEditorProps {
   // editor manages its own tab state (legacy behavior).
   selectedTab?: number;
   onTabChange?: (tab: number) => void;
+  // Fires when a segment-reorder gesture activates / releases. Lets the
+  // hosting screen lock parent gestures (e.g. the SnappingSheet's
+  // scroll-to-drag handoff) so the sheet doesn't slide while a card is
+  // being dragged.
+  onReorderActiveChange?: (active: boolean) => void;
 }
 
 let segmentIdCounter = 0;
@@ -80,7 +85,12 @@ export function buildInitialState(config?: WheelConfig | null): EditorState {
     centerMarkerSize: config?.centerMarkerSize ?? 200,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
-    segmentsMode: config?.segmentsMode ?? 'simple',
+    // Migrate the legacy 'simple'/'complex' values from older saved wheels
+    // into the new 'list'/'cards' vocabulary. New wheels default to
+    // 'cards' (the more expressive editor).
+    segmentsMode: ((config?.segmentsMode as unknown) === 'simple' ? 'list'
+      : (config?.segmentsMode as unknown) === 'complex' ? 'cards'
+      : config?.segmentsMode ?? 'cards'),
   };
 }
 
@@ -111,7 +121,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 
 export default function WheelEditor({
   initialConfig, history, onPreview, onClose,
-  selectedTab: selectedTabProp, onTabChange,
+  selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -125,66 +135,36 @@ export default function WheelEditor({
   // Mode lives on EditorState so it persists per-wheel through the same
   // save cycle as everything else (Firestore round-trip, undo/redo).
   const segmentsMode = state.segmentsMode;
-  const setSegmentsMode = (v: 'simple' | 'complex') => {
+  const setSegmentsMode = (v: 'list' | 'cards') => {
     if (v !== stateRef.current.segmentsMode) {
       set({ ...stateRef.current, segmentsMode: v });
     }
   };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const draggingIdRef = useRef<string | null>(null);
-  // Live pointer-follow offset for the row currently being dragged. Tracks
-  // (pointerY - dragStartY) minus an accumulated reorder delta — so when the
-  // row jumps to a new natural slot at a snap threshold, the visible position
-  // stays continuous under the pointer instead of teleporting with the slot.
+
+  // ── Reorder state — same two-phase release pattern as RouletteScreen's
+  // preview row and BlocksList card list. The grabbed row sits in its
+  // original DOM slot, follows the pointer with translateY, while
+  // neighbors between source and dropTarget slide ±sourceSlotHeight to
+  // open the empty drop slot. On release: phase 1 glides the grabbed row
+  // to the drop slot via the same 0.22s easing as neighbors; phase 2
+  // commits the array reorder atomically while `isCommitting` suppresses
+  // the transform transition for one paint frame so the natural-position
+  // shift doesn't re-animate on top of the now-zero translateY.
+  const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
   const [dragOffsetY, setDragOffsetY] = useState(0);
-  const reorderDeltaRef = useRef(0);
-  const rowHeightRef = useRef(0);
-  // FLIP animation bookkeeping: snapshot each row's screen-Y before every
-  // commit, then on the next layout reverse-translate from the old position
-  // and animate to the new one. Makes the non-dragged rows visibly slide
-  // into their new slots when the dragged row crosses a threshold.
-  const prevRowTopsRef = useRef<Record<string, number>>({});
+  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
+  const [isSettling, setIsSettling] = useState(false);
+  const [isCommitting, setIsCommitting] = useState(false);
+  const dragSnapshotRef = useRef<{
+    rowTops: number[];
+    rowHeights: number[];
+    sourceSlotHeight: number; // measured row height + outer marginBottom (SEGMENT_ROW_GAP)
+  } | null>(null);
+  const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
-  draggingIdRef.current = draggingId;
-
-  // FLIP: after every render where segment positions changed, find rows that
-  // moved and animate them from their old screen-Y to their new one. We skip
-  // the dragged row (it has its own pointer-tracking translateY) and any
-  // currently-mid-animation row would be replaced by the new one — fine,
-  // these are short. Runs every render but only does work on actual moves.
-  useLayoutEffect(() => {
-    const els = segmentElsRef.current;
-    const newTops: Record<string, number> = {};
-    segments.forEach((seg, i) => {
-      const el = els[i];
-      if (el) newTops[seg.id] = el.getBoundingClientRect().top;
-    });
-
-    const prev = prevRowTopsRef.current;
-    segments.forEach((seg, i) => {
-      if (seg.id === draggingIdRef.current) return; // dragged row owns its own transform
-      const el = els[i];
-      if (!el) return;
-      const oldTop = prev[seg.id];
-      const newTop = newTops[seg.id];
-      if (oldTop === undefined || newTop === undefined) return;
-      const delta = oldTop - newTop;
-      if (Math.abs(delta) < 1) return;
-      // Reverse-translate to old position with no transition,
-      // then on next frame animate back to identity.
-      el.style.transition = 'none';
-      el.style.transform = `translateY(${delta}px)`;
-      // Force a reflow so the browser applies the pre-state before transitioning.
-      void el.offsetHeight;
-      el.style.transition = 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)';
-      el.style.transform = '';
-    });
-
-    prevRowTopsRef.current = newTops;
-  }, [segments]);
 
   // Keep a ref to current state for use in pointer handlers
   const stateRef = useRef(state);
@@ -196,6 +176,36 @@ export default function WheelEditor({
     onPreview(stateToConfig(state, configId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Lock the parent scroll container while a row is being dragged. Same
+  // recipe as BlocksList — walks up to find every scrollable ancestor,
+  // sets overflow:hidden + touch-action:none, restores on release.
+  useEffect(() => {
+    if (grabbedIndex === null) return;
+    const el = segmentElsRef.current[grabbedIndex];
+    if (!el) return;
+    const frozen: { el: HTMLElement; prevOverflow: string; prevTouchAction: string }[] = [];
+    let cur: HTMLElement | null = el.parentElement;
+    while (cur) {
+      const cs = getComputedStyle(cur);
+      if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflowX)) {
+        frozen.push({
+          el: cur,
+          prevOverflow: cur.style.overflow,
+          prevTouchAction: cur.style.touchAction,
+        });
+        cur.style.overflow = 'hidden';
+        cur.style.touchAction = 'none';
+      }
+      cur = cur.parentElement;
+    }
+    return () => {
+      frozen.forEach(({ el, prevOverflow, prevTouchAction }) => {
+        el.style.overflow = prevOverflow;
+        el.style.touchAction = prevTouchAction;
+      });
+    };
+  }, [grabbedIndex]);
 
   // --- Discrete actions (push to history) ---
 
@@ -236,98 +246,185 @@ export default function WheelEditor({
     patch({ segments: newSegs });
   };
 
-  // --- Drag reorder ---
+  // --- Drag reorder (two-phase release) ---
 
-  const handleGripPointerDown = useCallback((index: number, e: React.PointerEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+  // Marker for code that needs to read `patch`/`commit` if anyone reaches in
+  // — currently the reorder uses `set` for a single discrete history push
+  // on phase-2 commit, but kept here so an inline patch path can be added
+  // back without re-threading the dependency tree.
+  void patch; void commit;
 
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const dragId = segmentsRef.current[index].id;
-    let dragActivated = false;
-    let decided = false;
-    let currentIndex = index;
+  // The 8px inter-row gap now lives on the SegmentRow's outer marginBottom
+  // (mirroring BlockRow in BlocksList). Margin is OUTSIDE the row's box,
+  // so getBoundingClientRect.height excludes it — slot-shift math adds
+  // the gap to compute neighbor displacement.
+  const SEGMENT_ROW_GAP = 8;
+
+  // Slot-shift offset for a non-grabbed row at index `i` while the user
+  // is dragging the row at `grabbedIndex` toward `dropTargetIndex`.
+  const computeSlotOffset = (i: number): number => {
+    if (grabbedIndex === null || dropTargetIndex === null) return 0;
+    if (i === grabbedIndex) return 0;
+    const slot = dragSnapshotRef.current?.sourceSlotHeight ?? 0;
+    if (dropTargetIndex > grabbedIndex) {
+      if (i > grabbedIndex && i <= dropTargetIndex) return -slot;
+    } else if (dropTargetIndex < grabbedIndex) {
+      if (i >= dropTargetIndex && i < grabbedIndex) return slot;
+    }
+    return 0;
+  };
+
+  const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
+    if (settleTimeoutRef.current) {
+      clearTimeout(settleTimeoutRef.current);
+      settleTimeoutRef.current = null;
+    }
+    // Synchronous notify — host (e.g. SnappingSheet's parent) can flip a
+    // ref / state immediately so its pointer handlers see the locked
+    // value on the very next pointermove. Doing this via useEffect would
+    // delay the signal by one commit and let the sheet drag a few px
+    // under the user's finger before the lock engaged.
+    onReorderActiveChange?.(true);
+
+    const rowTops: number[] = [];
+    const rowHeights: number[] = [];
+    segmentElsRef.current.forEach(el => {
+      if (el) {
+        const r = el.getBoundingClientRect();
+        rowTops.push(r.top);
+        rowHeights.push(r.height);
+      } else {
+        rowTops.push(0);
+        rowHeights.push(0);
+      }
+    });
+    const sourceSlotHeight = (rowHeights[sourceIndex] ?? 0) + SEGMENT_ROW_GAP;
+    dragSnapshotRef.current = { rowTops, rowHeights, sourceSlotHeight };
+
+    let currentTarget = sourceIndex;
+    setGrabbedIndex(sourceIndex);
+    setDragOffsetY(0);
+    setDropTargetIndex(sourceIndex);
+    // Collapse the card on grab — its expanded controls would otherwise
+    // jitter the slot-shift math and aren't relevant during drag.
+    setExpandedIndex(null);
 
     const onMove = (me: PointerEvent) => {
       const dx = me.clientX - startX;
       const dy = me.clientY - startY;
+      setDragOffsetY(dy);
+      // 10px threshold before shifting neighbors — same as PreviewTile,
+      // avoids twitchy slot indicators on sub-pixel jitter at start.
+      if (Math.hypot(dx, dy) < 10) return;
 
-      if (!decided) {
-        if (Math.abs(dy) > 8) {
-          decided = true;
-          dragActivated = true;
-          // Measure the row height once so we can compensate for slot jumps
-          // while keeping the dragged row glued to the pointer.
-          const el = segmentElsRef.current[index];
-          rowHeightRef.current = el?.offsetHeight ?? 0;
-          reorderDeltaRef.current = 0;
-          setDraggingId(dragId);
-          setExpandedIndex(null);
-        } else if (Math.abs(dx) > 8) {
-          decided = true;
-          window.removeEventListener('pointermove', onMove);
-          window.removeEventListener('pointerup', onUp);
-          return;
-        }
-        return;
-      }
-
-      if (!dragActivated) return;
-
-      // Live pointer-follow for the dragged row. Subtracting the cumulative
-      // reorder delta keeps the row visually under the pointer even after a
-      // slot jump (when its natural position has shifted by ±rowHeight).
-      setDragOffsetY((me.clientY - startY) - reorderDeltaRef.current);
-
-      let target = segmentsRef.current.length - 1;
-      const els = segmentElsRef.current;
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i];
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (me.clientY < rect.top + rect.height / 2) {
+      const snap = dragSnapshotRef.current!;
+      let target = snap.rowTops.length - 1;
+      for (let i = 0; i < snap.rowTops.length; i++) {
+        const mid = snap.rowTops[i] + snap.rowHeights[i] / 2;
+        if (me.clientY < mid) {
           target = i;
           break;
         }
       }
       target = Math.max(0, Math.min(target, segmentsRef.current.length - 1));
+      if (target === currentTarget) return;
+      currentTarget = target;
+      setDropTargetIndex(target);
+    };
 
-      if (target !== currentIndex) {
-        const direction = target - currentIndex;
-        const newSegs = [...segmentsRef.current];
-        const [moved] = newSegs.splice(currentIndex, 1);
-        newSegs.splice(target, 0, moved);
-        // Use patch for live visual feedback during drag
-        patch({ segments: newSegs });
-        // Compensate offset by the slot delta so the row stays glued to the
-        // pointer across the snap.
-        reorderDeltaRef.current += direction * rowHeightRef.current;
-        setDragOffsetY((me.clientY - startY) - reorderDeltaRef.current);
-        currentIndex = target;
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+
+    const finishRelease = (commitNow: boolean) => {
+      if (commitNow && currentTarget !== sourceIndex) {
+        const next = [...segmentsRef.current];
+        const [moved] = next.splice(sourceIndex, 1);
+        next.splice(currentTarget, 0, moved);
+        // Single discrete history push — no live patch during drag.
+        set({ ...stateRef.current, segments: next });
       }
+      setGrabbedIndex(null);
+      setDragOffsetY(0);
+      setDropTargetIndex(null);
+      setIsSettling(false);
+      dragSnapshotRef.current = null;
+      onReorderActiveChange?.(false);
+    };
+
+    const releaseToTarget = () => {
+      const snap = dragSnapshotRef.current!;
+      const sourceTop = snap.rowTops[sourceIndex];
+      const finalOffset = currentTarget > sourceIndex
+        ? snap.rowTops[currentTarget] + snap.rowHeights[currentTarget] - snap.rowHeights[sourceIndex] - sourceTop
+        : snap.rowTops[currentTarget] - sourceTop;
+      setIsSettling(true);
+      setDragOffsetY(finalOffset);
+      settleTimeoutRef.current = setTimeout(() => {
+        settleTimeoutRef.current = null;
+        setIsCommitting(true);
+        finishRelease(true);
+        requestAnimationFrame(() => setIsCommitting(false));
+      }, 220);
     };
 
     const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-
-      if (dragActivated) {
-        setDraggingId(null);
-        setDragOffsetY(0);
-        reorderDeltaRef.current = 0;
-        // Commit the reorder as a discrete action
-        commit();
-      }
-
-      if (!decided) {
-        setExpandedIndex(prev => prev === index ? null : index);
-      }
+      cleanup();
+      if (currentTarget !== sourceIndex) releaseToTarget();
+      else finishRelease(false);
+    };
+    const onCancel = () => {
+      cleanup();
+      if (currentTarget !== sourceIndex) releaseToTarget();
+      else finishRelease(false);
     };
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-  }, [patch, commit]);
+    window.addEventListener('pointercancel', onCancel);
+  }, [set, onReorderActiveChange]);
+
+  // Direct grab on the GripVertical icon — kept as a separate fast path
+  // alongside the long-press-anywhere path. 8px vertical movement before
+  // activation distinguishes a drag from a tap-to-toggle (which falls
+  // through to the row's onClick to expand/collapse).
+  const handleGripPointerDown = useCallback((sourceIndex: number, e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let activated = false;
+
+    const onMove = (me: PointerEvent) => {
+      if (activated) return;
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+      if (Math.abs(dy) > 8) {
+        activated = true;
+        cleanup();
+        // Hand off to the shared handleGrabStart, which attaches its own
+        // window listeners and runs the snapshot + slot-shift + release.
+        handleGrabStart(sourceIndex, startX, startY);
+      } else if (Math.abs(dx) > 8) {
+        cleanup();
+      }
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    const onUp = () => {
+      cleanup();
+      // No drag activated — let the click event bubble to the row's
+      // onClick (toggle expand/collapse).
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }, [handleGrabStart]);
 
   // --- Keyboard shortcut ---
   useEffect(() => {
@@ -358,23 +455,30 @@ export default function WheelEditor({
     const textColor = isExpanded ? ON_SURFACE : '#FFFFFF';
 
     const card = (
-      <div key={segment.id} style={{ marginBottom: 8, paddingBottom: 6.5 }}>
+      // paddingBottom: 6.5 reserves room inside the SwipeableActionCell's
+      // overflow:hidden clip box for the bottom face peek. The halo ring
+      // and drop shadow live on the outer SegmentRow (mirroring BlockRow
+      // in BlocksList), so no horizontal padding is needed here — the
+      // halo extends past the SwipeableActionCell entirely.
+      <div key={segment.id} style={{ paddingBottom: 6.5 }}>
         {/* 3D Card */}
         <div style={{ position: 'relative' }}>
-          {/* Bottom face */}
+          {/* Bottom face — solid color only; the halo ring lives on the
+              SegmentRow's outer boxShadow. */}
           <div style={{
             position: 'absolute',
             left: 0, right: 0, top: 6.5, bottom: -6.5,
             borderRadius: 21,
             backgroundColor: bottomColor,
-            border: `2.5px solid ${oklchShadow(isExpanded ? segment.color : segment.color, 0.16)}`,
           }} />
-          {/* Top face */}
+          {/* Top face — 3px inner stroke (matches the BlocksList recipe;
+              uses a darker shade of the segment color so colored cards
+              still feel coherent). */}
           <div style={{
             position: 'relative',
             borderRadius: 21,
             backgroundColor: bgColor,
-            border: `${isExpanded ? 3 : 2.5}px solid ${borderColor}`,
+            border: `3px solid ${borderColor}`,
             overflow: 'hidden',
             transition: 'background-color 0.2s, border-color 0.2s',
           }}>
@@ -560,6 +664,7 @@ export default function WheelEditor({
     return (
       <SwipeableActionCell
         key={segment.id}
+        disabled={grabbedIndex === index}
         trailingActions={[
           {
             color: PRIMARY,
@@ -642,7 +747,7 @@ export default function WheelEditor({
         }}
       />
       <p style={{ fontSize: 12, color: withAlpha(ON_SURFACE, 0.45), margin: '8px 4px 0' }}>
-        One name per line. Switch to Complex to customize colors, weights, and images.
+        One name per line. Switch to Cards to customize colors, weights, and images.
       </p>
       <div style={{ height: 24 }} />
     </div>
@@ -732,36 +837,44 @@ export default function WheelEditor({
     <div style={{ padding: '4px 20px 16px' }}>
       {selectedTab === 1 ? renderStyleTab() : (
         <>
-          <SimpleComplexToggle value={segmentsMode} onChange={setSegmentsMode} />
-          {segmentsMode === 'simple' ? renderSimpleMode() : (
+          <SegmentsModeToggle value={segmentsMode} onChange={setSegmentsMode} />
+          {segmentsMode === 'list' ? renderSimpleMode() : (
             <>
               {segments.map((seg, i) => {
-                const isDraggingThis = draggingId === seg.id;
-                // For non-dragged rows we leave transform/transition entirely
-                // unset by React — FLIP writes them directly to the DOM in a
-                // useLayoutEffect, and we don't want React to clobber those
-                // values on the next re-render.
-                const baseStyle: React.CSSProperties = {
-                  position: 'relative',
-                  zIndex: isDraggingThis ? 5 : 1,
-                  opacity: isDraggingThis ? 0.85 : 1,
-                };
-                const draggingStyle: React.CSSProperties = isDraggingThis ? {
-                  transform: `translateY(${dragOffsetY}px)`,
-                  // No transform-transition on the dragged row — it must
-                  // follow the pointer instantly, no easing.
-                  transition: 'opacity 0.15s',
-                  boxShadow: '0 8px 18px rgba(0,0,0,0.18)',
-                  borderRadius: 14,
-                } : {};
+                const isGrabbed = grabbedIndex === i;
+                const slotOffset = isGrabbed ? dragOffsetY : computeSlotOffset(i);
+                const grabbedNotSettling = isGrabbed && !isSettling;
+                // Keep `transform` in the transition list always — only
+                // duration toggles. While grabbed (mid-drag) the transform
+                // must follow the pointer with no easing; while settling
+                // it glides at 0.22s; on the commit frame it must be
+                // instant so the natural-position shift doesn't re-animate
+                // on top of a now-zero translateY.
+                const transition = (grabbedNotSettling || isCommitting)
+                  ? 'transform 0s, box-shadow 0.12s ease'
+                  : 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease';
+                const transform = isGrabbed
+                  ? `translateY(${slotOffset}px) scale(1.04)`
+                  : `translateY(${slotOffset}px) scale(1)`;
+                // Halo color tracks each segment's bottom-face color so a
+                // colored card's ring matches its own palette.
+                const haloColor = oklchShadow(seg.color);
                 return (
-                  <div
+                  <SegmentRow
                     key={seg.id}
-                    ref={el => { segmentElsRef.current[i] = el; }}
-                    style={{ ...baseStyle, ...draggingStyle }}
+                    innerRef={el => { segmentElsRef.current[i] = el; }}
+                    index={i}
+                    isGrabbed={isGrabbed}
+                    transform={transform}
+                    transition={transition}
+                    haloColor={haloColor}
+                    // Long-press is gated to the collapsed state — when the
+                    // card is open, all the inner controls (color picker,
+                    // weight buttons, text input) need raw pointer access.
+                    onLongPressActivate={expandedIndex === i ? undefined : handleGrabStart}
                   >
                     {renderSegmentCard(seg, i)}
-                  </div>
+                  </SegmentRow>
                 );
               })}
               <div style={{ height: 12 }} />
@@ -786,8 +899,9 @@ export default function WheelEditor({
   );
 }
 
-// Two-mode toggle pill for Segments: "Simple" (textarea) vs "Complex" (cards).
-function SimpleComplexToggle({ value, onChange }: { value: 'simple' | 'complex'; onChange: (v: 'simple' | 'complex') => void }) {
+// Two-mode toggle pill for Segments: "List" (textarea) vs "Cards"
+// (expandable per-segment cards). 'cards' is the default for new wheels.
+function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onChange: (v: 'list' | 'cards') => void }) {
   return (
     <div style={{
       display: 'flex',
@@ -796,7 +910,7 @@ function SimpleComplexToggle({ value, onChange }: { value: 'simple' | 'complex';
       padding: 3,
       marginBottom: 14,
     }}>
-      {(['simple', 'complex'] as const).map(mode => {
+      {(['cards', 'list'] as const).map(mode => {
         const isActive = value === mode;
         return (
           <button
@@ -825,6 +939,113 @@ function SimpleComplexToggle({ value, onChange }: { value: 'simple' | 'complex';
     </div>
   );
 }
+
+// ── Row wrapper that owns the long-press → reorder activation ────────────
+// Mirrors BlockRow in BlocksList: 300ms long-press anywhere on the card,
+// 8px movement during the press cancels the timer (preserving normal
+// vertical scroll + horizontal swipe-to-reveal-actions paths). On fire,
+// releases any pointer capture the inner SwipeableActionCell took, and
+// suppresses the click that follows so the card doesn't toggle on drop.
+// Long-press activation is gated by the parent passing onLongPressActivate
+// (omitted when the card is currently expanded, so its inner controls get
+// raw pointer access).
+function SegmentRow({
+  index, isGrabbed, transform, transition, haloColor, onLongPressActivate, innerRef, children,
+}: {
+  index: number;
+  isGrabbed: boolean;
+  transform: string;
+  transition: string;
+  // Hex color of the row's halo ring (per-segment in WheelEditor since
+  // each card is colored). The 25% alpha is appended here.
+  haloColor: string;
+  onLongPressActivate?: (index: number, startX: number, startY: number) => void;
+  innerRef?: (el: HTMLDivElement | null) => void;
+  children: React.ReactNode;
+}) {
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startPosRef = useRef<{ x: number; y: number } | null>(null);
+  const capturedRef = useRef<{ target: Element; pointerId: number } | null>(null);
+  const didLongPressRef = useRef(false);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  return (
+    <div
+      ref={innerRef}
+      onClickCapture={e => {
+        if (didLongPressRef.current) {
+          e.stopPropagation();
+          e.preventDefault();
+          didLongPressRef.current = false;
+        }
+      }}
+      onPointerDown={onLongPressActivate ? (e => {
+        if (e.button === 2) return;
+        didLongPressRef.current = false;
+        startPosRef.current = { x: e.clientX, y: e.clientY };
+        capturedRef.current = { target: e.target as Element, pointerId: e.pointerId };
+        const sx = e.clientX;
+        const sy = e.clientY;
+        longPressTimerRef.current = setTimeout(() => {
+          longPressTimerRef.current = null;
+          didLongPressRef.current = true;
+          const cap = capturedRef.current;
+          if (cap && cap.target.hasPointerCapture?.(cap.pointerId)) {
+            cap.target.releasePointerCapture(cap.pointerId);
+          }
+          onLongPressActivate(index, sx, sy);
+        }, 300);
+      }) : undefined}
+      onPointerMove={onLongPressActivate ? (e => {
+        const start = startPosRef.current;
+        if (!start) return;
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (Math.hypot(dx, dy) > 8) clearLongPress();
+      }) : undefined}
+      onPointerUp={onLongPressActivate ? (() => {
+        clearLongPress();
+        startPosRef.current = null;
+      }) : undefined}
+      onPointerCancel={onLongPressActivate ? (() => {
+        clearLongPress();
+        startPosRef.current = null;
+      }) : undefined}
+      style={{
+        marginBottom: 8,
+        position: 'relative',
+        zIndex: isGrabbed ? 5 : undefined,
+        transform,
+        transition,
+        // Halo ring (3.5px @ 25% alpha) lives on the row as an outer
+        // boxShadow, sitting OUTSIDE the SwipeableActionCell's clip box.
+        // When grabbed, the drop shadow is composited on top — and emerges
+        // directly from the row's edge (no spread/inset trick), since the
+        // row's box now matches the visible container exactly.
+        boxShadow: isGrabbed
+          ? `0 0 0 3.5px ${haloColor}40, 0 12px 24px rgba(0,0,0,0.18)`
+          : `0 0 0 3.5px ${haloColor}40`,
+        borderRadius: 21,
+        touchAction: isGrabbed ? 'none' : undefined,
+        WebkitTouchCallout: 'none',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// Lock the parent scroll container while a row is being dragged. Walks up
+// from the grabbed row and freezes overflow + touch-action on every
+// scrollable ancestor, restoring on release. Same recipe as BlocksList.
 
 // ── Setting Slider ────────────────────────────────────────────────────────
 

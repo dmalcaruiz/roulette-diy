@@ -42,19 +42,26 @@ interface RouletteScreenProps {
   // host (BlockScreen) can refresh the preview row without navigating. Also
   // called on rollback with the previous values if persistence fails.
   onFlowChange?: (experience: CloudBlock | undefined, steps: CloudBlock[]) => void;
+  // Switch the active wheel locally without going through React Router.
+  // BlockScreen swaps its `block` state in place — saves a render-pipeline
+  // round-trip vs `navigate()`. The URL stays at the entry block; tile
+  // switching is treated as session-local UI state, not a navigation.
+  onSwitchActive?: (block: CloudBlock) => void;
 }
 
 export default function RouletteScreen({
   block, editMode = false, onBlockUpdated, onBlockDelete, onRequestPublish,
-  flowSteps, flowExperience, onFlowChange,
+  flowSteps, flowExperience, onFlowChange, onSwitchActive,
 }: RouletteScreenProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  // Wheel-switch slide direction is passed via navigation state from the tile
-  // tap handler. 'right' = forward through the flow, 'left' = backward, undefined
-  // = creation / deep-link / external navigation (use central fade-in instead).
-  const wheelTransition = (location.state as { wheelTransition?: 'left' | 'right' } | null)?.wheelTransition;
+  // Wheel-switch slide direction. Initial mount reads from navigation state
+  // (so a deep-link or +-add can opt into a slide). Subsequent tile taps use
+  // local state — switching is now session-local (no navigate), so the
+  // direction needs somewhere to live that survives the in-place block swap.
+  const initialWheelTransition = (location.state as { wheelTransition?: 'left' | 'right' } | null)?.wheelTransition;
+  const [wheelTransition, setWheelTransition] = useState<'left' | 'right' | undefined>(initialWheelTransition);
   const wheelRef = useRef<SpinningWheelHandle>(null);
   const [backgroundColor, setBackgroundColor] = useState('#000000');
   const [textColor, setTextColor] = useState('#FFFFFF');
@@ -157,6 +164,16 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
+  // True while a segment-reorder gesture is active inside the WheelEditor.
+  // Stored in a ref so the SnappingSheet can read it synchronously from
+  // its pointer handlers — using state would lag by one render commit
+  // and let the sheet drag a few px under the finger before the lock
+  // engaged.
+  const editorReorderingRef = useRef(false);
+  const handleEditorReorderingChange = useCallback((active: boolean) => {
+    editorReorderingRef.current = active;
+  }, []);
+  const isEditorReordering = useCallback(() => editorReorderingRef.current, []);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // activeConfig: previewConfig wins only if it belongs to the CURRENT block.
   // Comparing by wheelConfig.id protects against stale previewConfig carrying
@@ -539,6 +556,16 @@ export default function RouletteScreen({
   //  - Midpoint hit-testing via getBoundingClientRect for smoother swaps.
   const tileElsRef = useRef<(HTMLDivElement | null)[]>([]);
   const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
+  // Optimistic "tapped" tile id — set the moment the user taps a preview
+  // so the active highlight moves immediately, without waiting for the
+  // navigate() → BlockScreen useEffect → setBlock → re-render pipeline
+  // (which costs 1–2 frames the user perceives as a stutter). Cleared on
+  // the next render where block.id has caught up.
+  const [optimisticActiveId, setOptimisticActiveId] = useState<string | null>(null);
+  useEffect(() => {
+    if (optimisticActiveId === block.id) setOptimisticActiveId(null);
+  }, [block.id, optimisticActiveId]);
+  const effectiveActiveId = optimisticActiveId ?? block.id;
   // Live pointer-follow offset for the grabbed tile. Plain (pointerX - startX)
   // — no slot-swap compensation needed because the array isn't reordered
   // during the drag; the tile stays in its original DOM slot the whole time.
@@ -1242,10 +1269,15 @@ export default function RouletteScreen({
             >
               {flowSteps && flowSteps.length > 0 ? (
                 flowSteps.map((step, idx) => {
-                  const isActive = step.id === block.id;
+                  const isActive = step.id === effectiveActiveId;
+                  // `isCurrent` is the still-real selection (used for things
+                  // tied to the actually-loaded wheel state — preview items,
+                  // header label — which haven't been swapped yet during an
+                  // optimistic-active window).
+                  const isCurrent = step.id === block.id;
                   const items = step.wheelConfig?.items ?? [];
-                  const previewItems = isActive ? activeConfig.items : items;
-                  const wheelLabel = (isActive ? activeConfig.name : step.wheelConfig?.name) || step.name;
+                  const previewItems = isCurrent ? activeConfig.items : items;
+                  const wheelLabel = (isCurrent ? activeConfig.name : step.wheelConfig?.name) || step.name;
                   // Live rename — called on every keystroke. Active wheel uses
                   // editorHistory.patch so typing fills a single undo entry
                   // instead of flooding one-per-keystroke; non-active wheels
@@ -1272,17 +1304,14 @@ export default function RouletteScreen({
                   // navigates so edits land on the right one.
                   const onLabelFocus = isTouchPrimary
                     ? () => openRenameSheet(idx)
-                    : (isActive ? undefined : () => {
+                    : (isCurrent ? undefined : () => {
+                        setOptimisticActiveId(step.id);
                         flushAutoSave();
                         const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
-                        const dir = idx > fromIdx ? 'right' : 'left';
-                        // replace: true so switching previews doesn't push a
-                        // new history entry (otherwise X/back would just
-                        // unwind through each tile switch).
-                        navigate(`/block/${step.id}`, {
-                          replace: true,
-                          state: { block: step, editMode: true, flowExperience, flowSteps, wheelTransition: dir },
-                        });
+                        setWheelTransition(idx > fromIdx ? 'right' : 'left');
+                        // Local in-place swap — host swaps `block` directly,
+                        // no navigate / route-state hop / BlockScreen useEffect.
+                        onSwitchActive?.(step);
                       });
                   return (
                     <TileWithLabel
@@ -1306,7 +1335,7 @@ export default function RouletteScreen({
                         instantTransform={isCommitting}
                         skipPopIn={seenTileIds.has(step.id)}
                         debugId={step.id}
-                        onClick={isActive ? () => {
+                        onClick={isCurrent ? () => {
                           // Tapping the already-selected tile opens the
                           // context menu (which has an "Edit wheel" action
                           // at the top to jump into the Segments sheet).
@@ -1318,22 +1347,18 @@ export default function RouletteScreen({
                             flowExp: sid(flowExperience?.id ?? null),
                             flowSteps: sids(flowSteps),
                           });
+                          // Optimistic highlight — paint the tapped tile as
+                          // active *this frame*. Cleared automatically once
+                          // block.id catches up.
+                          setOptimisticActiveId(step.id);
                           flushAutoSave();
                           const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
-                          const dir = idx > fromIdx ? 'right' : 'left';
-                          // replace: true so switching previews doesn't push
-                          // a new history entry — X/back should exit the
-                          // editor, not unwind through each tile switch.
-                          navigate(`/block/${step.id}`, {
-                            replace: true,
-                            state: {
-                              block: step,
-                              editMode: true,
-                              flowExperience,
-                              flowSteps,
-                              wheelTransition: dir,
-                            },
-                          });
+                          setWheelTransition(idx > fromIdx ? 'right' : 'left');
+                          // Local in-place swap — BlockScreen swaps `block`
+                          // directly. No navigate, no route-state hop, no
+                          // BlockScreen useEffect → setBlock → re-render
+                          // round-trip. The URL stays at the entry block.
+                          onSwitchActive?.(step);
                         }}
                         onContextOpen={() => setCtxMenuIndex(idx)}
                         onGrabStart={handleGrabStart}
@@ -1466,6 +1491,7 @@ export default function RouletteScreen({
             initialSnap={1}
             onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
+            isDragLocked={isEditorReordering}
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
@@ -1490,6 +1516,7 @@ export default function RouletteScreen({
                 history={wrappedEditorHistory}
                 onPreview={handleWheelPreview}
                 selectedTab={sheetTab === 'segments' ? 0 : 1}
+                onReorderActiveChange={handleEditorReorderingChange}
               />
             )}
             {sheetTab === 'settings' && (

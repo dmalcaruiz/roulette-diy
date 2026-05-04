@@ -258,6 +258,11 @@ export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScre
           setFlowExperience(exp, 'onFlowChange');
           setFlowSteps(steps, 'onFlowChange');
         }}
+        // Switch the active wheel without going through React Router. This
+        // saves a render-pipeline round-trip vs navigate() — the tile
+        // highlight + wheel canvas update on the very next render rather
+        // than waiting for the route-state useEffect.
+        onSwitchActive={b => setBlock(b)}
       />
 
       {/* Publish / settings overlay — slides up over the editor. */}
