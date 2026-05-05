@@ -1,4 +1,23 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
+
+// Module-level audio pool — created once per session, reused across every
+// SpinningWheel mount. Previously the pool was built inside a mount-effect,
+// which meant tapping a different preview tile (which remounts the wheel
+// canvas via a keyed wrapper) synchronously instantiated 20 new HTMLAudio
+// elements with preload='auto' on the main thread — visibly stuttering the
+// switch by ~50-100ms on mobile.
+let sharedAudioPool: HTMLAudioElement[] | null = null;
+function getSharedAudioPool(): HTMLAudioElement[] {
+  if (sharedAudioPool) return sharedAudioPool;
+  const pool: HTMLAudioElement[] = [];
+  for (let i = 0; i < 20; i++) {
+    const audio = new Audio('/audio/click.mp3');
+    audio.preload = 'auto';
+    pool.push(audio);
+  }
+  sharedAudioPool = pool;
+  return pool;
+}
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 
@@ -65,23 +84,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
 
-  // Audio pool
+  // Audio pool — points at the module-level shared pool, lazy-initialized on
+  // first access. No per-mount instantiation cost; no per-unmount teardown
+  // (the elements outlive any single SpinningWheel and get garbage-collected
+  // when the page closes).
   const audioPoolRef = useRef<HTMLAudioElement[]>([]);
   const audioIndexRef = useRef(0);
-
-  // Initialize audio pool
-  useEffect(() => {
-    const pool: HTMLAudioElement[] = [];
-    for (let i = 0; i < 20; i++) {
-      const audio = new Audio('/audio/click.mp3');
-      audio.preload = 'auto';
-      pool.push(audio);
-    }
-    audioPoolRef.current = pool;
-    return () => {
-      pool.forEach(a => { a.pause(); a.src = ''; });
-    };
-  }, []);
+  if (audioPoolRef.current.length === 0) audioPoolRef.current = getSharedAudioPool();
 
   const playClick = useCallback(() => {
     if (audioPoolRef.current.length === 0) return;
