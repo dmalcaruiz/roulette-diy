@@ -6,8 +6,6 @@ import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, 
 // switches by ~50-100ms.
 let sharedAudioPool: HTMLAudioElement[] | null = null;
 let sharedAudioIndex = 0;
-let audioUnlocked = false;
-
 function getSharedAudioPool(): HTMLAudioElement[] {
   if (sharedAudioPool) return sharedAudioPool;
   const pool: HTMLAudioElement[] = [];
@@ -18,29 +16,6 @@ function getSharedAudioPool(): HTMLAudioElement[] {
   }
   sharedAudioPool = pool;
   return pool;
-}
-
-// MUST be called from inside a real user-gesture handler (e.g. the spin
-// click). iOS Safari only unlocks an audio element for off-gesture
-// playback if play() is called on *that specific element* during a
-// gesture; warming just one wouldn't help the other 19 in the pool, so
-// the deferred plays would silently no-op. play().then(pause) starts
-// the element and immediately pauses it — silent, but the element is
-// now flagged as user-activated for the rest of the session.
-function unlockAudioPool(): void {
-  if (audioUnlocked) return;
-  audioUnlocked = true;
-  const pool = getSharedAudioPool();
-  for (const audio of pool) {
-    try {
-      const p = audio.play();
-      if (p && typeof p.then === 'function') {
-        p.then(() => audio.pause()).catch(() => {});
-      } else {
-        audio.pause();
-      }
-    } catch {}
-  }
 }
 
 // Fired from inside the spin rAF on each segment crossing. The actual
@@ -244,11 +219,18 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
 
-    // The spin tap is a real user gesture — unlock every element in the
-    // audio pool now (once per session) so the deferred plays during
-    // the rAF loop can fire without being blocked by autoplay policies
-    // on iOS Safari et al.
-    unlockAudioPool();
+    // The spin click is a user gesture — warm up the audio pool so the
+    // first deferred play() call doesn't trip the browser's autoplay
+    // gating. play() inside a user-gesture handler unlocks the element
+    // for subsequent off-gesture playback.
+    const pool = getSharedAudioPool();
+    if (pool.length > 0) {
+      try {
+        const warm = pool[0];
+        warm.currentTime = 0;
+        warm.play().catch(() => {});
+      } catch {}
+    }
 
     isSpinningRef.current = true;
     setIsSpinning(true);
