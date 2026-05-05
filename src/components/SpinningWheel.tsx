@@ -43,6 +43,33 @@ function ensureClickBuffer(): Promise<void> {
 // decoded and ready.
 ensureClickBuffer();
 
+// AudioContext starts suspended in every modern browser and only
+// transitions to 'running' after a user gesture calls resume(). The
+// resume itself is async, so if we wait until spin() to call it, the
+// first spin's `ctx.state === 'running'` check fails and every click
+// for that spin gets skipped — silent first spin, working subsequent
+// ones (the symptom the user reported).
+//
+// Bootstrap once at module load: capture the *very first* pointer/touch/
+// key gesture anywhere on the page and resume the context then. By the
+// time the user finds the spin button and taps it, the context is
+// already running and scheduling works on the first try.
+if (typeof document !== 'undefined') {
+  const unlock = () => {
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    // Also nudge buffer load — fetch may have failed silently if the
+    // module-load attempt ran before the document was ready.
+    ensureClickBuffer();
+    document.removeEventListener('pointerdown', unlock, true);
+    document.removeEventListener('touchstart', unlock, true);
+    document.removeEventListener('keydown', unlock, true);
+  };
+  document.addEventListener('pointerdown', unlock, true);
+  document.addEventListener('touchstart', unlock, true);
+  document.addEventListener('keydown', unlock, true);
+}
+
 function playClickInline(): void {
   const ctx = sharedAudioCtx;
   const buf = sharedClickBuffer;
@@ -326,11 +353,18 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     scheduledSourcesRef.current = [];
     const ctx = sharedAudioCtx;
     const buf = sharedClickBuffer;
-    if (ctx && buf && ctx.state === 'running') {
-      const audioBaseTime = ctx.currentTime;
-      // Sample the easing curve at high resolution; whenever consecutive
-      // samples land in different segments, schedule a click at that
-      // sample's predicted wall-clock offset.
+    // Capture wall-clock spin start so the schedule can compensate for
+    // any delay if the AudioContext is still resuming (edge case: spin
+    // tap is the user's first-ever gesture, so resume() and spin() race).
+    const scheduleStartPerf = performance.now();
+
+    const doScheduleClicks = () => {
+      if (!ctx || !buf) return;
+      // If the context took some time to come up, drop any clicks that
+      // would have already fired by now and shift the rest so they still
+      // align with the visual rotation.
+      const resumeDelayMs = performance.now() - scheduleStartPerf;
+      const audioBaseTime = ctx.currentTime - resumeDelayMs / 1000;
       const samples = 600;
       const startSeg = segmentAtRotation(startRotation);
       let prevSeg = startSeg;
@@ -339,13 +373,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         let rot: number;
         let timeOffsetSec: number;
         if (progress < pullbackDuration / (pullbackDuration + mainDuration)) {
-          // Within pullback phase
           const localT = progress / (pullbackDuration / (pullbackDuration + mainDuration));
           const eased = easeInOut(localT);
           rot = startRotation - pullbackAmount * eased;
           timeOffsetSec = (localT * pullbackDuration) / 1000;
         } else {
-          // Within main spin phase
           const localT = (progress - pullbackDuration / (pullbackDuration + mainDuration))
                        / (mainDuration / (pullbackDuration + mainDuration));
           const eased = easeOutCubic(localT);
@@ -354,13 +386,31 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         }
         const seg = segmentAtRotation(rot);
         if (seg !== prevSeg) {
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(ctx.destination);
-          src.start(audioBaseTime + timeOffsetSec);
-          scheduledSourcesRef.current.push(src);
+          const scheduledTime = audioBaseTime + timeOffsetSec;
+          // Skip clicks whose ideal time has already passed during the
+          // resume wait — better to lose a few early ticks than to bunch
+          // them all up at currentTime.
+          if (scheduledTime > ctx.currentTime - 0.005) {
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            src.start(Math.max(scheduledTime, ctx.currentTime));
+            scheduledSourcesRef.current.push(src);
+          }
           prevSeg = seg;
         }
+      }
+    };
+
+    if (ctx && buf) {
+      if (ctx.state === 'running') {
+        doScheduleClicks();
+      } else {
+        // First-ever-gesture-is-spin edge case: resume is in flight from
+        // either the global unlock listener or our own gestureCtx.resume()
+        // above; chain the schedule onto its completion so we don't miss
+        // every click for this spin.
+        ctx.resume().then(doScheduleClicks).catch(() => {});
       }
     }
 
