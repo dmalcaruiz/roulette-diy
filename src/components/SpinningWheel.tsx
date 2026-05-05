@@ -102,19 +102,34 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     } catch {}
   }, []);
 
-  const updateCurrentSegment = useCallback(() => {
+  // Pure helper — returns the segment text under the marker for a given
+  // rotation, no side effects. Lets the rAF loop diff against the previous
+  // frame and only call setState / playClick on real segment crossings,
+  // instead of hammering setCurrentSegment 60×/sec.
+  const segmentAtRotation = useCallback((rotation: number): string => {
     const totalWeight = items.reduce((s, item) => s + item.weight, 0);
-    const currentAngle = (2 * Math.PI - (rotationRef.current % (2 * Math.PI)) - Math.PI / 2 + 4 * Math.PI) % (2 * Math.PI);
+    const currentAngle = (2 * Math.PI - (rotation % (2 * Math.PI)) - Math.PI / 2 + 4 * Math.PI) % (2 * Math.PI);
     let accumulated = 0;
     for (const item of items) {
       accumulated += item.weight;
       const segmentEnd = (accumulated / totalWeight) * 2 * Math.PI;
-      if (currentAngle <= segmentEnd) {
-        setCurrentSegment(item.text);
-        break;
-      }
+      if (currentAngle <= segmentEnd) return item.text;
     }
+    return items[items.length - 1]?.text ?? '';
   }, [items]);
+
+  // Tracks the segment shown last frame so the rAF loop can detect a real
+  // crossing and fire setState + playClick exactly once per crossing —
+  // sound stays locked to the rendered rotation regardless of frame jitter.
+  const lastRenderedSegmentRef = useRef<string>('');
+
+  const updateCurrentSegment = useCallback(() => {
+    const seg = segmentAtRotation(rotationRef.current);
+    if (seg !== lastRenderedSegmentRef.current) {
+      lastRenderedSegmentRef.current = seg;
+      setCurrentSegment(seg);
+    }
+  }, [segmentAtRotation]);
 
   const getWinningIndex = useCallback(() => {
     const totalWeight = items.reduce((s, item) => s + item.weight, 0);
@@ -261,37 +276,31 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // Phase 1: Pullback
     const pullbackStart = performance.now();
 
-    // Pre-schedule sounds
-    const scheduledSounds: number[] = [];
-    {
-      const samples = 200;
-      let lastSegment: string | null = null;
-      const tw = items.reduce((s, item) => s + item.weight, 0);
-      for (let i = 0; i <= samples; i++) {
-        const progress = i / samples;
-        const eased = easeOutCubic(progress);
-        const rot = (startRotation - pullbackAmount) + eased * (pullbackAmount + finalRotation);
-        const angle = (2 * Math.PI - (rot % (2 * Math.PI)) - Math.PI / 2 + 4 * Math.PI) % (2 * Math.PI);
-        let acc = 0;
-        let seg: string | null = null;
-        for (const item of items) {
-          acc += item.weight;
-          if (angle <= (acc / tw) * 2 * Math.PI) { seg = item.text; break; }
-        }
-        if (seg && seg !== lastSegment && lastSegment !== null) {
-          const delay = pullbackDuration + progress * mainDuration;
-          scheduledSounds.push(window.setTimeout(playClick, delay));
-        }
+    // Track the last segment-under-marker so each rAF can detect a real
+    // crossing and (a) play the click sound *exactly when the rendered
+    // rotation crosses the boundary* — keeping audio locked to visuals
+    // even when frames slip — and (b) update the segment header without
+    // hammering React 60×/sec. Replaces both the old pre-scheduled
+    // setTimeout pool AND the per-frame setCurrentSegment.
+    let lastSegment = segmentAtRotation(startRotation);
+    lastRenderedSegmentRef.current = lastSegment;
+
+    const onFrameRotation = (newRotation: number) => {
+      const seg = segmentAtRotation(newRotation);
+      if (seg !== lastSegment) {
         lastSegment = seg;
+        lastRenderedSegmentRef.current = seg;
+        setCurrentSegment(seg);
+        playClick();
       }
-    }
+    };
 
     const animatePullback = (now: number) => {
       const elapsed = now - pullbackStart;
       const t = Math.min(1, elapsed / pullbackDuration);
       const eased = easeInOut(t);
       rotationRef.current = startRotation - pullbackAmount * eased;
-      updateCurrentSegment();
+      onFrameRotation(rotationRef.current);
       paint();
 
       if (t < 1) {
@@ -307,7 +316,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           const t = Math.min(1, elapsed / mainDuration);
           const eased = easeOutCubic(t);
           rotationRef.current = spinStartRotation + spinTotalRotation * eased;
-          updateCurrentSegment();
+          onFrameRotation(rotationRef.current);
           paint();
 
           if (t < 1) {
@@ -318,9 +327,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             setIsSpinning(false);
             const idx = getWinningIndex();
             onFinished(idx);
-
-            // Clear scheduled sounds
-            scheduledSounds.forEach(clearTimeout);
 
             if (showWinAnimation) {
               // Overlay animation
@@ -364,7 +370,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     animRef.current = requestAnimationFrame(animatePullback);
   }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint,
-      updateCurrentSegment, getWinningIndex, getRandomWeightedIndex, onFinished, playClick]);
+      segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playClick]);
 
   const reset = useCallback(() => {
     cancelAnimationFrame(animRef.current);
