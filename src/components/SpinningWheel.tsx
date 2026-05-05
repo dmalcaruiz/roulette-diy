@@ -122,8 +122,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
 
-  // Click playback is module-level (WebAudio). No per-mount setup needed.
-  const playClick = useCallback(() => playClickInline(), []);
+  // (playClickInline is invoked directly from spin via WebAudio's
+  // sample-accurate scheduler now — no per-frame click trigger needed.)
+  // Tracks every scheduled-but-not-yet-fired click source for the active
+  // spin so reset() can stop them mid-flight if the user interrupts.
+  const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
 
   // Pure helper — returns the segment text under the marker for a given
   // rotation, no side effects. Lets the rAF loop diff against the previous
@@ -307,22 +310,70 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // Phase 1: Pullback
     const pullbackStart = performance.now();
 
-    // Track the last segment-under-marker so each rAF can detect a real
-    // crossing and (a) play the click sound *exactly when the rendered
-    // rotation crosses the boundary* — keeping audio locked to visuals
-    // even when frames slip — and (b) update the segment header without
-    // hammering React 60×/sec. Replaces both the old pre-scheduled
-    // setTimeout pool AND the per-frame setCurrentSegment.
+    // Pre-schedule every click for the entire spin via WebAudio's
+    // sample-accurate scheduler. Each src.start(time) call queues the
+    // click on the audio thread to fire at the exact predicted moment
+    // the rotation crosses a segment boundary — completely decoupled
+    // from rAF jitter, main-thread blocking, or render hitches. The
+    // visual updates (paint + setCurrentSegment) still happen in the
+    // rAF loop, but audio sync no longer depends on them firing on time.
+    // Cancel any sources from a previous spin that haven't fired yet
+    // (defensive — spin() bails early if isSpinningRef is set, but a
+    // pre-empted reset could leave queued sources alive).
+    for (const s of scheduledSourcesRef.current) {
+      try { s.stop(); } catch {}
+    }
+    scheduledSourcesRef.current = [];
+    const ctx = sharedAudioCtx;
+    const buf = sharedClickBuffer;
+    if (ctx && buf && ctx.state === 'running') {
+      const audioBaseTime = ctx.currentTime;
+      // Sample the easing curve at high resolution; whenever consecutive
+      // samples land in different segments, schedule a click at that
+      // sample's predicted wall-clock offset.
+      const samples = 600;
+      const startSeg = segmentAtRotation(startRotation);
+      let prevSeg = startSeg;
+      for (let i = 1; i <= samples; i++) {
+        const progress = i / samples;
+        let rot: number;
+        let timeOffsetSec: number;
+        if (progress < pullbackDuration / (pullbackDuration + mainDuration)) {
+          // Within pullback phase
+          const localT = progress / (pullbackDuration / (pullbackDuration + mainDuration));
+          const eased = easeInOut(localT);
+          rot = startRotation - pullbackAmount * eased;
+          timeOffsetSec = (localT * pullbackDuration) / 1000;
+        } else {
+          // Within main spin phase
+          const localT = (progress - pullbackDuration / (pullbackDuration + mainDuration))
+                       / (mainDuration / (pullbackDuration + mainDuration));
+          const eased = easeOutCubic(localT);
+          rot = (startRotation - pullbackAmount) + eased * (pullbackAmount + finalRotation);
+          timeOffsetSec = (pullbackDuration + localT * mainDuration) / 1000;
+        }
+        const seg = segmentAtRotation(rot);
+        if (seg !== prevSeg) {
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          src.start(audioBaseTime + timeOffsetSec);
+          scheduledSourcesRef.current.push(src);
+          prevSeg = seg;
+        }
+      }
+    }
+
+    // Visual segment-header update: still rAF-driven, fires only on real
+    // crossings (cheap — no audio engine work, just a setState diff).
     let lastSegment = segmentAtRotation(startRotation);
     lastRenderedSegmentRef.current = lastSegment;
-
     const onFrameRotation = (newRotation: number) => {
       const seg = segmentAtRotation(newRotation);
       if (seg !== lastSegment) {
         lastSegment = seg;
         lastRenderedSegmentRef.current = seg;
         setCurrentSegment(seg);
-        playClick();
       }
     };
 
@@ -401,10 +452,16 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     animRef.current = requestAnimationFrame(animatePullback);
   }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint,
-      segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playClick]);
+      segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished]);
 
   const reset = useCallback(() => {
     cancelAnimationFrame(animRef.current);
+    // Stop any scheduled clicks that haven't fired yet — otherwise the
+    // wheel snaps to rest visually but ticks keep playing.
+    for (const s of scheduledSourcesRef.current) {
+      try { s.stop(); } catch {}
+    }
+    scheduledSourcesRef.current = [];
     isSpinningRef.current = false;
     setIsSpinning(false);
     setSegmentHeaderOpacity(0);
