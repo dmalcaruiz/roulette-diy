@@ -1,60 +1,63 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
 
-// WebAudio click playback. HTMLAudioElement was visibly blocking the rAF
-// loop on each spin tick (every play() call did a few ms of synchronous
-// engine work to reset currentTime + start playback), causing dropped
-// frames during fast spins. The WebAudio path decodes the click waveform
-// once into an AudioBuffer at module load, then each click just spins up
-// a cheap AudioBufferSourceNode — start() is sub-millisecond and doesn't
-// touch the main thread budget meaningfully, so it stays inline in the
-// rAF without harming frame pacing.
-let sharedAudioCtx: AudioContext | null = null;
-let sharedClickBuffer: AudioBuffer | null = null;
-let clickLoadPromise: Promise<void> | null = null;
+// HTMLAudioElement pool — created once per session, reused across every
+// SpinningWheel mount. The previous per-mount setup synchronously
+// instantiated 20 audio elements on the main thread, stuttering tile
+// switches by ~50-100ms.
+let sharedAudioPool: HTMLAudioElement[] | null = null;
+let sharedAudioIndex = 0;
+let audioUnlocked = false;
 
-function getAudioCtx(): AudioContext | null {
-  if (sharedAudioCtx) return sharedAudioCtx;
-  // Older Safari needs the webkit prefix.
-  const Ctor = (window.AudioContext
-    || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
-  if (!Ctor) return null;
-  sharedAudioCtx = new Ctor();
-  return sharedAudioCtx;
+function getSharedAudioPool(): HTMLAudioElement[] {
+  if (sharedAudioPool) return sharedAudioPool;
+  const pool: HTMLAudioElement[] = [];
+  for (let i = 0; i < 20; i++) {
+    const audio = new Audio('/audio/click.mp3');
+    audio.preload = 'auto';
+    pool.push(audio);
+  }
+  sharedAudioPool = pool;
+  return pool;
 }
 
-function ensureClickBuffer(): Promise<void> {
-  if (sharedClickBuffer) return Promise.resolve();
-  if (clickLoadPromise) return clickLoadPromise;
-  const ctx = getAudioCtx();
-  if (!ctx) return Promise.resolve();
-  clickLoadPromise = (async () => {
+// MUST be called from inside a real user-gesture handler (e.g. the spin
+// click). iOS Safari only unlocks an audio element for off-gesture
+// playback if play() is called on *that specific element* during a
+// gesture; warming just one wouldn't help the other 19 in the pool, so
+// the deferred plays would silently no-op. play().then(pause) starts
+// the element and immediately pauses it — silent, but the element is
+// now flagged as user-activated for the rest of the session.
+function unlockAudioPool(): void {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  const pool = getSharedAudioPool();
+  for (const audio of pool) {
     try {
-      const res = await fetch('/audio/click.mp3');
-      const buf = await res.arrayBuffer();
-      sharedClickBuffer = await ctx.decodeAudioData(buf);
-    } catch {
-      // If load fails, leave the buffer null — click() becomes a no-op.
-    }
-  })();
-  return clickLoadPromise;
+      const p = audio.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => audio.pause()).catch(() => {});
+      } else {
+        audio.pause();
+      }
+    } catch {}
+  }
 }
 
-// Kick off the load eagerly so by the time the user spins, the buffer is
-// decoded and ready.
-ensureClickBuffer();
-
-function playClickInline(): void {
-  const ctx = sharedAudioCtx;
-  const buf = sharedClickBuffer;
-  if (!ctx || !buf) return;
-  // AudioContext starts suspended on most browsers until a user gesture
-  // resumes it; the spin button tap qualifies, so by the time we're ticking
-  // through segments the context is running.
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(ctx.destination);
-  src.start(0);
+// Fired from inside the spin rAF on each segment crossing. The actual
+// play() + currentTime = 0 work is deferred to a separate task via
+// setTimeout(0) so the audio engine work doesn't steal the next frame's
+// budget — that's what made the wheel jitter when the click was inline.
+function playClickDeferred(): void {
+  const pool = getSharedAudioPool();
+  if (pool.length === 0) return;
+  const player = pool[sharedAudioIndex];
+  sharedAudioIndex = (sharedAudioIndex + 1) % pool.length;
+  setTimeout(() => {
+    try {
+      player.currentTime = 0;
+      player.play().catch(() => {});
+    } catch {}
+  }, 0);
 }
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
@@ -122,8 +125,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
 
-  // Click playback is module-level (WebAudio). No per-mount setup needed.
-  const playClick = useCallback(() => playClickInline(), []);
+  // Click playback is module-level. The function defers the actual play()
+  // call to a separate task so audio-engine work doesn't block the rAF
+  // callback that fired the click.
+  const playClick = useCallback(() => playClickDeferred(), []);
 
   // Pure helper — returns the segment text under the marker for a given
   // rotation, no side effects. Lets the rAF loop diff against the previous
@@ -239,13 +244,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
 
-    // The spin click is a user gesture — resume the AudioContext now so
-    // subsequent inline clicks during the rAF loop can fire without
-    // touching gesture-tracking state. Also kick off buffer loading if it
-    // hasn't completed yet (cheap no-op if already loaded).
-    const ctx = getAudioCtx();
-    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
-    ensureClickBuffer();
+    // The spin tap is a real user gesture — unlock every element in the
+    // audio pool now (once per session) so the deferred plays during
+    // the rAF loop can fire without being blocked by autoplay policies
+    // on iOS Safari et al.
+    unlockAudioPool();
 
     isSpinningRef.current = true;
     setIsSpinning(true);
