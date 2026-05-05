@@ -243,11 +243,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (isSpinningRef.current) return;
 
     // The spin click is a user gesture — resume the AudioContext now so
-    // subsequent inline clicks during the rAF loop can fire without
-    // touching gesture-tracking state. Also kick off buffer loading if it
-    // hasn't completed yet (cheap no-op if already loaded).
-    const ctx = getAudioCtx();
-    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    // the scheduled clicks below can fire on the audio thread. Also kick
+    // off buffer loading if it hasn't completed yet (cheap no-op if
+    // already loaded).
+    const gestureCtx = getAudioCtx();
+    if (gestureCtx && gestureCtx.state === 'suspended') gestureCtx.resume().catch(() => {});
     ensureClickBuffer();
 
     isSpinningRef.current = true;
