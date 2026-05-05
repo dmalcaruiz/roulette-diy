@@ -1,22 +1,60 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
 
-// Module-level audio pool — created once per session, reused across every
-// SpinningWheel mount. Previously the pool was built inside a mount-effect,
-// which meant tapping a different preview tile (which remounts the wheel
-// canvas via a keyed wrapper) synchronously instantiated 20 new HTMLAudio
-// elements with preload='auto' on the main thread — visibly stuttering the
-// switch by ~50-100ms on mobile.
-let sharedAudioPool: HTMLAudioElement[] | null = null;
-function getSharedAudioPool(): HTMLAudioElement[] {
-  if (sharedAudioPool) return sharedAudioPool;
-  const pool: HTMLAudioElement[] = [];
-  for (let i = 0; i < 20; i++) {
-    const audio = new Audio('/audio/click.mp3');
-    audio.preload = 'auto';
-    pool.push(audio);
-  }
-  sharedAudioPool = pool;
-  return pool;
+// WebAudio click playback. HTMLAudioElement was visibly blocking the rAF
+// loop on each spin tick (every play() call did a few ms of synchronous
+// engine work to reset currentTime + start playback), causing dropped
+// frames during fast spins. The WebAudio path decodes the click waveform
+// once into an AudioBuffer at module load, then each click just spins up
+// a cheap AudioBufferSourceNode — start() is sub-millisecond and doesn't
+// touch the main thread budget meaningfully, so it stays inline in the
+// rAF without harming frame pacing.
+let sharedAudioCtx: AudioContext | null = null;
+let sharedClickBuffer: AudioBuffer | null = null;
+let clickLoadPromise: Promise<void> | null = null;
+
+function getAudioCtx(): AudioContext | null {
+  if (sharedAudioCtx) return sharedAudioCtx;
+  // Older Safari needs the webkit prefix.
+  const Ctor = (window.AudioContext
+    || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+  if (!Ctor) return null;
+  sharedAudioCtx = new Ctor();
+  return sharedAudioCtx;
+}
+
+function ensureClickBuffer(): Promise<void> {
+  if (sharedClickBuffer) return Promise.resolve();
+  if (clickLoadPromise) return clickLoadPromise;
+  const ctx = getAudioCtx();
+  if (!ctx) return Promise.resolve();
+  clickLoadPromise = (async () => {
+    try {
+      const res = await fetch('/audio/click.mp3');
+      const buf = await res.arrayBuffer();
+      sharedClickBuffer = await ctx.decodeAudioData(buf);
+    } catch {
+      // If load fails, leave the buffer null — click() becomes a no-op.
+    }
+  })();
+  return clickLoadPromise;
+}
+
+// Kick off the load eagerly so by the time the user spins, the buffer is
+// decoded and ready.
+ensureClickBuffer();
+
+function playClickInline(): void {
+  const ctx = sharedAudioCtx;
+  const buf = sharedClickBuffer;
+  if (!ctx || !buf) return;
+  // AudioContext starts suspended on most browsers until a user gesture
+  // resumes it; the spin button tap qualifies, so by the time we're ticking
+  // through segments the context is running.
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.start(0);
 }
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
@@ -84,23 +122,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
 
-  // Audio pool — points at the module-level shared pool, lazy-initialized on
-  // first access. No per-mount instantiation cost; no per-unmount teardown
-  // (the elements outlive any single SpinningWheel and get garbage-collected
-  // when the page closes).
-  const audioPoolRef = useRef<HTMLAudioElement[]>([]);
-  const audioIndexRef = useRef(0);
-  if (audioPoolRef.current.length === 0) audioPoolRef.current = getSharedAudioPool();
-
-  const playClick = useCallback(() => {
-    if (audioPoolRef.current.length === 0) return;
-    try {
-      const player = audioPoolRef.current[audioIndexRef.current];
-      audioIndexRef.current = (audioIndexRef.current + 1) % audioPoolRef.current.length;
-      player.currentTime = 0;
-      player.play().catch(() => {});
-    } catch {}
-  }, []);
+  // Click playback is module-level (WebAudio). No per-mount setup needed.
+  const playClick = useCallback(() => playClickInline(), []);
 
   // Pure helper — returns the segment text under the marker for a given
   // rotation, no side effects. Lets the rAF loop diff against the previous
@@ -215,6 +238,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
+
+    // The spin click is a user gesture — resume the AudioContext now so
+    // subsequent inline clicks during the rAF loop can fire without
+    // touching gesture-tracking state. Also kick off buffer loading if it
+    // hasn't completed yet (cheap no-op if already loaded).
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    ensureClickBuffer();
 
     isSpinningRef.current = true;
     setIsSpinning(true);
