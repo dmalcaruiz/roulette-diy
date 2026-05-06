@@ -368,8 +368,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // revolutions packed into the same duration = higher peak angular
     // velocity = more dramatic spin.
     const baseRotations = isRandomIntensity
-      ? 4 + Math.floor(effectiveIntensity * 7)
-      : 4 + Math.floor(effectiveIntensity * 9);
+      ? 3 + Math.floor(effectiveIntensity * 7)
+      : 3 + Math.floor(effectiveIntensity * 9);
     const totalRotations = isRandomIntensity
       ? baseRotations + Math.random()
       : baseRotations + Math.random() * 0.2;
