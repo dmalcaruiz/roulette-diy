@@ -215,8 +215,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     return items.length - 1;
   }, [items]);
 
-  // Paint function
-  const paint = useCallback(() => {
+  // Paint implementation. Rebuilds whenever size/items/etc. change so it
+  // reads the latest props and resizes the canvas's internal pixel buffer
+  // to match.
+  const paintImpl = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -256,14 +258,29 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset]);
 
+  // Public `paint` is *stable* (never changes identity) but always invokes
+  // the latest paintImpl via a ref. The spin/decay rAF callbacks capture
+  // paint at spin-start; without this indirection, a size change mid-spin
+  // (e.g. closing the segment sheet → wheel resizing back to full) would
+  // leave the captured closure using the old size, so the canvas's pixel
+  // buffer stayed at small DPR-scaled dimensions while CSS stretched it
+  // to the new display size — visible pixelation until the next spin
+  // rebuilt its closure. Routing through the ref keeps every existing
+  // call site automatically up-to-date with no other code changes.
+  const paintImplRef = useRef(paintImpl);
+  paintImplRef.current = paintImpl;
+  const paint = useCallback(() => paintImplRef.current(), []);
+
   // Initial paint and repaint on prop changes — useLayoutEffect (not
   // useEffect) so the canvas is drawn synchronously after layout BEFORE the
   // browser paints the frame. With useEffect there's a one-frame gap where
   // the canvas exists but is unpainted, which on a remount (e.g. tapping +
   // to add a new wheel) shows up as a white flash.
+  // Depends on paintImpl (the actual implementation) so it re-fires on
+  // size/items/etc changes; the public `paint` is intentionally stable.
   useLayoutEffect(() => {
     paint();
-  }, [paint]);
+  }, [paint, paintImpl]);
 
   // Update segment on mount
   useEffect(() => {
