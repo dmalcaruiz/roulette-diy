@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { PushDownButton } from '../components/PushDownButton';
 import { ArrowLeft, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react';
@@ -60,7 +60,7 @@ export default function DiagnosticsScreen() {
   const total = results.length;
 
   return (
-    <div style={{ minHeight: '100dvh', backgroundColor: '#FFF' }}>
+    <div style={{ minHeight: '100dvh', backgroundColor: BG }}>
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px' }}>
         <button onClick={() => navigate('/')} style={{ padding: 8, background: 'none', border: 'none' }}>
           <ArrowLeft size={28} color={ON_SURFACE} />

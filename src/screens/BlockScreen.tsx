@@ -5,7 +5,7 @@ import RouletteScreen from './RouletteScreen';
 import WheelThumbnail from '../components/WheelThumbnail';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
 import ConfirmSheet from '../components/ConfirmSheet';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { publishExperience, unpublishExperience, syncPublishedExperience } from '../services/publishedExperienceService';
@@ -445,7 +445,7 @@ function BlockViewLayer({
                 width: 88,
                 height: 88,
                 borderRadius: 16,
-                backgroundColor: '#FFFFFF',
+                backgroundColor: SURFACE,
                 border: `2px solid ${BORDER}`,
                 display: 'flex',
                 alignItems: 'center',
@@ -733,7 +733,7 @@ function FullScreenSheet({ visible, children }: { visible: boolean; children: Re
 function Section({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
     <div style={{
-      backgroundColor: '#FFF',
+      backgroundColor: SURFACE,
       borderRadius: 16,
       border: `1.5px solid ${BORDER}`,
       padding: 14,
@@ -759,7 +759,7 @@ function ToggleRow({ label, subtitle, icon, value, onChange }: {
       style={{
         display: 'flex', alignItems: 'center', gap: 12,
         padding: '12px 14px', borderRadius: 12,
-        backgroundColor: value ? withAlpha(PRIMARY, 0.1) : '#F4F4F5',
+        backgroundColor: value ? withAlpha(PRIMARY, 0.1) : SURFACE_ELEVATED,
         border: `1.5px solid ${value ? PRIMARY : BORDER}`,
         cursor: 'pointer',
       }}
@@ -820,7 +820,7 @@ function SecondaryButton({ onClick, disabled, danger, children }: {
         padding: '10px 14px',
         borderRadius: 12,
         border: `1.5px solid ${BORDER}`,
-        backgroundColor: '#FFF',
+        backgroundColor: SURFACE,
         color,
         fontWeight: 700,
         fontSize: 13,

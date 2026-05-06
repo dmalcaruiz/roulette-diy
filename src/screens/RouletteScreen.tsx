@@ -5,7 +5,7 @@ import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel'
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, oklchShadow } from '../utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
+import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
@@ -978,7 +978,7 @@ export default function RouletteScreen({
     <div style={{
       display: 'flex',
       height: '100dvh',
-      backgroundColor: isEditMode && !isMobile ? '#FFFFFF' : backgroundColor,
+      backgroundColor: isEditMode && !isMobile ? BG : backgroundColor,
       overflow: 'hidden',
       // Slide the entire editor in/out from the bottom edge. slide-in-up
       // plays once on mount over the always-mounted AppShell underneath;
@@ -992,8 +992,8 @@ export default function RouletteScreen({
       {isEditMode && !isMobile && (
         <div style={{
           width: 400,
-          borderRight: '1.5px solid #E4E4E7',
-          backgroundColor: '#FFFFFF',
+          borderRight: `1.5px solid ${BORDER}`,
+          backgroundColor: SURFACE,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -1224,7 +1224,7 @@ export default function RouletteScreen({
             width: '100%',
             height: redBoxHeight,
             opacity: isPlayMode ? 0 : 1,
-            backgroundColor: '#FFFFFF',
+            backgroundColor: SURFACE,
             // visible (not hidden) so the pop-in scale and grabbed box-shadow
             // can extend past the red box without being clipped.
             overflow: 'visible',
@@ -1836,8 +1836,8 @@ function PinnedChipBar({
       alignItems: 'flex-end',
       gap: 12,
       padding: 0,
-      backgroundColor: '#FFFFFF',
-      borderTop: '1px solid #E4E4E7',
+      backgroundColor: SURFACE,
+      borderTop: `1px solid ${BORDER}`,
       boxSizing: 'border-box',
       // Stack above red so red can never bleed into the chip's footprint.
       position: 'relative',
@@ -1890,7 +1890,7 @@ function PinnedChipBar({
             <PushDownButton
               key={key}
               onTap={() => onChange(isActive ? null : key)}
-              color={isActive ? ON_SURFACE : '#F4F4F5'}
+              color={isActive ? ON_SURFACE : SURFACE_ELEVATED}
               borderRadius={26}
               height={38}
               bottomBorderWidth={4}
@@ -1901,7 +1901,9 @@ function PinnedChipBar({
                 alignItems: 'center',
                 gap: 7,
                 padding: '0 17px',
-                color: isActive ? '#FFFFFF' : withAlpha(ON_SURFACE, 0.65),
+                // Active chip = light surface (ON_SURFACE) → dark text (BG).
+                // Inactive chip = dark surface (SURFACE_ELEVATED) → light text.
+                color: isActive ? BG : withAlpha(ON_SURFACE, 0.85),
                 fontWeight: 700,
                 fontSize: 16,
                 whiteSpace: 'nowrap',
@@ -1916,7 +1918,7 @@ function PinnedChipBar({
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, flexShrink: 0, paddingRight: 14 }}>
         <PushDownButton
           onTap={canUndo ? onUndo : undefined}
-          color="#F4F4F5"
+          color={SURFACE_ELEVATED}
           borderRadius={50}
           height={42}
           bottomBorderWidth={4}
@@ -1926,7 +1928,7 @@ function PinnedChipBar({
         </PushDownButton>
         <PushDownButton
           onTap={canRedo ? onRedo : undefined}
-          color="#F4F4F5"
+          color={SURFACE_ELEVATED}
           borderRadius={50}
           height={42}
           bottomBorderWidth={4}
@@ -1936,7 +1938,7 @@ function PinnedChipBar({
         </PushDownButton>
         <PushDownButton
           onTap={onPlay}
-          color={ON_SURFACE}
+          color={PRIMARY}
           borderRadius={50}
           height={46}
           bottomBorderWidth={4}
@@ -1965,8 +1967,8 @@ function CtxRow({ icon, label, onTap, danger }: {
         gap: 14,
         padding: '14px 16px',
         borderRadius: 14,
-        backgroundColor: '#F4F4F5',
-        border: '1.5px solid #E4E4E7',
+        backgroundColor: SURFACE_ELEVATED,
+        border: `1.5px solid ${BORDER}`,
         marginBottom: 8,
         cursor: 'pointer',
         color,
@@ -1992,8 +1994,8 @@ function ToggleRow({ label, icon, value, onChange }: {
         alignItems: 'center',
         padding: '14px 16px',
         borderRadius: 14,
-        backgroundColor: value ? withAlpha(PRIMARY, 0.12) : '#F4F4F5',
-        border: `1.5px solid ${value ? PRIMARY : '#D4D4D8'}`,
+        backgroundColor: value ? withAlpha(PRIMARY, 0.12) : SURFACE_ELEVATED,
+        border: `1.5px solid ${value ? PRIMARY : BORDER}`,
         cursor: 'pointer',
         transition: 'all 0.18s',
       }}
@@ -2012,7 +2014,7 @@ function ToggleRow({ label, icon, value, onChange }: {
       <div style={{
         width: 44, height: 26,
         borderRadius: 13,
-        backgroundColor: value ? PRIMARY : '#D4D4D8',
+        backgroundColor: value ? PRIMARY : BORDER,
         display: 'flex',
         alignItems: 'center',
         padding: 2,
@@ -2220,8 +2222,8 @@ function PreviewTile({
         bottom: 0,
         height: 88,
         borderRadius: 16,
-        backgroundColor: oklchShadow(active ? PRIMARY : '#F4F4F5'),
-        boxShadow: `0 0 0 3.5px ${oklchShadow(active ? PRIMARY : '#F4F4F5')}40`,
+        backgroundColor: oklchShadow(active ? PRIMARY : SURFACE),
+        boxShadow: `0 0 0 3.5px ${oklchShadow(active ? PRIMARY : SURFACE)}40`,
       }} />
       {/* Top layer — the face. */}
       <div style={{
@@ -2229,8 +2231,8 @@ function PreviewTile({
         height: 88,
         width: 88,
         borderRadius: 16,
-        backgroundColor: '#F4F4F5',
-        border: active ? `3px solid ${PRIMARY}` : `3px solid #E4E4E7`,
+        backgroundColor: SURFACE,
+        border: active ? `3px solid ${PRIMARY}` : `3px solid ${BORDER}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

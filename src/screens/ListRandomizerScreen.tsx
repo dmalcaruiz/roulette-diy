@@ -4,7 +4,7 @@ import { Block, ListCategory } from '../models/types';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
 import SwipeableActionCell from '../components/SwipeableActionCell';
 import { oklchShadow, withAlpha } from '../utils/colorUtils';
-import { ON_SURFACE, BORDER, PRIMARY, SEGMENT_COLORS } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, SEGMENT_COLORS, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import {
   ArrowLeft, Eye, Pencil, MoreVertical, RotateCcw, Dices,
   GripVertical, ChevronDown, Plus, X, Copy, Trash2,
@@ -107,7 +107,7 @@ export default function ListRandomizerScreen({ block, editMode = false, onBlockU
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: '#FFFFFF' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: BG }}>
       {/* App bar */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 8px 0' }}>
         <button onClick={() => navigate('/')} style={{ padding: 8 }}>
@@ -165,7 +165,7 @@ export default function ListRandomizerScreen({ block, editMode = false, onBlockU
                       { color: '#EF4444', icon: <Trash2 size={20} />, onTap: () => removeCategory(i), expandOnFullSwipe: true },
                     ]}
                   >
-                    <CategoryCard3D color={isExpanded ? '#FFFFFF' : color} expandedBorderColor={isExpanded ? color : undefined}>
+                    <CategoryCard3D color={isExpanded ? SURFACE : color} expandedBorderColor={isExpanded ? color : undefined}>
                       {/* Collapsed header */}
                       <div
                         onClick={() => setExpandedCat(isExpanded ? null : i)}
@@ -209,7 +209,7 @@ export default function ListRandomizerScreen({ block, editMode = false, onBlockU
                                 }}
                                 style={{
                                   flex: 1, padding: '10px 12px', borderRadius: 12,
-                                  border: '1.5px solid #E4E4E7', backgroundColor: '#F4F4F5',
+                                  border: `1.5px solid ${BORDER}`, backgroundColor: SURFACE_ELEVATED,
                                   fontWeight: 600, fontSize: 14, fontFamily: 'inherit', outline: 'none',
                                 }}
                               />
@@ -235,7 +235,7 @@ export default function ListRandomizerScreen({ block, editMode = false, onBlockU
                               onClick={() => updateCategory(i, { options: [...cat.options, `Option ${cat.options.length + 1}`] })}
                               style={{
                                 height: 40, borderRadius: 12,
-                                backgroundColor: '#F4F4F5', border: `1.5px solid ${BORDER}`,
+                                backgroundColor: SURFACE_ELEVATED, border: `1.5px solid ${BORDER}`,
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 gap: 6, cursor: 'pointer',
                                 fontSize: 13, fontWeight: 700, color: withAlpha(ON_SURFACE, 0.5),

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { X } from 'lucide-react';
+import { SURFACE, SURFACE_ELEVATED, BORDER, ON_SURFACE } from '../utils/constants';
 
 interface SnappingSheetProps {
   /** Snap positions in px from bottom of viewport, ascending order */
@@ -258,9 +259,9 @@ export default function SnappingSheet({
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: '#FFFFFF',
+        backgroundColor: SURFACE,
         borderRadius: '24px 24px 0 0',
-        border: '1.5px solid #E4E4E7',
+        border: `1.5px solid ${BORDER}`,
         borderBottom: 'none',
         overflow: 'hidden',
         position: 'relative',
@@ -280,7 +281,7 @@ export default function SnappingSheet({
         >
           <div style={{
             width: 40, height: 4,
-            backgroundColor: '#D4D4D8',
+            backgroundColor: BORDER,
             borderRadius: 2,
             margin: '0 auto',
           }} />
@@ -296,7 +297,7 @@ export default function SnappingSheet({
             width: 32,
             height: 32,
             borderRadius: 50,
-            backgroundColor: '#F4F4F5',
+            backgroundColor: SURFACE_ELEVATED,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -305,7 +306,7 @@ export default function SnappingSheet({
             zIndex: 2,
           }}
         >
-          <X size={16} color="#1E1E2C" />
+          <X size={16} color={ON_SURFACE} />
         </button>
 
         {/* Scrollable content */}

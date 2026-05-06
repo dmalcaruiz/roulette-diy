@@ -4,7 +4,7 @@ import SpinningWheel, { type SpinningWheelHandle } from '../components/SpinningW
 import { PushDownButton } from '../components/PushDownButton';
 import ResponseUploadSheet from '../components/ResponseUploadSheet';
 import CommentsSection from '../components/CommentsSection';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchWheel } from '../services/feedService';
@@ -174,7 +174,7 @@ export default function WheelDetailScreen() {
 
       {/* Sheet-style body */}
       <div style={{
-        backgroundColor: '#FFF',
+        backgroundColor: BG,
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
         padding: '20px 16px 40px',

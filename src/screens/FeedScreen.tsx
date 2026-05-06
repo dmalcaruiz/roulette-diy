@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fetchFeedPage, fetchChallengesPage, type PageCursor } from '../services/feedService';
 import type { WheelCard } from '../types/wheel';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { Trophy, Heart, MessageCircle } from 'lucide-react';
 import Skeleton from '../components/Skeleton';
@@ -37,7 +37,7 @@ export default function FeedScreen() {
   }, [tab]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', backgroundColor: BG }}>
       <div style={{ padding: '24px 20px 8px' }}>
         <h1 style={{ fontSize: 28, fontWeight: 800, color: ON_SURFACE, margin: 0 }}>Feed</h1>
       </div>
@@ -94,7 +94,7 @@ function TabChip({ active, label, onTap, icon }: {
       padding: '8px 14px',
       borderRadius: 22,
       border: `1.5px solid ${active ? PRIMARY : BORDER}`,
-      backgroundColor: active ? withAlpha(PRIMARY, 0.12) : '#FFF',
+      backgroundColor: active ? withAlpha(PRIMARY, 0.12) : SURFACE,
       color: active ? PRIMARY : ON_SURFACE,
       fontSize: 13, fontWeight: 700, cursor: 'pointer',
     }}>
@@ -112,7 +112,7 @@ function WheelCardSkeleton() {
         padding: 12,
         borderRadius: 16,
         border: `1.5px solid ${BORDER}`,
-        backgroundColor: '#FFF',
+        backgroundColor: SURFACE,
       }}
     >
       <Skeleton width={80} height={80} radius={12} style={{ flexShrink: 0 }} />
@@ -138,13 +138,13 @@ function WheelCardRow({ wheel, onTap }: { wheel: WheelCard; onTap: () => void })
         padding: 12,
         borderRadius: 16,
         border: `1.5px solid ${BORDER}`,
-        backgroundColor: '#FFF',
+        backgroundColor: SURFACE,
         cursor: 'pointer',
       }}
     >
       <div style={{
         width: 80, height: 80, borderRadius: 12,
-        backgroundColor: '#E4E4E7', flexShrink: 0,
+        backgroundColor: SURFACE_ELEVATED, flexShrink: 0,
         backgroundImage: wheel.coverUrl ? `url(${wheel.coverUrl})` : undefined,
         backgroundSize: 'cover', backgroundPosition: 'center',
       }} />

@@ -215,6 +215,62 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     return items.length - 1;
   }, [items]);
 
+  // Segment-set transition (smooth add/remove):
+  //   - When `items` changes with the same length, snapshot the previous
+  //     items as `fromItems` and animate `transition` 0 → 1 over 110ms.
+  //     paintWheel interpolates per-segment weights AND lerps colors over
+  //     that window. Combined with the WheelEditor sending a near-zero
+  //     weight override on add (and animating to it on remove), the new /
+  //     old segment grows / shrinks visibly instead of popping.
+  //   - When length changes, no transition — just snap to the new items.
+  //
+  // MUST be a useLayoutEffect declared *before* the paint layoutEffect.
+  // useEffect would run after the post-commit paint, so the first frame
+  // after items changed would paint with the previous (stale) fromItems +
+  // transition refs, then the transition setup would update them and the
+  // next frame would re-paint differently — visible 1-frame flicker on
+  // every add/remove.
+  const fromItemsRef = useRef<WheelItem[] | null>(null);
+  const transitionRef = useRef(1);
+  const transitionAnimRef = useRef<number>(0);
+  const prevItemsRef = useRef<WheelItem[]>(items);
+  useLayoutEffect(() => {
+    const prev = prevItemsRef.current;
+    prevItemsRef.current = items;
+    if (prev === items) return;
+    cancelAnimationFrame(transitionAnimRef.current);
+    if (prev.length !== items.length) {
+      // Count change → no transition.
+      fromItemsRef.current = null;
+      transitionRef.current = 1;
+      return;
+    }
+    // Same count → cross-fade weights/colors from prev → items.
+    fromItemsRef.current = prev;
+    transitionRef.current = 0;
+    const start = performance.now();
+    const duration = 110;
+    // easeOutCubic: fast at the start, decelerates as the segment settles
+    // into its final size. Reads as "snappy then settling" instead of the
+    // mechanical linear ramp.
+    const ease = (x: number) => 1 - Math.pow(1 - x, 3);
+    const tick = (now: number) => {
+      const tLin = Math.min(1, (now - start) / duration);
+      transitionRef.current = ease(tLin);
+      paint();
+      if (tLin < 1) {
+        transitionAnimRef.current = requestAnimationFrame(tick);
+      } else {
+        fromItemsRef.current = null;
+        transitionRef.current = 1;
+        paint();
+      }
+    };
+    transitionAnimRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(transitionAnimRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   // Paint implementation. Rebuilds whenever size/items/etc. change so it
   // reads the latest props and resizes the canvas's internal pixel buffer
   // to match.
@@ -250,7 +306,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       overlayOpacity: overlayOpacityRef.current,
       winningIndex: winningIndexRef.current,
       loadingAngle: 0,
-      transition: 1,
+      fromItems: fromItemsRef.current,
+      transition: transitionRef.current,
     };
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

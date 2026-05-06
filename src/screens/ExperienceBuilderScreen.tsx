@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Block, BlockType, ExperienceStep, getBlockTypeLabel } from '../models/types';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
 import { oklchShadow, withAlpha } from '../utils/colorUtils';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG, SURFACE } from '../utils/constants';
 import {
   ArrowLeft, Play, Plus, X, Disc3, LayoutList, Compass,
   AlertTriangle, GitBranch, CheckCircle2, Circle,
@@ -82,7 +82,7 @@ export default function ExperienceBuilderScreen({ block, allBlocks, onBlockUpdat
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: '#FFF' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: BG }}>
       {/* App bar */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 8px 0', gap: 4 }}>
         <button onClick={() => navigate('/')} style={{ padding: 8 }}>
@@ -355,7 +355,7 @@ function StepCard3D({ index, block, onTap, onDelete }: {
         {block.type === 'roulette' && block.wheelConfig ? (
           <div style={{
             width: 40, height: 40, borderRadius: '50%',
-            backgroundColor: '#FFF',
+            backgroundColor: SURFACE,
             padding: 2,
             boxSizing: 'border-box',
             display: 'flex', alignItems: 'center', justifyContent: 'center',

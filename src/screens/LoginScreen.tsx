@@ -1,6 +1,6 @@
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
-import { ON_SURFACE } from '../utils/constants';
+import { ON_SURFACE, BG, SURFACE, BORDER } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 
 interface LoginScreenProps {
@@ -26,7 +26,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: '#FFFFFF',
+      backgroundColor: BG,
       padding: '0 32px',
     }}>
       <h1 style={{
@@ -58,8 +58,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           width: 300,
           height: 50,
           borderRadius: 12,
-          border: '1.5px solid #D4D4D8',
-          backgroundColor: '#FFFFFF',
+          border: `1.5px solid ${BORDER}`,
+          backgroundColor: SURFACE,
           cursor: 'pointer',
           fontSize: 16,
           fontWeight: 600,

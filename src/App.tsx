@@ -16,7 +16,7 @@ import MyProfileScreen from './screens/MyProfileScreen';
 import DiagnosticsScreen from './screens/DiagnosticsScreen';
 import ExperiencePlayScreen from './screens/ExperiencePlayScreen';
 import { withAlpha } from './utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER } from './utils/constants';
+import { ON_SURFACE, PRIMARY, BORDER, SURFACE } from './utils/constants';
 import { PlusCircle, Compass, User } from 'lucide-react';
 
 export default function App() {
@@ -404,7 +404,7 @@ function AppShell({ blocks, blocksLoaded, onCreateBlock, onBlockTap, onBlockEdit
       <div style={{
         display: 'flex',
         borderTop: `1px solid ${BORDER}`,
-        backgroundColor: '#FFFFFF',
+        backgroundColor: SURFACE,
         padding: '8px',
       }}>
         <NavItem icon={<Compass size={24} />} label="Feed" isSelected={tab === 0} onTap={() => setTab(0)} />

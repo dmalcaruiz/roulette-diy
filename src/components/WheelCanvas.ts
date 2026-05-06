@@ -93,6 +93,16 @@ export function paintWheel(
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const path = layout.paths[i];
+    const effSize = layout.segmentSizes[i];
+
+    // Skip rendering segments whose effective angular size is essentially
+    // zero (the WheelEditor sends a 0.001 placeholder weight on add/remove
+    // so the wheel can transition same-count without redoing layout).
+    // Drawing the path's fill is invisible at this size, but the stroke
+    // (drawn around the path) creates a visible radial line that sits
+    // right next to the neighbouring boundary and briefly thickens it —
+    // that's the flicker the user sees just before/after the animation.
+    if (effSize < 0.005) continue;
 
     // Segment fill with optional transition color lerp
     const effectiveColor = (fromItems && i < fromItems.length && transition < 1)
@@ -111,7 +121,24 @@ export function paintWheel(
 
     // Text — skip tiny segments
     if (layout.segmentSizes[i] > 0.15) {
+      // Fade text in / out for segments mid-add or mid-remove (i.e. one
+      // side of the transition has near-zero weight). The interpolated
+      // wedge already grows / shrinks naturally from the weight lerp; this
+      // just keeps the text from popping at full opacity over a tiny slice.
+      let contentOpacity = 1;
+      if (fromItems && i < fromItems.length && transition < 1) {
+        const fromWeight = fromItems[i].weight;
+        const toWeight = items[i].weight;
+        // Threshold is just above the near-zero override weight WheelEditor
+        // sends on add/remove (0.001), so segments mid-fade pick up a
+        // smooth opacity ramp instead of holding text full-bright over a
+        // sliver-thin slice.
+        if (fromWeight <= 0.002) contentOpacity = transition;
+        else if (toWeight <= 0.002) contentOpacity = 1 - transition;
+      }
+
       ctx.save();
+      ctx.globalAlpha = contentOpacity;
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
 
@@ -193,6 +220,19 @@ function buildSegmentPath(
   centerInset: number,
 ): Path2D {
   const segmentSize = endAngle - startAngle;
+  // Clamp the rounded-corner radius so the two corner arcs at the ends of
+  // the wedge never overlap. Without this clamp, when the segment is
+  // narrower than 2 * cornerRadius/radius, the outer arc's sweep would
+  // be negative — and Canvas2D's `path.arc()` with a negative sweep and
+  // anticlockwise=false draws the *long* way around the circle. Result:
+  // a tiny segment's path covers nearly the entire wheel and its fill
+  // colour blanks every other segment for one frame. This was the
+  // fraction-of-a-second recolour visible at the start of the add
+  // animation and the end of the remove animation, where the placeholder
+  // segment briefly has near-zero weight.
+  const maxCornerArc = segmentSize / 2;
+  const cornerArc = Math.min(cornerRadius / radius, maxCornerArc);
+  const effectiveCornerRadius = cornerArc * radius;
   const path = new Path2D();
 
   if (innerCornerStyle === 'none') {
@@ -205,29 +245,30 @@ function buildSegmentPath(
 
   // Line to outer edge near start
   path.lineTo(
-    center.x + (radius - cornerRadius) * Math.cos(startAngle),
-    center.y + (radius - cornerRadius) * Math.sin(startAngle),
+    center.x + (radius - effectiveCornerRadius) * Math.cos(startAngle),
+    center.y + (radius - effectiveCornerRadius) * Math.sin(startAngle),
   );
 
   // Rounded corner at start
   const outerStartX = center.x + radius * Math.cos(startAngle);
   const outerStartY = center.y + radius * Math.sin(startAngle);
-  const arcStartX = center.x + radius * Math.cos(startAngle + cornerRadius / radius);
-  const arcStartY = center.y + radius * Math.sin(startAngle + cornerRadius / radius);
+  const arcStartX = center.x + radius * Math.cos(startAngle + cornerArc);
+  const arcStartY = center.y + radius * Math.sin(startAngle + cornerArc);
   path.quadraticCurveTo(outerStartX, outerStartY, arcStartX, arcStartY);
 
-  // Arc along the outer edge
-  const arcStart = startAngle + cornerRadius / radius;
-  const arcSweep = segmentSize - (2 * cornerRadius / radius);
+  // Arc along the outer edge — guaranteed non-negative because cornerArc
+  // is clamped to segmentSize/2.
+  const arcStart = startAngle + cornerArc;
+  const arcSweep = segmentSize - 2 * cornerArc;
   path.arc(center.x, center.y, radius, arcStart, arcStart + arcSweep);
 
-  // Rounded corner at end
+  // Rounded corner at end (uses the same clamped radius)
   const outerEndX = center.x + radius * Math.cos(endAngle);
   const outerEndY = center.y + radius * Math.sin(endAngle);
   path.quadraticCurveTo(
     outerEndX, outerEndY,
-    center.x + (radius - cornerRadius) * Math.cos(endAngle),
-    center.y + (radius - cornerRadius) * Math.sin(endAngle),
+    center.x + (radius - effectiveCornerRadius) * Math.cos(endAngle),
+    center.y + (radius - effectiveCornerRadius) * Math.sin(endAngle),
   );
 
   if (innerCornerStyle === 'none') {

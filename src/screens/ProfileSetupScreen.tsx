@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { PushDownButton, InsetTextField } from '../components/PushDownButton';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG, SURFACE } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { createProfile, isHandleAvailable } from '../services/profileService';
@@ -65,7 +65,7 @@ export default function ProfileSetupScreen() {
       flexDirection: 'column',
       justifyContent: 'center',
       padding: '0 28px',
-      backgroundColor: '#FFFFFF',
+      backgroundColor: BG,
     }}>
       <h1 style={{ fontSize: 28, fontWeight: 800, color: ON_SURFACE, margin: '0 0 8px' }}>
         Set up your profile

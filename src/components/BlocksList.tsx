@@ -4,7 +4,7 @@ import { BlockType, getBlockTypeLabel, getBlockItemCountLabel } from '../models/
 import WheelThumbnail from './WheelThumbnail';
 import SwipeableActionCell from './SwipeableActionCell';
 import { oklchShadow, withAlpha } from '../utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER } from '../utils/constants';
+import { ON_SURFACE, PRIMARY, BORDER, SURFACE } from '../utils/constants';
 import {
   GripVertical, ChevronRight, LayoutGrid, Copy, Trash2,
   Disc3, LayoutList, Compass, Heart, MessageCircle, Trophy,
@@ -22,10 +22,10 @@ const ROW_GAP = 10;
 
 // Color scheme mirrors PreviewTile in RouletteScreen so the row reads as
 // the same kind of 3D card surface: top face + bottom face + halo all
-// derived from the same `#F4F4F5` light-gray, with `#E4E4E7` for the top
-// face's inner stroke.
-const BLOCK_TOP_BG = '#F4F4F5';
-const BLOCK_INNER_STROKE = '#E4E4E7';
+// derived from the same SURFACE color, with BORDER for the top face's
+// inner stroke.
+const BLOCK_TOP_BG = SURFACE;
+const BLOCK_INNER_STROKE = BORDER;
 // The card's bottom-face/halo color, hoisted so BlockRow can compose it
 // into the row's combined boxShadow alongside the drop shadow.
 const BLOCK_HALO_COLOR = oklchShadow(BLOCK_TOP_BG);
@@ -514,16 +514,14 @@ function BlockRow({
         zIndex: isGrabbed ? 5 : undefined,
         transform,
         transition,
-        // Mirrors PreviewTile in RouletteScreen: the halo (3.5px ring at
-        // 25% alpha) is rendered as the row's *outer* boxShadow, sitting
-        // OUTSIDE the row's box. The drop shadow, when grabbed, is
-        // composited on top — and emerges from the row's edge directly
-        // (no spread/inset trick), because the row's box now matches the
-        // visible container exactly (top face + bottom face peek, no
-        // halo padding inside).
-        boxShadow: isGrabbed
-          ? `0 0 0 3.5px ${BLOCK_HALO_COLOR}40, 0 12px 24px rgba(0,0,0,0.18)`
-          : `0 0 0 3.5px ${BLOCK_HALO_COLOR}40`,
+        // Drop shadow lives here (emerges from the visible card outline
+        // when grabbed). The halo ring is on the absolute child below,
+        // positioned at the bottom face's location so it hugs the lower
+        // layer instead of extending the full 3.5px above the top face
+        // — same recipe as PreviewTile in RouletteScreen, where the halo
+        // is on the bottom layer (which sits below the root top by the
+        // peek amount).
+        boxShadow: isGrabbed ? '0 12px 24px rgba(0,0,0,0.18)' : 'none',
         borderRadius: 21,
         // While grabbed, kill native touch pan so the page doesn't scroll
         // under the user's finger during reorder.
@@ -535,6 +533,23 @@ function BlockRow({
         WebkitUserSelect: 'none',
       }}
     >
+      {/* Halo ring — same shape & position as the bottom face inside
+          BlockCard (top: 6.5 inset from the row top, bottom-aligned to
+          the row). The 3.5px boxShadow extends OUTSIDE this div, so
+          its top edge lands at y=3 (inside the row) instead of y=−3.5.
+          Visually identical to PreviewTile's bottom-layer halo:
+          essentially invisible above the top face, ringing only the
+          bottom face peek + sides + below. */}
+      <div style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 6.5,
+        bottom: 0,
+        borderRadius: 21,
+        boxShadow: `0 0 0 3.5px ${BLOCK_HALO_COLOR}40`,
+        pointerEvents: 'none',
+      }} />
       {children}
     </div>
   );

@@ -1,6 +1,6 @@
 import { PushDownButton } from './PushDownButton';
 import DraggableSheet from './DraggableSheet';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, SURFACE } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 
 interface ConfirmSheetProps {
@@ -52,7 +52,7 @@ export default function ConfirmSheet({
             padding: '14px 16px',
             borderRadius: 14,
             border: `1.5px solid ${BORDER}`,
-            backgroundColor: '#FFF',
+            backgroundColor: SURFACE,
             color: ON_SURFACE,
             fontSize: 15,
             fontWeight: 700,

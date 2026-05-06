@@ -5,7 +5,7 @@ import { fetchWheelsByAuthor } from '../services/feedService';
 import { isFollowing, followUser, unfollowUser } from '../services/socialService';
 import type { UserProfile } from '../types/profile';
 import type { WheelCard } from '../types/wheel';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { ArrowLeft, UserPlus, UserCheck, Heart, Trophy, MessageCircle } from 'lucide-react';
@@ -54,7 +54,7 @@ export default function UserProfileScreen() {
   const isSelf = me?.uid === target.uid;
 
   return (
-    <div style={{ minHeight: '100dvh', backgroundColor: '#FFF' }}>
+    <div style={{ minHeight: '100dvh', backgroundColor: BG }}>
       <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px' }}>
         <button onClick={() => navigate('/')} style={{ padding: 8, background: 'none', border: 'none' }}>
           <ArrowLeft size={28} color={ON_SURFACE} />

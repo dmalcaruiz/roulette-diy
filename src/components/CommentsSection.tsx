@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { InsetTextField } from './PushDownButton';
-import { ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { ON_SURFACE, BORDER, PRIMARY, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchComments, postComment, deleteComment, type CommentCursor } from '../services/commentService';
@@ -155,7 +155,7 @@ function CommentRow({ comment, canDelete, onDelete }: {
               {menuOpen && (
                 <div style={{
                   position: 'absolute', top: '100%', right: 0,
-                  backgroundColor: '#FFF', border: `1.5px solid ${BORDER}`,
+                  backgroundColor: SURFACE, border: `1.5px solid ${BORDER}`,
                   borderRadius: 10, padding: 4, zIndex: 10,
                   boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
                 }}>
@@ -187,7 +187,7 @@ function Avatar({ url, size }: { url?: string | null; size: number }) {
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%',
-      backgroundColor: '#E4E4E7',
+      backgroundColor: SURFACE_ELEVATED,
       backgroundImage: url ? `url(${url})` : undefined,
       backgroundSize: 'cover', backgroundPosition: 'center',
       flexShrink: 0,

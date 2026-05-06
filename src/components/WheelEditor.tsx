@@ -3,7 +3,7 @@ import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { oklchShadow, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
-import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY } from '../utils/constants';
+import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CheckCircle, Circle, Settings,
@@ -54,8 +54,19 @@ interface WheelEditorProps {
 
 let segmentIdCounter = 0;
 
+// Pick the palette colour that comes *next after* the last segment's
+// colour in SEGMENT_COLORS, so successive add-segment clicks walk through
+// the palette in order even when earlier segments have been recoloured /
+// reordered. Falls back to a count-based pick when the wheel is empty or
+// the last segment uses a custom (non-palette) colour.
 function getNextColor(segments: SegmentData[]): string {
-  return SEGMENT_COLORS[(segments.length - 1 + SEGMENT_COLORS.length) % SEGMENT_COLORS.length];
+  if (segments.length === 0) return SEGMENT_COLORS[0];
+  const lastColor = segments[segments.length - 1].color;
+  const lastIdx = SEGMENT_COLORS.indexOf(lastColor);
+  if (lastIdx === -1) {
+    return SEGMENT_COLORS[segments.length % SEGMENT_COLORS.length];
+  }
+  return SEGMENT_COLORS[(lastIdx + 1) % SEGMENT_COLORS.length];
 }
 
 export function buildInitialState(config?: WheelConfig | null): EditorState {
@@ -79,10 +90,10 @@ export function buildInitialState(config?: WheelConfig | null): EditorState {
     textSize: config?.textSize ?? 1,
     headerTextSize: config?.headerTextSize ?? 1,
     imageSize: config?.imageSize ?? 60,
-    cornerRadius: config?.cornerRadius ?? 8,
-    strokeWidth: config?.strokeWidth ?? 3,
+    cornerRadius: config?.cornerRadius ?? 30,
+    strokeWidth: config?.strokeWidth ?? 7.7,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
-    centerMarkerSize: config?.centerMarkerSize ?? 200,
+    centerMarkerSize: config?.centerMarkerSize ?? 250,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
     // Migrate the legacy 'simple'/'complex' values from older saved wheels
@@ -209,26 +220,72 @@ export default function WheelEditor({
 
   // --- Discrete actions (push to history) ---
 
+  // Smooth add/remove animation strategy (ported from the old Flutter app):
+  // the SpinningWheel cross-fades segment weights/colors only when item
+  // *count* stays constant. So we do a two-step dance:
+  //   ADD-shaped commit: paint #1 = N+1 segments with the *added* one at
+  //     near-zero weight (snap, but the new sliver is invisible — the
+  //     painter skips drawing wedges below an arc threshold so it never
+  //     pops a stroke). paint #2 = same N+1 segments with full weight.
+  //     Same count → wheel animates the slice growing in.
+  //   REMOVE-shaped commit: paint #1 = same N segments with the *removed*
+  //     one's weight forced to near-zero. Same count → wheel animates the
+  //     slice shrinking out. After 110ms: paint #2 = N-1 segments. Snap,
+  //     but the removed slice was already invisible so the jump is gone.
+  // setTimeout(0) between the two paints lets React commit + the browser
+  // paint the intermediate state before the second update lands. Without
+  // it React 18 auto-batching collapses both into one render and the
+  // SpinningWheel never sees the same-count transition.
+  const sendPreview = (segs: SegmentData[]) => {
+    if (!onPreview) return;
+    if (!stateRef.current.name.trim()) return;
+    onPreview(stateToConfig({ ...stateRef.current, segments: segs }, configId));
+  };
+
+  // Generic helper: commit a new segment list, animating any added or
+  // removed segment via the near-zero-weight dance. No-op transition for
+  // pure edits (same length) — those just commit.
+  const commitWithAnim = (newSegs: SegmentData[]) => {
+    const prev = stateRef.current.segments;
+    const prevIds = new Set(prev.map(s => s.id));
+    const newIds = new Set(newSegs.map(s => s.id));
+
+    if (newSegs.length === prev.length + 1) {
+      const addedId = newSegs.find(s => !prevIds.has(s.id))?.id;
+      if (addedId) {
+        sendPreview(newSegs.map(s => s.id === addedId ? { ...s, weight: 0.001 } : s));
+        setTimeout(() => set({ ...stateRef.current, segments: newSegs }), 0);
+        return;
+      }
+    } else if (newSegs.length === prev.length - 1) {
+      const removedId = prev.find(s => !newIds.has(s.id))?.id;
+      if (removedId) {
+        sendPreview(prev.map(s => s.id === removedId ? { ...s, weight: 0.001 } : s));
+        setTimeout(() => set({ ...stateRef.current, segments: newSegs }), 110);
+        return;
+      }
+    }
+
+    // Length unchanged or multi-segment delta → just commit; SpinningWheel
+    // will cross-fade weights / colors automatically when same-count.
+    set({ ...stateRef.current, segments: newSegs });
+  };
+
   const addSegment = () => {
     const id = `${segmentIdCounter++}`;
-    set({
-      ...stateRef.current,
-      segments: [...stateRef.current.segments, {
-        id,
-        text: `Option ${stateRef.current.segments.length + 1}`,
-        color: getNextColor(stateRef.current.segments),
-        weight: 1,
-      }],
-    });
+    const newSegment: SegmentData = {
+      id,
+      text: `Option ${stateRef.current.segments.length + 1}`,
+      color: getNextColor(stateRef.current.segments),
+      weight: 1,
+    };
+    commitWithAnim([...stateRef.current.segments, newSegment]);
   };
 
   const removeSegment = (index: number) => {
     if (stateRef.current.segments.length <= 2) return;
-    set({
-      ...stateRef.current,
-      segments: stateRef.current.segments.filter((_, i) => i !== index),
-    });
     setExpandedIndex(null);
+    commitWithAnim(stateRef.current.segments.filter((_, i) => i !== index));
   };
 
   const duplicateSegment = (index: number) => {
@@ -236,7 +293,7 @@ export default function WheelEditor({
     const id = `${segmentIdCounter++}`;
     const newSegs = [...stateRef.current.segments];
     newSegs.splice(index + 1, 0, { ...original, id });
-    set({ ...stateRef.current, segments: newSegs });
+    commitWithAnim(newSegs);
   };
 
   // --- Continuous actions (patch, commit on end) ---
@@ -449,7 +506,7 @@ export default function WheelEditor({
   // Render segment card
   const renderSegmentCard = (segment: SegmentData, index: number) => {
     const isExpanded = expandedIndex === index;
-    const bgColor = isExpanded ? '#FFFFFF' : segment.color;
+    const bgColor = isExpanded ? SURFACE : segment.color;
     const borderColor = isExpanded ? segment.color : oklchShadow(segment.color, 0.06);
     const bottomColor = oklchShadow(isExpanded ? segment.color : segment.color);
     const textColor = isExpanded ? ON_SURFACE : '#FFFFFF';
@@ -543,7 +600,7 @@ export default function WheelEditor({
                 {/* Weight controls */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                   <PushDownButton
-                    color="#F4F4F5"
+                    color={SURFACE_ELEVATED}
                     borderRadius={10}
                     height={36}
                     bottomBorderWidth={3}
@@ -561,7 +618,7 @@ export default function WheelEditor({
                     Weight: {segment.weight.toFixed(1)}
                   </div>
                   <PushDownButton
-                    color="#F4F4F5"
+                    color={SURFACE_ELEVATED}
                     borderRadius={10}
                     height={36}
                     bottomBorderWidth={3}
@@ -589,7 +646,7 @@ export default function WheelEditor({
                       gap: 8,
                       padding: '10px 16px',
                       borderRadius: 12,
-                      backgroundColor: '#F4F4F5',
+                      backgroundColor: SURFACE_ELEVATED,
                       border: `1.5px solid ${BORDER}`,
                       cursor: 'pointer',
                       fontSize: 14,
@@ -640,7 +697,7 @@ export default function WheelEditor({
                         style={{
                           padding: '8px 16px',
                           borderRadius: 10,
-                          backgroundColor: ON_SURFACE,
+                          backgroundColor: PRIMARY,
                           color: '#FFFFFF',
                           border: 'none',
                           fontWeight: 700,
@@ -712,10 +769,12 @@ export default function WheelEditor({
         weight: 1,
       };
     });
-    // Only commit if something actually changed.
+    // Only commit if something actually changed. Route through commitWithAnim
+    // so a new line in the textarea (or a deleted line) gets the same
+    // grow / shrink animation as the cards-mode add / remove buttons.
     const same = nextSegments.length === prev.length && nextSegments.every((s, i) => s === prev[i]);
     if (!same) {
-      set({ ...stateRef.current, segments: nextSegments });
+      commitWithAnim(nextSegments);
     }
   };
 
@@ -735,7 +794,7 @@ export default function WheelEditor({
           padding: '14px 16px',
           borderRadius: 14,
           border: `1.5px solid ${BORDER}`,
-          backgroundColor: '#F8F8F9',
+          backgroundColor: SURFACE_ELEVATED,
           fontSize: 16,
           fontWeight: 500,
           fontFamily: 'inherit',
@@ -776,7 +835,8 @@ export default function WheelEditor({
             padding: '6px 12px',
             borderRadius: 10,
             border: `1.5px solid ${BORDER}`,
-            backgroundColor: '#F4F4F5',
+            backgroundColor: SURFACE_ELEVATED,
+            color: ON_SURFACE,
             fontWeight: 600,
             fontSize: 14,
             fontFamily: 'inherit',
@@ -809,7 +869,7 @@ export default function WheelEditor({
           alignItems: 'center',
           padding: '12px 16px',
           borderRadius: 14,
-          backgroundColor: state.showBackgroundCircle ? withAlpha(PRIMARY, 0.12) : '#F4F4F5',
+          backgroundColor: state.showBackgroundCircle ? withAlpha(PRIMARY, 0.12) : SURFACE_ELEVATED,
           border: `1.5px solid ${state.showBackgroundCircle ? PRIMARY : BORDER}`,
           cursor: 'pointer',
           marginTop: 8,
@@ -878,7 +938,7 @@ export default function WheelEditor({
                 );
               })}
               <div style={{ height: 12 }} />
-              <PushDownButton color={ON_SURFACE} onTap={addSegment}>
+              <PushDownButton color={PRIMARY} onTap={addSegment}>
                 <div style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -905,7 +965,7 @@ function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onCh
   return (
     <div style={{
       display: 'flex',
-      backgroundColor: '#E4E4E7',
+      backgroundColor: SURFACE_ELEVATED,
       borderRadius: 14,
       padding: 3,
       marginBottom: 14,
@@ -921,8 +981,10 @@ function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onCh
               padding: '8px 12px',
               borderRadius: 12,
               border: 'none',
-              backgroundColor: isActive ? '#FFFFFF' : 'transparent',
-              color: isActive ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
+              // Active pill = light surface (ON_SURFACE), dark text (BG).
+              // Inactive = transparent on the dark track, dimmed light text.
+              backgroundColor: isActive ? ON_SURFACE : 'transparent',
+              color: isActive ? BG : withAlpha(ON_SURFACE, 0.55),
               fontSize: 14,
               fontWeight: 700,
               fontFamily: 'inherit',
@@ -1023,14 +1085,13 @@ function SegmentRow({
         zIndex: isGrabbed ? 5 : undefined,
         transform,
         transition,
-        // Halo ring (3.5px @ 25% alpha) lives on the row as an outer
-        // boxShadow, sitting OUTSIDE the SwipeableActionCell's clip box.
-        // When grabbed, the drop shadow is composited on top — and emerges
-        // directly from the row's edge (no spread/inset trick), since the
-        // row's box now matches the visible container exactly.
-        boxShadow: isGrabbed
-          ? `0 0 0 3.5px ${haloColor}40, 0 12px 24px rgba(0,0,0,0.18)`
-          : `0 0 0 3.5px ${haloColor}40`,
+        // Drop shadow lives here (emerges from the visible card outline
+        // when grabbed). Halo ring is on the absolute child below,
+        // positioned at the bottom face's location so it hugs the lower
+        // layer instead of extending the full 3.5px above the top face
+        // — same recipe as PreviewTile in RouletteScreen and BlockRow in
+        // BlocksList.
+        boxShadow: isGrabbed ? '0 12px 24px rgba(0,0,0,0.18)' : 'none',
         borderRadius: 21,
         touchAction: isGrabbed ? 'none' : undefined,
         WebkitTouchCallout: 'none',
@@ -1038,6 +1099,21 @@ function SegmentRow({
         WebkitUserSelect: 'none',
       }}
     >
+      {/* Halo ring — same shape & position as the bottom face inside
+          the card (top: 6.5 inset, bottom-aligned to the row). The
+          3.5px boxShadow lands above the top face by only y=3 inside
+          the row instead of y=−3.5 above it, so the ring hugs the
+          bottom layer instead of wrapping the full perimeter. */}
+      <div style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 6.5,
+        bottom: 0,
+        borderRadius: 21,
+        boxShadow: `0 0 0 3.5px ${haloColor}40`,
+        pointerEvents: 'none',
+      }} />
       {children}
     </div>
   );

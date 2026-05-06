@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { ON_SURFACE } from '../utils/constants';
+import { ON_SURFACE, SURFACE, BORDER } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import DraggableSheet from './DraggableSheet';
 
@@ -66,8 +66,8 @@ export default function SignInSheet({ reason = 'default', onClose, onSignedIn }:
             width: '100%',
             height: 50,
             borderRadius: 12,
-            border: '1.5px solid #D4D4D8',
-            backgroundColor: '#FFFFFF',
+            border: `1.5px solid ${BORDER}`,
+            backgroundColor: SURFACE,
             cursor: busy ? 'default' : 'pointer',
             fontSize: 16,
             fontWeight: 600,

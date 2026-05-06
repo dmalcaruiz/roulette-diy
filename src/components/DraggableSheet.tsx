@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { X } from 'lucide-react';
+import { SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 
 interface DraggableSheetProps {
   onClose: () => void;
@@ -70,7 +71,7 @@ export default function DraggableSheet({ onClose, children, maxWidth = 500 }: Dr
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         style={{
-          backgroundColor: '#FFFFFF',
+          backgroundColor: SURFACE,
           borderRadius: '24px 24px 0 0',
           width: '100%',
           maxWidth,
@@ -103,7 +104,7 @@ export default function DraggableSheet({ onClose, children, maxWidth = 500 }: Dr
             width: 32,
             height: 32,
             borderRadius: 50,
-            backgroundColor: '#F4F4F5',
+            backgroundColor: SURFACE_ELEVATED,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

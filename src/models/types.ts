@@ -38,11 +38,11 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     textSize: 1.0,
     headerTextSize: 1.0,
     imageSize: 60,
-    cornerRadius: 8,
-    imageCornerRadius: 8,
-    strokeWidth: 3,
+    cornerRadius: 30,
+    imageCornerRadius: 30,
+    strokeWidth: 7.7,
     showBackgroundCircle: true,
-    centerMarkerSize: 200,
+    centerMarkerSize: 250,
     innerCornerStyle: 'none',
     centerInset: 50,
     segmentsMode: 'cards',
@@ -99,24 +99,17 @@ export function newRouletteBlock(): Block {
     type: 'roulette',
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
-    wheelConfig: {
+    // Use defaultWheelConfig so a single source of truth drives every
+    // freshly-created wheel — bumping a default in one place automatically
+    // propagates to new blocks.
+    wheelConfig: defaultWheelConfig({
       id,
       name: 'New Roulette',
       items: [
         { text: 'Option 1', color: '#322d2a', weight: 1 },
         { text: 'Option 2', color: '#fb2d29', weight: 1 },
       ],
-      textSize: 1,
-      headerTextSize: 1,
-      imageSize: 60,
-      cornerRadius: 8,
-      imageCornerRadius: 8,
-      strokeWidth: 3,
-      showBackgroundCircle: true,
-      centerMarkerSize: 200,
-      innerCornerStyle: 'none',
-      centerInset: 50,
-    },
+    }),
   };
 }
 
