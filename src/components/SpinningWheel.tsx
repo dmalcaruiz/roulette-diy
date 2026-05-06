@@ -547,6 +547,255 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     animRef.current = requestAnimationFrame(animate);
   }, [paint]);
 
+  // ── Drag-to-spin physics ────────────────────────────────────────────
+  // Tap on the wheel still calls the deterministic spin() above (with
+  // pre-scheduled audio + a guaranteed weighted-random winner). A drag
+  // gesture instead hands the wheel to the user: while their finger is
+  // down they rotate it directly via Math.atan2 around the wheel center,
+  // and on release the wheel continues with momentum + per-frame friction
+  // until it decays to rest. Audio clicks during a drag-spin are fired
+  // inline (cheap WebAudio) since we can't pre-schedule when we don't
+  // know the trajectory ahead of time.
+  //
+  // The "spin attempt" criterion: release velocity must clear a threshold
+  // AND no pointerdown re-grab can interrupt the decay. If both are met,
+  // the wheel triggers the same win callback / overlay flash as a regular
+  // spin(), but resolves the winner from the *actual* resting rotation
+  // (no pre-rolled randomness — what you spin is what you get).
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientPos: { x: number; y: number };
+    centerScreen: { x: number; y: number };
+    lastPointerAngle: number;
+    crossedThreshold: boolean; // true once movement > tap-vs-drag threshold
+    samples: { time: number; rotation: number }[]; // for release-velocity calc
+    lastRenderedSegment: string;
+    carriedVelocity: number; // momentum captured at grab-start (re-grab during decay)
+  } | null>(null);
+  // True while a momentum-decay is running, so a re-grab can mark the
+  // spin as interrupted (no win animation).
+  const decayInterruptedRef = useRef(false);
+  // Live momentum velocity during the decay loop. Read by handlePointerDown
+  // to "borrow" the in-flight speed when the user re-grabs the wheel,
+  // letting consecutive flicks accumulate momentum.
+  const momentumVelocityRef = useRef(0);
+
+  // Friction per ms: every ms, velocity is multiplied by this. 0.997
+  // gives a ~3-5 second decay from a typical flick velocity.
+  const FRICTION_PER_MS = 0.997;
+  // Velocity below which decay is considered done. Tuned so the wheel
+  // visibly comes to rest rather than crawling.
+  const STOP_VELOCITY = 0.0005; // rad/ms
+  // Release-velocity threshold above which a drag counts as an intentional
+  // spin attempt (and earns the win-overlay flash on natural stop).
+  const SPIN_ATTEMPT_VELOCITY = 0.004; // rad/ms — roughly a casual flick
+  // Hard cap on accumulated post-release velocity. Picked conservatively
+  // so the click rate stays in WebAudio's comfort zone even on wheels
+  // with many segments — at 0.012 rad/ms a 12-segment wheel emits ~23
+  // clicks/sec, well below the rate that strains the audio thread.
+  const MAX_VELOCITY = 0.012;
+
+  // Cancel any in-flight animation/audio so a new drag starts from a
+  // clean slate. Used by both pointerdown and reset paths.
+  const cancelInFlight = useCallback(() => {
+    cancelAnimationFrame(animRef.current);
+    for (const s of scheduledSourcesRef.current) {
+      try { s.stop(); } catch {}
+    }
+    scheduledSourcesRef.current = [];
+  }, []);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button === 2) return;
+    // Re-grab during a momentum decay marks the spin as interrupted (the
+    // *original* spin attempt no longer counts as a win) AND captures
+    // the in-flight angular velocity so it can be added to the new
+    // drag's release velocity — that's what makes consecutive flicks
+    // build up speed instead of resetting to zero each time.
+    decayInterruptedRef.current = isSpinningRef.current;
+    const carried = isSpinningRef.current ? momentumVelocityRef.current : 0;
+    cancelInFlight();
+    momentumVelocityRef.current = 0;
+    isSpinningRef.current = false;
+    // The capture target receives all subsequent pointermove/up events
+    // even if the finger leaves the canvas.
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startClientPos: { x: e.clientX, y: e.clientY },
+      centerScreen: { x: cx, y: cy },
+      lastPointerAngle: Math.atan2(e.clientY - cy, e.clientX - cx),
+      crossedThreshold: false,
+      samples: [{ time: performance.now(), rotation: rotationRef.current }],
+      lastRenderedSegment: segmentAtRotation(rotationRef.current),
+      carriedVelocity: carried,
+    };
+  }, [cancelInFlight, segmentAtRotation]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+
+    if (!drag.crossedThreshold) {
+      const dx = e.clientX - drag.startClientPos.x;
+      const dy = e.clientY - drag.startClientPos.y;
+      if (Math.hypot(dx, dy) < 6) return; // still might be a tap
+      drag.crossedThreshold = true;
+    }
+
+    // Convert pointer position to angle around wheel center; the delta
+    // since last frame is how far the wheel rotated under the finger.
+    const angle = Math.atan2(e.clientY - drag.centerScreen.y, e.clientX - drag.centerScreen.x);
+    let delta = angle - drag.lastPointerAngle;
+    if (delta > Math.PI) delta -= 2 * Math.PI;
+    if (delta < -Math.PI) delta += 2 * Math.PI;
+    drag.lastPointerAngle = angle;
+    rotationRef.current += delta;
+
+    // Click sound on segment crossing (inline — cheap WebAudio).
+    const seg = segmentAtRotation(rotationRef.current);
+    if (seg !== drag.lastRenderedSegment) {
+      drag.lastRenderedSegment = seg;
+      lastRenderedSegmentRef.current = seg;
+      setCurrentSegment(seg);
+      playClickInline();
+    }
+
+    // Keep the last ~80ms of samples for release-velocity computation.
+    const now = performance.now();
+    drag.samples.push({ time: now, rotation: rotationRef.current });
+    while (drag.samples.length > 1 && now - drag.samples[0].time > 80) {
+      drag.samples.shift();
+    }
+
+    paint();
+  }, [paint, segmentAtRotation]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+
+    if (!drag.crossedThreshold) {
+      // Stationary press → treat as tap → use the existing deterministic
+      // spin path (with pre-scheduled audio and weighted-random winner).
+      spin();
+      return;
+    }
+
+    // Release velocity: angular distance over the last sample window.
+    let dragVelocity = 0;
+    if (drag.samples.length >= 2) {
+      const first = drag.samples[0];
+      const last = drag.samples[drag.samples.length - 1];
+      const dt = last.time - first.time;
+      if (dt > 0) dragVelocity = (last.rotation - first.rotation) / dt;
+    }
+    // Combine with any momentum carried over from a re-grabbed decay,
+    // then clamp to MAX_VELOCITY. Same-direction flicks accumulate;
+    // opposite-direction flicks subtract (or reverse direction). The
+    // clamp keeps the click rate inside WebAudio's comfort zone.
+    let velocity = dragVelocity + drag.carriedVelocity;
+    if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
+    else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
+    const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
+
+    // No spin → just leave the wheel where the user dropped it.
+    if (Math.abs(velocity) < STOP_VELOCITY) {
+      paint();
+      return;
+    }
+
+    // Momentum decay loop. Friction is exp-applied per ms so frame-rate
+    // changes don't change the feel of the wind-down. Each frame: advance
+    // rotation by velocity * dt, scale velocity by FRICTION^dt, fire a
+    // click on segment crossings, paint. Bail when velocity dips below
+    // the stop threshold.
+    isSpinningRef.current = true;
+    decayInterruptedRef.current = false;
+    momentumVelocityRef.current = velocity;
+    let lastFrameTime = performance.now();
+    let lastSegment = segmentAtRotation(rotationRef.current);
+
+    const decayFrame = (now: number) => {
+      const dt = Math.min(50, now - lastFrameTime); // cap dt across long pauses
+      lastFrameTime = now;
+      rotationRef.current += velocity * dt;
+      velocity *= Math.pow(FRICTION_PER_MS, dt);
+      momentumVelocityRef.current = velocity;
+
+      const seg = segmentAtRotation(rotationRef.current);
+      if (seg !== lastSegment) {
+        lastSegment = seg;
+        lastRenderedSegmentRef.current = seg;
+        setCurrentSegment(seg);
+        playClickInline();
+      }
+      paint();
+
+      if (Math.abs(velocity) > STOP_VELOCITY && !decayInterruptedRef.current) {
+        animRef.current = requestAnimationFrame(decayFrame);
+        return;
+      }
+
+      // Decay complete (or interrupted). Reset spinning flag.
+      isSpinningRef.current = false;
+      momentumVelocityRef.current = 0;
+      const interrupted = decayInterruptedRef.current;
+      decayInterruptedRef.current = false;
+      if (interrupted || !isSpinAttempt) return;
+
+      // Natural stop after a real spin attempt → fire the win flow.
+      const idx = getWinningIndex();
+      onFinished(idx);
+      if (!showWinAnimation) return;
+      // Overlay flash — same recipe as the auto-spin's overlayIn/Out.
+      winningIndexRef.current = idx;
+      const overlayStart = performance.now();
+      const overlayDuration = 400;
+      const animateOverlayIn = (t0: number) => {
+        const t = Math.min(1, (t0 - overlayStart) / overlayDuration);
+        overlayOpacityRef.current = easeInOut(t);
+        paint();
+        if (t < 1) {
+          animRef.current = requestAnimationFrame(animateOverlayIn);
+        } else {
+          setTimeout(() => {
+            const fadeStart = performance.now();
+            const animateOverlayOut = (t1: number) => {
+              const t = Math.min(1, (t1 - fadeStart) / overlayDuration);
+              overlayOpacityRef.current = 1 - easeInOut(t);
+              paint();
+              if (t < 1) {
+                animRef.current = requestAnimationFrame(animateOverlayOut);
+              } else {
+                overlayOpacityRef.current = 0;
+                winningIndexRef.current = -1;
+                paint();
+              }
+            };
+            animRef.current = requestAnimationFrame(animateOverlayOut);
+          }, 2000);
+        }
+      };
+      animRef.current = requestAnimationFrame(animateOverlayIn);
+    };
+
+    animRef.current = requestAnimationFrame(decayFrame);
+  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation]);
+
+  const handlePointerCancel = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+  }, []);
+
   useImperativeHandle(ref, () => ({
     spin,
     reset,
@@ -594,8 +843,18 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         width: size,
         height: size,
         cursor: 'pointer',
+        // Disables native touch panning on the wheel — the drag-to-spin
+        // gesture needs every pointermove and would otherwise compete
+        // with the page scroll.
+        touchAction: 'none',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
       }}
-        onClick={spin}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
       >
         <canvas
           ref={canvasRef}
