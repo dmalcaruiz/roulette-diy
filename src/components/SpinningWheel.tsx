@@ -148,6 +148,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Overlay animation state
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
+  // Win-overlay rAF lives in its own slot, separate from the spin /
+  // decay loop's animRef. This way `cancelInFlight()` (which fires when
+  // the user grabs the wheel for a new gesture) can cancel the spin
+  // animation without ever interrupting the post-spin win flash —
+  // grabbing the wheel mid-flash now no longer leaves the overlay
+  // stuck at partial opacity.
+  const winAnimRef = useRef<number>(0);
+  const winHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // (playClickInline is invoked directly from spin via WebAudio's
   // sample-accurate scheduler now — no per-frame click trigger needed.)
@@ -266,6 +274,60 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
   const easeInOut = (t: number) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 
+  // Cancel any in-flight spin/decay animation + scheduled audio so a new
+  // drag starts from a clean slate. Deliberately does NOT touch the win-
+  // overlay animation (winAnimRef / winHoldTimerRef) — once a win flash
+  // begins it must run to completion regardless of subsequent gestures.
+  const cancelInFlight = useCallback(() => {
+    cancelAnimationFrame(animRef.current);
+    for (const s of scheduledSourcesRef.current) {
+      try { s.stop(); } catch {}
+    }
+    scheduledSourcesRef.current = [];
+  }, []);
+
+  // Win-overlay flash. Lives in its own animation slot so user gestures
+  // (drag-to-spin, tap-to-spin, anything that calls cancelInFlight) can
+  // never stop it mid-fade. Cancels only a *previous* win flash that's
+  // still in flight, so a fresh win starts cleanly.
+  const playWinOverlay = useCallback((idx: number) => {
+    cancelAnimationFrame(winAnimRef.current);
+    if (winHoldTimerRef.current) {
+      clearTimeout(winHoldTimerRef.current);
+      winHoldTimerRef.current = null;
+    }
+    winningIndexRef.current = idx;
+    const overlayDuration = 400;
+    const overlayStart = performance.now();
+    const animateOverlayIn = (t0: number) => {
+      const t = Math.min(1, (t0 - overlayStart) / overlayDuration);
+      overlayOpacityRef.current = easeInOut(t);
+      paint();
+      if (t < 1) {
+        winAnimRef.current = requestAnimationFrame(animateOverlayIn);
+      } else {
+        winHoldTimerRef.current = setTimeout(() => {
+          winHoldTimerRef.current = null;
+          const fadeStart = performance.now();
+          const animateOverlayOut = (t1: number) => {
+            const t = Math.min(1, (t1 - fadeStart) / overlayDuration);
+            overlayOpacityRef.current = 1 - easeInOut(t);
+            paint();
+            if (t < 1) {
+              winAnimRef.current = requestAnimationFrame(animateOverlayOut);
+            } else {
+              overlayOpacityRef.current = 0;
+              winningIndexRef.current = -1;
+              paint();
+            }
+          };
+          winAnimRef.current = requestAnimationFrame(animateOverlayOut);
+        }, 2000);
+      }
+    };
+    winAnimRef.current = requestAnimationFrame(animateOverlayIn);
+  }, [paint]);
+
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
 
@@ -302,10 +364,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       : (Math.random() - 0.5) * 2 * (Math.PI / 180);
     const pullbackAmount = basePullback + pullbackVariation;
 
-    // Rotations
+    // Rotations — bumped up so the tap-spin feels punchy. More
+    // revolutions packed into the same duration = higher peak angular
+    // velocity = more dramatic spin.
     const baseRotations = isRandomIntensity
-      ? 1 + Math.floor(effectiveIntensity * 4)
-      : 1 + Math.floor(effectiveIntensity * 6);
+      ? 4 + Math.floor(effectiveIntensity * 7)
+      : 4 + Math.floor(effectiveIntensity * 9);
     const totalRotations = isRandomIntensity
       ? baseRotations + Math.random()
       : baseRotations + Math.random() * 0.2;
@@ -459,41 +523,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             setIsSpinning(false);
             const idx = getWinningIndex();
             onFinished(idx);
-
-            if (showWinAnimation) {
-              // Overlay animation
-              winningIndexRef.current = idx;
-              const overlayStart = performance.now();
-              const overlayDuration = 400;
-
-              const animateOverlayIn = (now: number) => {
-                const t = Math.min(1, (now - overlayStart) / overlayDuration);
-                overlayOpacityRef.current = easeInOut(t);
-                paint();
-                if (t < 1) {
-                  animRef.current = requestAnimationFrame(animateOverlayIn);
-                } else {
-                  // Hold for 2 seconds, then fade out
-                  setTimeout(() => {
-                    const fadeStart = performance.now();
-                    const animateOverlayOut = (now: number) => {
-                      const t = Math.min(1, (now - fadeStart) / overlayDuration);
-                      overlayOpacityRef.current = 1 - easeInOut(t);
-                      paint();
-                      if (t < 1) {
-                        animRef.current = requestAnimationFrame(animateOverlayOut);
-                      } else {
-                        overlayOpacityRef.current = 0;
-                        winningIndexRef.current = -1;
-                        paint();
-                      }
-                    };
-                    animRef.current = requestAnimationFrame(animateOverlayOut);
-                  }, 2000);
-                }
-              };
-              animRef.current = requestAnimationFrame(animateOverlayIn);
-            }
+            // Win flash runs on its own animation slot — once kicked off
+            // here it can't be interrupted by a subsequent drag.
+            if (showWinAnimation) playWinOverlay(idx);
           }
         };
         animRef.current = requestAnimationFrame(animateMainSpin);
@@ -502,7 +534,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     animRef.current = requestAnimationFrame(animatePullback);
   }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint,
-      segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished]);
+      segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playWinOverlay]);
 
   const reset = useCallback(() => {
     cancelAnimationFrame(animRef.current);
@@ -580,30 +612,24 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // letting consecutive flicks accumulate momentum.
   const momentumVelocityRef = useRef(0);
 
-  // Friction per ms: every ms, velocity is multiplied by this. 0.997
-  // gives a ~3-5 second decay from a typical flick velocity.
-  const FRICTION_PER_MS = 0.997;
+  // Friction per ms: every ms, velocity is multiplied by this. Higher =
+  // less friction = wheel coasts longer. 0.9995 gives a very light feel
+  // where a peak-velocity flick coasts for ~7-8 seconds before settling.
+  const FRICTION_PER_MS = 0.999;
   // Velocity below which decay is considered done. Tuned so the wheel
   // visibly comes to rest rather than crawling.
   const STOP_VELOCITY = 0.0005; // rad/ms
   // Release-velocity threshold above which a drag counts as an intentional
   // spin attempt (and earns the win-overlay flash on natural stop).
   const SPIN_ATTEMPT_VELOCITY = 0.004; // rad/ms — roughly a casual flick
-  // Hard cap on accumulated post-release velocity. Picked conservatively
-  // so the click rate stays in WebAudio's comfort zone even on wheels
-  // with many segments — at 0.012 rad/ms a 12-segment wheel emits ~23
-  // clicks/sec, well below the rate that strains the audio thread.
-  const MAX_VELOCITY = 0.012;
+  // Hard cap on accumulated post-release velocity. ~45 clicks/sec on a
+  // 12-segment wheel, still inside WebAudio's comfort zone but high
+  // enough that consecutive flicks meaningfully build speed before
+  // hitting the ceiling.
+  const MAX_VELOCITY = 0.024;
 
-  // Cancel any in-flight animation/audio so a new drag starts from a
-  // clean slate. Used by both pointerdown and reset paths.
-  const cancelInFlight = useCallback(() => {
-    cancelAnimationFrame(animRef.current);
-    for (const s of scheduledSourcesRef.current) {
-      try { s.stop(); } catch {}
-    }
-    scheduledSourcesRef.current = [];
-  }, []);
+  // (cancelInFlight + playWinOverlay are declared before spin() so that
+  // spin's useCallback can include playWinOverlay in its deps.)
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button === 2) return;
@@ -699,8 +725,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // Combine with any momentum carried over from a re-grabbed decay,
     // then clamp to MAX_VELOCITY. Same-direction flicks accumulate;
     // opposite-direction flicks subtract (or reverse direction). The
-    // clamp keeps the click rate inside WebAudio's comfort zone.
-    let velocity = dragVelocity + drag.carriedVelocity;
+    // RELEASE_BOOST scales the user's input so the wheel feels lively
+    // — a casual flick now produces a meaningful spin instead of a
+    // lazy half-turn. The clamp keeps the click rate inside WebAudio's
+    // comfort zone regardless of how aggressive the boost is.
+    const RELEASE_BOOST = 2;
+    let velocity = (dragVelocity + drag.carriedVelocity) * RELEASE_BOOST;
     if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
     else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
     const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
@@ -753,41 +783,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       // Natural stop after a real spin attempt → fire the win flow.
       const idx = getWinningIndex();
       onFinished(idx);
-      if (!showWinAnimation) return;
-      // Overlay flash — same recipe as the auto-spin's overlayIn/Out.
-      winningIndexRef.current = idx;
-      const overlayStart = performance.now();
-      const overlayDuration = 400;
-      const animateOverlayIn = (t0: number) => {
-        const t = Math.min(1, (t0 - overlayStart) / overlayDuration);
-        overlayOpacityRef.current = easeInOut(t);
-        paint();
-        if (t < 1) {
-          animRef.current = requestAnimationFrame(animateOverlayIn);
-        } else {
-          setTimeout(() => {
-            const fadeStart = performance.now();
-            const animateOverlayOut = (t1: number) => {
-              const t = Math.min(1, (t1 - fadeStart) / overlayDuration);
-              overlayOpacityRef.current = 1 - easeInOut(t);
-              paint();
-              if (t < 1) {
-                animRef.current = requestAnimationFrame(animateOverlayOut);
-              } else {
-                overlayOpacityRef.current = 0;
-                winningIndexRef.current = -1;
-                paint();
-              }
-            };
-            animRef.current = requestAnimationFrame(animateOverlayOut);
-          }, 2000);
-        }
-      };
-      animRef.current = requestAnimationFrame(animateOverlayIn);
+      if (showWinAnimation) playWinOverlay(idx);
     };
 
     animRef.current = requestAnimationFrame(decayFrame);
-  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation]);
+  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay]);
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
@@ -802,9 +802,15 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     get isSpinning() { return isSpinningRef.current; },
   }), [spin, reset]);
 
-  // Cleanup animation on unmount
+  // Cleanup animations on unmount — cancels both the spin/decay slot
+  // AND the win-overlay slot, plus the hold-timer between fade-in and
+  // fade-out, so nothing leaks into the next mount.
   useEffect(() => {
-    return () => cancelAnimationFrame(animRef.current);
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      cancelAnimationFrame(winAnimRef.current);
+      if (winHoldTimerRef.current) clearTimeout(winHoldTimerRef.current);
+    };
   }, []);
 
   const headerFontSize = 56 * headerTextSizeMultiplier;
