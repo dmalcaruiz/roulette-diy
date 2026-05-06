@@ -819,14 +819,23 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     get isSpinning() { return isSpinningRef.current; },
   }), [spin, reset]);
 
-  // Cleanup animations on unmount — cancels both the spin/decay slot
-  // AND the win-overlay slot, plus the hold-timer between fade-in and
-  // fade-out, so nothing leaks into the next mount.
+  // Cleanup animations + audio on unmount — cancels both the spin/decay
+  // slot AND the win-overlay slot, plus the hold-timer between fade-in
+  // and fade-out, so nothing leaks into the next mount. Also stops any
+  // scheduled click sources still queued on the audio thread; without
+  // this, switching to a different preview tile mid-spin (which keys
+  // the wheel canvas wrapper to remount on block.id change) would
+  // unmount SpinningWheel but the WebAudio queue would keep firing
+  // ticks for the wheel that's no longer on screen.
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animRef.current);
       cancelAnimationFrame(winAnimRef.current);
       if (winHoldTimerRef.current) clearTimeout(winHoldTimerRef.current);
+      for (const s of scheduledSourcesRef.current) {
+        try { s.stop(); } catch {}
+      }
+      scheduledSourcesRef.current = [];
     };
   }, []);
 
