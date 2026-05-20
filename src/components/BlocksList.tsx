@@ -3,7 +3,7 @@ import type { CloudBlock } from '../services/blockService';
 import { BlockType, getBlockTypeLabel, getBlockItemCountLabel } from '../models/types';
 import WheelThumbnail from './WheelThumbnail';
 import SwipeableActionCell from './SwipeableActionCell';
-import { oklchShadow, withAlpha } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, SURFACE } from '../utils/constants';
 import {
   GripVertical, ChevronRight, LayoutGrid, Copy, Trash2,
@@ -20,15 +20,13 @@ const EXPERIENCE_COLOR = '#c827d4';
 // neighbor offsets land in the gap naturally.
 const ROW_GAP = 10;
 
-// Color scheme mirrors PreviewTile in RouletteScreen so the row reads as
-// the same kind of 3D card surface: top face + bottom face + halo all
-// derived from the same SURFACE color, with BORDER for the top face's
-// inner stroke.
-const BLOCK_TOP_BG = SURFACE;
-const BLOCK_INNER_STROKE = BORDER;
-// The card's bottom-face/halo color, hoisted so BlockRow can compose it
-// into the row's combined boxShadow alongside the drop shadow.
-const BLOCK_HALO_COLOR = oklchShadow(BLOCK_TOP_BG);
+// Every layer of the BlockCard is derived from a single base color via
+// OKLCh operations (top face = base, bottom face = base darkened, halo =
+// 25% alpha of bottom, inner stroke = base darkened slightly). Hue and
+// chroma are preserved across all shades. Only the base passes through
+// verbatim — change it here and every layer follows.
+const BLOCK_BASE = SURFACE;
+const BLOCK_SURFACES = deriveCardSurfaces(BLOCK_BASE);
 
 function colorForType(type: BlockType): string {
   switch (type) {
@@ -133,6 +131,13 @@ export default function BlocksList({
     rowHeights: number[];
     sourceSlotHeight: number; // sourceRow box height + ROW_GAP
   } | null>(null);
+
+  // Per-row halo element refs. SwipeableActionCell's onOffsetChange writes
+  // a translateX to the matching halo so it slides with the card during a
+  // horizontal swipe (the halo lives on the outer BlockRow, outside the
+  // cell's overflow:hidden clip, so it can't simply be a sibling of the
+  // translating content).
+  const haloElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Lock the parent scroll container while a row is being dragged. Without
   // this, a touch pan on a phone would scroll the page under the user's
@@ -405,6 +410,36 @@ export default function BlocksList({
               <SwipeableActionCell
                 bottomPeek={6.5}
                 disabled={isGrabbed}
+                onOffsetChange={(offset, dragging) => {
+                  const el = haloElsRef.current.get(block.id);
+                  if (!el) return;
+                  el.style.transform = `translateX(${offset}px)`;
+                  // Match the cell's own transform-transition recipe so
+                  // halo and card move/settle together. During drag the
+                  // transform updates 1:1 with the pointer (no easing);
+                  // on release it glides back/snaps over 0.18s.
+                  el.style.transition = dragging
+                    ? 'transform 0s ease-out'
+                    : 'transform 0.18s cubic-bezier(0.32, 0.72, 0, 1)';
+                }}
+                halo={
+                  <div
+                    ref={el => {
+                      if (el) haloElsRef.current.set(block.id, el);
+                      else haloElsRef.current.delete(block.id);
+                    }}
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      top: 6.5,
+                      bottom: 0,
+                      borderRadius: 21,
+                      boxShadow: `0 0 0 3.5px ${BLOCK_SURFACES.halo}`,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                }
                 trailingActions={[
                   { color: ROULETTE_COLOR, icon: <Copy size={26} />, onTap: () => onBlockDuplicate(block) },
                   { color: '#EF4444', icon: <Trash2 size={26} />, onTap: () => onBlockDelete(block.id), expandOnFullSwipe: true },
@@ -533,23 +568,11 @@ function BlockRow({
         WebkitUserSelect: 'none',
       }}
     >
-      {/* Halo ring — same shape & position as the bottom face inside
-          BlockCard (top: 6.5 inset from the row top, bottom-aligned to
-          the row). The 3.5px boxShadow extends OUTSIDE this div, so
-          its top edge lands at y=3 (inside the row) instead of y=−3.5.
-          Visually identical to PreviewTile's bottom-layer halo:
-          essentially invisible above the top face, ringing only the
-          bottom face peek + sides + below. */}
-      <div style={{
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        top: 6.5,
-        bottom: 0,
-        borderRadius: 21,
-        boxShadow: `0 0 0 3.5px ${BLOCK_HALO_COLOR}40`,
-        pointerEvents: 'none',
-      }} />
+      {/* The halo div is rendered INSIDE the SwipeableActionCell now
+          (via its `halo` prop) so it z-stacks above the action buttons
+          but below the card's translate layer. See SwipeableActionCell
+          for the structural reasoning. The halo prop comes from the
+          parent's row map below. */}
       {children}
     </div>
   );
@@ -584,7 +607,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
   asFlow?: boolean;
   allBlocks?: CloudBlock[];
 }) {
-  const bottomColor = BLOCK_HALO_COLOR;
+  const bottomColor = BLOCK_SURFACES.bottom;
   const typeColor = asFlow ? EXPERIENCE_COLOR : colorForType(block.type);
   const TypeIcon = asFlow ? Compass : iconForType(block.type);
   const isPublished = !!block.publishedWheelId;
@@ -635,8 +658,8 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
         <div style={{
           position: 'relative',
           borderRadius: 21,
-          backgroundColor: BLOCK_TOP_BG,
-          border: `3px solid ${BLOCK_INNER_STROKE}`,
+          backgroundColor: BLOCK_SURFACES.top,
+          border: `3px solid ${BLOCK_SURFACES.innerStroke}`,
           padding: '12px 14px',
           display: 'flex',
           alignItems: 'center',

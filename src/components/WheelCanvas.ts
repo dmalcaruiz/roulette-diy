@@ -119,12 +119,15 @@ export function paintWheel(
       ctx.stroke(path);
     }
 
-    // Text — skip tiny segments
-    if (layout.segmentSizes[i] > 0.15) {
-      // Fade text in / out for segments mid-add or mid-remove (i.e. one
-      // side of the transition has near-zero weight). The interpolated
-      // wedge already grows / shrinks naturally from the weight lerp; this
-      // just keeps the text from popping at full opacity over a tiny slice.
+    // Text — always drawn, regardless of how thin the slice is. The
+    // segment-rect clip below trims anything that would overflow the
+    // wedge, so a too-thin slice shows just the rightmost part of the
+    // label rather than vanishing entirely.
+    {
+      // Fade text in / out for segments mid-add or mid-remove (one side
+      // of the transition has near-zero weight). The interpolated wedge
+      // already grows / shrinks naturally from the weight lerp; this just
+      // keeps the text from popping at full opacity over a tiny slice.
       let contentOpacity = 1;
       if (fromItems && i < fromItems.length && transition < 1) {
         const fromWeight = fromItems[i].weight;
@@ -186,8 +189,9 @@ export function paintWheel(
     ctx.fillStyle = winItem.color;
     ctx.fill(layout.paths[winningIndex]);
 
-    // Winning segment text
-    if (layout.segmentSizes[winningIndex] > 0.15) {
+    // Winning segment text — always drawn (segment-rect clip below trims
+    // anything that would overflow a too-thin wedge).
+    {
       ctx.save();
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);

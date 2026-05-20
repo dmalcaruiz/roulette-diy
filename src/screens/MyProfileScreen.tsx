@@ -60,7 +60,7 @@ export default function MyProfileScreen({
 
   return (
     <>
-    <div style={{ height: '100%', overflowY: 'auto', backgroundColor: BG }}>
+    <div className="hide-scrollbar" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', backgroundColor: BG }}>
       {/* Header */}
       <div style={{ padding: '24px 20px 12px', textAlign: 'center' }}>
         <div style={{
@@ -208,7 +208,7 @@ function Stat({ count, label }: { count: number; label: string }) {
 // shimmer.
 function ProfileSkeleton() {
   return (
-    <div style={{ height: '100%', overflowY: 'auto', backgroundColor: BG }}>
+    <div className="hide-scrollbar" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', backgroundColor: BG }}>
       <div style={{ padding: '24px 20px 8px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <Skeleton width={96} height={96} radius="50%" style={{ margin: '0 auto 12px' }} />
         <Skeleton width={140} height={20} radius={6} style={{ margin: '4px 0 8px' }} />
@@ -266,7 +266,7 @@ function AnonymousProfile({
   blocks, blocksLoaded, onSignIn, onBlockTap, onBlockEdit, onBlockDuplicate, onBlockDelete, onBlockReorder,
 }: AnonymousProfileProps) {
   return (
-    <div style={{ height: '100%', overflowY: 'auto', backgroundColor: BG }}>
+    <div className="hide-scrollbar" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', backgroundColor: BG }}>
       <div style={{ padding: '24px 20px 8px', textAlign: 'center' }}>
         <div style={{
           width: 96, height: 96, borderRadius: '50%',

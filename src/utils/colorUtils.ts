@@ -20,7 +20,18 @@ function cubeRoot(x: number): number {
   return x >= 0 ? Math.pow(x, 1 / 3) : -Math.pow(-x, 1 / 3);
 }
 
-export function oklchShadow(hexColor: string, lightnessReduction = 0.1): string {
+// Additive drop in OKLCh L with a piecewise weight by base lightness:
+//   `newL = okL − delta · (1 + lightBoost · okL + topBoost · okL²)`
+// C + h preserved. The eye reads *relative* lightness change (Weber-style),
+// so a constant absolute drop reads as a heavy shadow on dark bases and a
+// near-invisible step on light ones. The two boost terms compensate:
+//   - `lightBoost` adds drop linearly with okL (boost across the whole upper
+//     half).
+//   - `topBoost` adds drop quadratically (extra emphasis on the brightest
+//     end — saturated yellows / lights — where the linear term alone can't
+//     produce visible contrast without re-darkening dark greys).
+// Pure black stays at 0; pure white drops by `delta · (1 + lightBoost + topBoost)`.
+export function oklchShadow(hexColor: string, delta = 0.05, lightBoost = 2, topBoost = 0): string {
   const { r, g, b, a } = hexToRgba(hexColor);
 
   const lr = gammaExpansion(r / 255);
@@ -38,7 +49,8 @@ export function oklchShadow(hexColor: string, lightnessReduction = 0.1): string 
   const c = Math.sqrt(okA * okA + okB * okB);
   const h = Math.atan2(okB, okA);
 
-  const newL = Math.max(0, Math.min(1, okL - lightnessReduction));
+  const drop = delta * (1 + lightBoost * okL + topBoost * okL * okL);
+  const newL = Math.max(0, Math.min(1, okL - drop));
   const newA = c * Math.cos(h);
   const newB = c * Math.sin(h);
 
@@ -59,6 +71,80 @@ export function oklchShadow(hexColor: string, lightnessReduction = 0.1): string 
   const bFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(bOut))) * 255);
 
   return rgbaToHex(rFinal, gFinal, bFinal, a);
+}
+
+// Simple additive rise in OKLCh L, mirror of oklchShadow:
+//   `newL = okL + delta · (1 + darkBoost · (1 − okL))`
+// C + h preserved. Dark bases get a heavier rise (visible rim on dark
+// surfaces), lights get just `delta`. Works correctly at extremes: pure
+// black lifts by `delta · (1 + darkBoost)`, pure white stays at 1.
+export function oklchHighlight(hexColor: string, delta = 0.05, darkBoost = 1): string {
+  const { r, g, b, a } = hexToRgba(hexColor);
+
+  const lr = gammaExpansion(r / 255);
+  const lg = gammaExpansion(g / 255);
+  const lb = gammaExpansion(b / 255);
+
+  const lCone = cubeRoot(0.412221469470763 * lr + 0.5363325372617348 * lg + 0.0514459932675022 * lb);
+  const mCone = cubeRoot(0.2119034958178252 * lr + 0.6806995506452344 * lg + 0.1073969535369406 * lb);
+  const sCone = cubeRoot(0.0883024591900564 * lr + 0.2817188391361215 * lg + 0.6299787016738222 * lb);
+
+  const okL = 0.210454268309314 * lCone + 0.7936177747023054 * mCone - 0.0040720430116193 * sCone;
+  const okA = 1.9779985324311684 * lCone - 2.4285922420485799 * mCone + 0.450593709617411 * sCone;
+  const okB = 0.0259040424655478 * lCone + 0.7827717124575296 * mCone - 0.8086757549230774 * sCone;
+
+  const c = Math.sqrt(okA * okA + okB * okB);
+  const h = Math.atan2(okB, okA);
+
+  const rise = delta * (1 + darkBoost * (1 - okL));
+  const newL = Math.max(0, Math.min(1, okL + rise));
+  const newA = c * Math.cos(h);
+  const newB = c * Math.sin(h);
+
+  const l2 = newL + 0.3963377773761749 * newA + 0.2158037573099136 * newB;
+  const m2 = newL - 0.1055613458156586 * newA - 0.0638541728258133 * newB;
+  const s2 = newL - 0.0894841775298119 * newA - 1.2914855480194092 * newB;
+
+  const l3 = l2 * l2 * l2;
+  const m3 = m2 * m2 * m2;
+  const s3 = s2 * s2 * s2;
+
+  const rOut = 4.0767416360759574 * l3 - 3.3077115392580616 * m3 + 0.2309699031821044 * s3;
+  const gOut = -1.2684379732850317 * l3 + 2.6097573492876887 * m3 - 0.3413193760026573 * s3;
+  const bOut = -0.0041960761386756 * l3 - 0.7034186179359362 * m3 + 1.7076146940746117 * s3;
+
+  const rFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(rOut))) * 255);
+  const gFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(gOut))) * 255);
+  const bFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(bOut))) * 255);
+
+  return rgbaToHex(rFinal, gFinal, bFinal, a);
+}
+
+// ── Card-surface derivation ─────────────────────────────────────────────
+// A single base color drives every surface on a 3D card (top face, bottom
+// face, halo ring, inner stroke). Each derived shade is an OKLCh
+// transformation of the base — chroma + hue are preserved, only lightness
+// shifts — so a red card gets a darker red bottom face (not brown-shifted),
+// a blue card gets a darker blue (not purple-shifted), etc. Only the base
+// itself is passed through verbatim.
+export interface CardSurfaces {
+  top: string;          // = base (verbatim)
+  bottom: string;       // base darkened (L · 0.755) — the lifted shadow layer.
+  halo: string;         // bottom + 25% alpha — the 3.5px outer ring.
+  innerStroke: string;  // base LIGHTENED in OKLCh — a soft highlight rim
+                        // on the top face. Lighter than the base so it
+                        // reads as a subtle inner glow on dark surfaces
+                        // (where a darker shade would just disappear).
+}
+
+export function deriveCardSurfaces(base: string): CardSurfaces {
+  const bottom = oklchShadow(base, 0.05, 2.5, 0.8);
+  return {
+    top: base,
+    bottom,
+    halo: `${bottom}40`,
+    innerStroke: oklchHighlight(base, 0.04, 1),
+  };
 }
 
 // ── Color conversion helpers ─────────────────────────────────────────────

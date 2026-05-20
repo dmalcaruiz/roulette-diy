@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
-import { oklchShadow, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import {
@@ -174,8 +174,60 @@ export default function WheelEditor({
   } | null>(null);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
+  // Ref to the Add Segment button's wrapper — used as the scroll target so
+  // tapping it keeps the BUTTON itself visible (not just the new segment,
+  // which sits above it in the DOM and would still leave the button below
+  // the viewport after the add).
+  const addSegmentBtnRef = useRef<HTMLDivElement | null>(null);
+  // Per-segment halo element refs. SwipeableActionCell calls onOffsetChange
+  // with the current swipe offset; we look up the matching halo div and
+  // imperatively translate it so it slides with the card. Without this the
+  // halo (which lives on the outer row, outside the cell's overflow:hidden
+  // clip box) would visually stay behind when the card swipes aside.
+  const haloElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
+
+  // Scroll the nearest scrollable ancestor of `anchorEl` to its bottom
+  // over 110ms (easeOutCubic) — same curve and duration as the wheel's
+  // segment-add transition (see SpinningWheel.tsx). Walks every ancestor;
+  // whichever has overflow-y auto / scroll AND actually has overflow
+  // content (scrollHeight > clientHeight) wins. Falls back to
+  // document.scrollingElement if nothing usable is found.
+  const scrollAncestorToBottom = (anchorEl: HTMLElement) => {
+    let scrollEl: HTMLElement | null = null;
+    let cur: HTMLElement | null = anchorEl.parentElement;
+    while (cur) {
+      const cs = getComputedStyle(cur);
+      const overflowY = cs.overflowY;
+      const overflow = cs.overflow;
+      const isScrollable = /(auto|scroll)/.test(overflowY) || /(auto|scroll)/.test(overflow);
+      if (isScrollable && cur.scrollHeight > cur.clientHeight + 1) {
+        scrollEl = cur;
+        break;
+      }
+      cur = cur.parentElement;
+    }
+    if (!scrollEl) scrollEl = (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
+    if (!scrollEl) return;
+    const startScroll = scrollEl.scrollTop;
+    const target = scrollEl;
+    const t0 = performance.now();
+    // Recompute the bottom on every frame: when a segment is added the
+    // scrollHeight grows AFTER React's commit (the new row's content
+    // might still be settling layout for a frame or two). If we lock
+    // `targetScroll` at the start, we'd undershoot. By querying
+    // `scrollHeight - clientHeight` each tick, the tween's final landing
+    // is whatever the bottom is at the END of the 150ms window.
+    const tick = (now: number) => {
+      const u = Math.min(1, (now - t0) / 110);
+      const eased = 1 - Math.pow(1 - u, 3);
+      const liveBottom = target.scrollHeight - target.clientHeight;
+      target.scrollTop = startScroll + (liveBottom - startScroll) * eased;
+      if (u < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
 
   // Keep a ref to current state for use in pointer handlers
   const stateRef = useRef(state);
@@ -280,6 +332,13 @@ export default function WheelEditor({
       weight: 1,
     };
     commitWithAnim([...stateRef.current.segments, newSegment]);
+    // commitWithAnim defers state-update via setTimeout(0). Chain another
+    // setTimeout + rAF to land after React's render commits, then scroll
+    // the page to the bottom — keeps both the new segment and the Add
+    // Segment button visible in the same gesture.
+    setTimeout(() => requestAnimationFrame(() => {
+      if (addSegmentBtnRef.current) scrollAncestorToBottom(addSegmentBtnRef.current);
+    }), 0);
   };
 
   const removeSegment = (index: number) => {
@@ -506,9 +565,17 @@ export default function WheelEditor({
   // Render segment card
   const renderSegmentCard = (segment: SegmentData, index: number) => {
     const isExpanded = expandedIndex === index;
-    const bgColor = isExpanded ? SURFACE : segment.color;
-    const borderColor = isExpanded ? segment.color : oklchShadow(segment.color, 0.06);
-    const bottomColor = oklchShadow(isExpanded ? segment.color : segment.color);
+    // Every layer is derived from segment.color via OKLCh ops — bottom
+    // face = base darkened, inner stroke = base darkened less, halo (on
+    // the outer SegmentRow) = bottom + 25% alpha. Only segment.color
+    // itself is passed through verbatim. Expanded state swaps the top
+    // face to SURFACE for contrast against the controls; bottom face +
+    // inner stroke + halo still derive from segment.color so the card's
+    // colour identity is preserved.
+    const surfaces = deriveCardSurfaces(segment.color);
+    const bgColor = isExpanded ? SURFACE : surfaces.top;
+    const borderColor = surfaces.innerStroke;
+    const bottomColor = surfaces.bottom;
     const textColor = isExpanded ? ON_SURFACE : '#FFFFFF';
 
     const card = (
@@ -539,13 +606,19 @@ export default function WheelEditor({
             overflow: 'hidden',
             transition: 'background-color 0.2s, border-color 0.2s',
           }}>
-            {/* Collapsed row */}
+            {/* Collapsed row — minHeight matches the profile card's top
+                face height (3px border + 12px padding + 44px thumbnail +
+                12px padding = ~71px outer; the inner content area target
+                is ~65px). Keeps both surfaces visually consistent so the
+                two list types feel like the same component at different
+                call sites. */}
             <div
               onClick={() => setExpandedIndex(isExpanded ? null : index)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 padding: '8px 0',
+                minHeight: 65,
                 cursor: 'pointer',
               }}
             >
@@ -722,15 +795,42 @@ export default function WheelEditor({
       <SwipeableActionCell
         key={segment.id}
         disabled={grabbedIndex === index}
+        bottomPeek={6.5}
+        onOffsetChange={(offset, dragging) => {
+          const el = haloElsRef.current.get(segment.id);
+          if (!el) return;
+          el.style.transform = `translateX(${offset}px)`;
+          el.style.transition = dragging
+            ? 'transform 0s ease-out'
+            : 'transform 0.18s cubic-bezier(0.32, 0.72, 0, 1)';
+        }}
+        halo={
+          <div
+            ref={el => {
+              if (el) haloElsRef.current.set(segment.id, el);
+              else haloElsRef.current.delete(segment.id);
+            }}
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 6.5,
+              bottom: 0,
+              borderRadius: 21,
+              boxShadow: `0 0 0 3.5px ${deriveCardSurfaces(segment.color).halo}`,
+              pointerEvents: 'none',
+            }}
+          />
+        }
         trailingActions={[
           {
             color: PRIMARY,
-            icon: <Copy size={20} />,
+            icon: <Copy size={26} />,
             onTap: () => duplicateSegment(index),
           },
           {
             color: '#EF4444',
-            icon: <Trash2 size={20} />,
+            icon: <Trash2 size={26} />,
             onTap: () => removeSegment(index),
             expandOnFullSwipe: true,
           },
@@ -916,9 +1016,6 @@ export default function WheelEditor({
                 const transform = isGrabbed
                   ? `translateY(${slotOffset}px) scale(1.04)`
                   : `translateY(${slotOffset}px) scale(1)`;
-                // Halo color tracks each segment's bottom-face color so a
-                // colored card's ring matches its own palette.
-                const haloColor = oklchShadow(seg.color);
                 return (
                   <SegmentRow
                     key={seg.id}
@@ -927,7 +1024,6 @@ export default function WheelEditor({
                     isGrabbed={isGrabbed}
                     transform={transform}
                     transition={transition}
-                    haloColor={haloColor}
                     // Long-press is gated to the collapsed state — when the
                     // card is open, all the inner controls (color picker,
                     // weight buttons, text input) need raw pointer access.
@@ -938,18 +1034,20 @@ export default function WheelEditor({
                 );
               })}
               <div style={{ height: 12 }} />
-              <PushDownButton color={PRIMARY} onTap={addSegment}>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  color: '#FFFFFF',
-                }}>
-                  <Plus size={22} />
-                  <span style={{ fontWeight: 700, fontSize: 15 }}>Add Segment</span>
-                </div>
-              </PushDownButton>
+              <div ref={addSegmentBtnRef}>
+                <PushDownButton color={PRIMARY} onTap={addSegment} borderRadius={32}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    color: '#FFFFFF',
+                  }}>
+                    <Plus size={22} />
+                    <span style={{ fontWeight: 700, fontSize: 16 }}>Add Segment</span>
+                  </div>
+                </PushDownButton>
+              </div>
               <div style={{ height: 32 }} />
             </>
           )}
@@ -1012,15 +1110,12 @@ function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onCh
 // (omitted when the card is currently expanded, so its inner controls get
 // raw pointer access).
 function SegmentRow({
-  index, isGrabbed, transform, transition, haloColor, onLongPressActivate, innerRef, children,
+  index, isGrabbed, transform, transition, onLongPressActivate, innerRef, children,
 }: {
   index: number;
   isGrabbed: boolean;
   transform: string;
   transition: string;
-  // Hex color of the row's halo ring (per-segment in WheelEditor since
-  // each card is colored). The 25% alpha is appended here.
-  haloColor: string;
   onLongPressActivate?: (index: number, startX: number, startY: number) => void;
   innerRef?: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
@@ -1099,21 +1194,10 @@ function SegmentRow({
         WebkitUserSelect: 'none',
       }}
     >
-      {/* Halo ring — same shape & position as the bottom face inside
-          the card (top: 6.5 inset, bottom-aligned to the row). The
-          3.5px boxShadow lands above the top face by only y=3 inside
-          the row instead of y=−3.5 above it, so the ring hugs the
-          bottom layer instead of wrapping the full perimeter. */}
-      <div style={{
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        top: 6.5,
-        bottom: 0,
-        borderRadius: 21,
-        boxShadow: `0 0 0 3.5px ${haloColor}40`,
-        pointerEvents: 'none',
-      }} />
+      {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
+          `halo` prop) so it z-stacks above the action buttons but below
+          the card's translate layer. See SwipeableActionCell for the
+          structural reasoning. */}
       {children}
     </div>
   );

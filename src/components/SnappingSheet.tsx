@@ -312,6 +312,7 @@ export default function SnappingSheet({
         {/* Scrollable content */}
         <div
           ref={scrollRef}
+          className="hide-scrollbar"
           onPointerDown={onScrollPointerDown}
           onPointerMove={onScrollPointerMove}
           onPointerUp={onScrollPointerUp}
@@ -319,6 +320,7 @@ export default function SnappingSheet({
           style={{
             flex: 1,
             overflowY: 'auto',
+            overflowX: 'hidden',
             overscrollBehavior: 'none',
             touchAction: 'pan-y',
           }}
