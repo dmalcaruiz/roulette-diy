@@ -513,6 +513,15 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const samples = 600;
       const startSeg = segmentAtRotation(startRotation);
       let prevSeg = startSeg;
+      // Cap audio click rate at 30/sec during the tap-spin specifically —
+      // on wheels with many segments (100+), the peak crossing rate
+      // produces an overwhelming click stream. Throttle by tracking the
+      // last scheduled click time and skipping any crossing whose ideal
+      // time is closer than MIN_CLICK_GAP_SEC to it. Visual segment
+      // updates aren't affected (they live in the rAF onFrameRotation
+      // callback, which is independent of this scheduler).
+      const MIN_CLICK_GAP_SEC = 1 / 100;
+      let lastScheduledClickTime = -Infinity;
       for (let i = 1; i <= samples; i++) {
         const progress = i / samples;
         let rot: number;
@@ -534,13 +543,16 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           const scheduledTime = audioBaseTime + timeOffsetSec;
           // Skip clicks whose ideal time has already passed during the
           // resume wait — better to lose a few early ticks than to bunch
-          // them all up at currentTime.
-          if (scheduledTime > ctx.currentTime - 0.005) {
+          // them all up at currentTime. ALSO skip if too close to the
+          // last scheduled click (30/sec cap).
+          if (scheduledTime > ctx.currentTime - 0.005
+              && scheduledTime - lastScheduledClickTime >= MIN_CLICK_GAP_SEC) {
             const src = ctx.createBufferSource();
             src.buffer = buf;
             src.connect(ctx.destination);
             src.start(Math.max(scheduledTime, ctx.currentTime));
             scheduledSourcesRef.current.push(src);
+            lastScheduledClickTime = scheduledTime;
           }
           prevSeg = seg;
         }
