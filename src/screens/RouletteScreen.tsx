@@ -91,6 +91,10 @@ export default function RouletteScreen({
   type SheetTab = 'segments' | 'style' | 'settings' | 'templates';
   const SHEET_TAB_ORDER: SheetTab[] = ['segments', 'style', 'settings', 'templates'];
   const [sheetTab, setSheetTab] = useState<SheetTab | null>(null);
+  // Pending "scroll to this segment when the editor opens" request. Set
+  // by a long-press on the wheel canvas; consumed by WheelEditor's
+  // scrollToSegmentIndex effect (which clears it via onConsumed).
+  const [pendingScrollSegment, setPendingScrollSegment] = useState<number | null>(null);
   // Direction of the most recent tab change — drives the slide-in animation
   // for the sheet body so chip switches feel like sideways navigation.
   const [tabSlideDir, setTabSlideDir] = useState<'left' | 'right' | null>(null);
@@ -1190,6 +1194,13 @@ export default function RouletteScreen({
               showWinAnimation={showWinAnimation}
               headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
               headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
+              onSegmentLongPress={idx => {
+                // Open the segments sheet and queue a scroll to the
+                // tapped segment. WheelEditor's effect picks up the
+                // index, scrolls there, and clears the pending state.
+                setPendingScrollSegment(idx);
+                setSheetTabAnimated('segments');
+              }}
             />
           </div>
           {/* Bottom spacer — slightly larger flex than the top spacer to
@@ -1541,6 +1552,8 @@ export default function RouletteScreen({
                 onPreview={handleWheelPreview}
                 selectedTab={sheetTab === 'segments' ? 0 : 1}
                 onReorderActiveChange={handleEditorReorderingChange}
+                scrollToSegmentIndex={pendingScrollSegment}
+                onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
               />
             )}
             {sheetTab === 'settings' && (

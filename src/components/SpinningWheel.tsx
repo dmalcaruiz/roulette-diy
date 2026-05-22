@@ -106,6 +106,10 @@ export interface SpinningWheelProps {
   showWinAnimation?: boolean;
   headerOpacity?: number;
   headerSizeProgress?: number;
+  // Fires after a ~500ms long-press on the wheel canvas (no movement
+  // during the hold). Receives the index of the segment under the
+  // pointer. Use to open an editor / context menu for that segment.
+  onSegmentLongPress?: (index: number) => void;
 }
 
 export interface SpinningWheelHandle {
@@ -135,6 +139,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     showWinAnimation = true,
     headerOpacity = 1,
     headerSizeProgress = 1,
+    onSegmentLongPress,
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -371,6 +376,36 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // (drag-to-spin, tap-to-spin, anything that calls cancelInFlight) can
   // never stop it mid-fade. Cancels only a *previous* win flash that's
   // still in flight, so a fresh win starts cleanly.
+  // Graceful interrupt — fade the overlay out from its CURRENT opacity
+  // (so it doesn't pop) over WIN_INTERRUPT_FADE_MS. Used when the user
+  // grabs the wheel mid-win-animation: we don't want the dark tint to
+  // sit on top of their drag, but we also don't want a hard cut.
+  const WIN_INTERRUPT_FADE_MS = 180;
+  const cancelWinOverlay = useCallback(() => {
+    // Nothing in flight: nothing to do.
+    if (overlayOpacityRef.current === 0 && winningIndexRef.current === -1) return;
+    cancelAnimationFrame(winAnimRef.current);
+    if (winHoldTimerRef.current) {
+      clearTimeout(winHoldTimerRef.current);
+      winHoldTimerRef.current = null;
+    }
+    const startOpacity = overlayOpacityRef.current;
+    const fadeStart = performance.now();
+    const tick = (t1: number) => {
+      const t = Math.min(1, (t1 - fadeStart) / WIN_INTERRUPT_FADE_MS);
+      overlayOpacityRef.current = startOpacity * (1 - easeInOut(t));
+      paint();
+      if (t < 1) {
+        winAnimRef.current = requestAnimationFrame(tick);
+      } else {
+        overlayOpacityRef.current = 0;
+        winningIndexRef.current = -1;
+        paint();
+      }
+    };
+    winAnimRef.current = requestAnimationFrame(tick);
+  }, [paint]);
+
   const playWinOverlay = useCallback((idx: number) => {
     cancelAnimationFrame(winAnimRef.current);
     if (winHoldTimerRef.current) {
@@ -700,6 +735,34 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // True while a momentum-decay is running, so a re-grab can mark the
   // spin as interrupted (no win animation).
   const decayInterruptedRef = useRef(false);
+  // Long-press detection on the wheel canvas. Timer fires at LONG_PRESS_MS
+  // if the pointer hasn't moved past the tap-vs-drag threshold; on fire,
+  // we compute which segment the tap landed on and call onSegmentLongPress.
+  // didLongPressRef tells pointerUp to skip the spin-on-release path.
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPressRef = useRef(false);
+  const LONG_PRESS_MS = 500;
+
+  // Compute which segment index a screen-coords tap landed on. Inverts the
+  // canvas rotation so the angle is in segment-local coords, then walks the
+  // weighted segments to find the containing wedge.
+  const segmentIndexAtPos = useCallback((clientX: number, clientY: number,
+                                          centerX: number, centerY: number): number => {
+    const screenAngle = Math.atan2(clientY - centerY, clientX - centerX);
+    let localAngle = screenAngle - rotationRef.current;
+    localAngle = ((localAngle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const totalWeight = items.reduce((s, item) => s + item.weight, 0);
+    if (totalWeight <= 0) return 0;
+    const arcSize = (2 * Math.PI) / totalWeight;
+    let accumulated = 0;
+    for (let i = 0; i < items.length; i++) {
+      const segStart = accumulated * arcSize;
+      accumulated += items[i].weight;
+      const segEnd = accumulated * arcSize;
+      if (localAngle >= segStart && localAngle < segEnd) return i;
+    }
+    return items.length - 1;
+  }, [items]);
   // Live momentum velocity during the decay loop. Read by handlePointerDown
   // to "borrow" the in-flight speed when the user re-grabs the wheel,
   // letting consecutive flicks accumulate momentum.
@@ -725,6 +788,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button === 2) return;
+    // Grab interrupts an in-flight win flash — fade it out gracefully
+    // from its current opacity rather than letting it sit on top of
+    // the user's drag.
+    cancelWinOverlay();
     // Re-grab during a momentum decay marks the spin as interrupted (the
     // *original* spin attempt no longer counts as a win) AND captures
     // the in-flight angular velocity so it can be added to the new
@@ -752,7 +819,21 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       lastRenderedSegment: segmentAtRotation(rotationRef.current),
       carriedVelocity: carried,
     };
-  }, [cancelInFlight, segmentAtRotation]);
+    // Long-press timer — fires if pointer hasn't moved past the
+    // tap-vs-drag threshold by LONG_PRESS_MS. handlePointerMove clears
+    // it when crossedThreshold flips true. Skip if no callback wired.
+    didLongPressRef.current = false;
+    if (onSegmentLongPress) {
+      const tapX = e.clientX;
+      const tapY = e.clientY;
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        didLongPressRef.current = true;
+        const idx = segmentIndexAtPos(tapX, tapY, cx, cy);
+        onSegmentLongPress(idx);
+      }, LONG_PRESS_MS);
+    }
+  }, [cancelInFlight, segmentAtRotation, onSegmentLongPress, segmentIndexAtPos]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
@@ -763,6 +844,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const dy = e.clientY - drag.startClientPos.y;
       if (Math.hypot(dx, dy) < 6) return; // still might be a tap
       drag.crossedThreshold = true;
+      // Movement past threshold = not a long-press anymore; cancel the
+      // timer so it doesn't fire mid-drag and open the sheet unexpectedly.
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
     }
 
     // Convert pointer position to angle around wheel center; the delta
@@ -798,6 +885,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+
+    // Clear pending long-press timer (still pending = release happened
+    // before LONG_PRESS_MS elapsed → was a normal tap, not a long-press).
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    // If the long-press already fired, the segment sheet is opening —
+    // don't ALSO trigger a spin. Consume the flag and bail.
+    if (didLongPressRef.current) {
+      didLongPressRef.current = false;
+      return;
+    }
 
     if (!drag.crossedThreshold) {
       // Stationary press → treat as tap → use the existing deterministic
@@ -863,6 +963,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     momentumVelocityRef.current = velocity;
     let lastFrameTime = performance.now();
     let lastSegment = segmentAtRotation(rotationRef.current);
+    // Track total rotation accumulated during the decay so we can gate
+    // the win flash on a minimum-revolution threshold (a lazy flick
+    // that only nudges the wheel a fraction of a turn shouldn't earn a
+    // win-overlay celebration).
+    const decayStartRotation = rotationRef.current;
 
     const decayFrame = (now: number) => {
       const dt = Math.min(50, now - lastFrameTime); // cap dt across long pauses
@@ -895,7 +1000,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       // Natural stop after a real spin attempt → fire the win flow.
       const idx = getWinningIndex();
       onFinished(idx);
-      if (showWinAnimation) playWinOverlay(idx);
+      // Only play the win flash if the wheel travelled at least
+      // MIN_WIN_REVOLUTIONS turns from the release point. A short-coast
+      // flick (well under a full revolution) registers as a "spin
+      // attempt" by velocity but doesn't feel like a real spin — no
+      // celebration in that case.
+      const MIN_WIN_REVOLUTIONS = 1.3;
+      const revolutionsTraveled = Math.abs(rotationRef.current - decayStartRotation) / (2 * Math.PI);
+      if (showWinAnimation && revolutionsTraveled >= MIN_WIN_REVOLUTIONS) playWinOverlay(idx);
     };
 
     animRef.current = requestAnimationFrame(decayFrame);

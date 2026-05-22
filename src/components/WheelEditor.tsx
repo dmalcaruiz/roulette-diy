@@ -50,6 +50,12 @@ interface WheelEditorProps {
   // scroll-to-drag handoff) so the sheet doesn't slide while a card is
   // being dragged.
   onReorderActiveChange?: (active: boolean) => void;
+  // When non-null, the editor scrolls the segment list to that index on
+  // mount / prop change, then calls onScrollToSegmentConsumed so the
+  // host can clear it. Used by the wheel canvas's long-press → open
+  // sheet → scroll-to-segment flow.
+  scrollToSegmentIndex?: number | null;
+  onScrollToSegmentConsumed?: () => void;
 }
 
 let segmentIdCounter = 0;
@@ -133,6 +139,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 export default function WheelEditor({
   initialConfig, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
+  scrollToSegmentIndex, onScrollToSegmentConsumed,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -237,6 +244,106 @@ export default function WheelEditor({
   // Keep a ref to current state for use in pointer handlers
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Scroll-to-segment request (from a wheel-canvas long-press in the
+  // host). Wait one rAF after mount/prop-change so the segment row's
+  // ref is populated, then find the nearest scrollable ancestor and
+  // tween its scrollTop so the target row sits in view. 110ms
+  // easeOutCubic — same curve as the "scroll to Add Segment" tween.
+  useEffect(() => {
+    if (scrollToSegmentIndex == null) return;
+    const idx = scrollToSegmentIndex;
+    const cancel = requestAnimationFrame(() => {
+      // List mode: focus the textarea, select the matching line, and
+      // explicitly scroll both the textarea's internal scroll AND its
+      // nearest scrollable ancestor — the browser's setSelectionRange
+      // auto-scroll isn't reliable inside nested scroll containers.
+      if (stateRef.current.segmentsMode === 'list') {
+        const ta = simpleTextareaRef.current;
+        if (!ta) { onScrollToSegmentConsumed?.(); return; }
+        const lines = ta.value.split('\n');
+        const clamped = Math.max(0, Math.min(idx, lines.length - 1));
+        let start = 0;
+        for (let i = 0; i < clamped; i++) start += lines[i].length + 1;
+        const end = start + (lines[clamped]?.length ?? 0);
+        ta.focus();
+        ta.setSelectionRange(start, end);
+
+        // (a) Textarea internal scroll: position the selected line in
+        // the middle of the visible textarea area.
+        const cs = getComputedStyle(ta);
+        const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.25 || 20;
+        const linePixelY = clamped * lineHeight;
+        ta.scrollTop = Math.max(0, linePixelY - ta.clientHeight / 2 + lineHeight / 2);
+
+        // (b) Ancestor sheet-content scroll: tween so the textarea (or
+        // at least the selected line within it) is in view inside the
+        // sheet. Same 110ms easeOutCubic as the cards-mode path.
+        let scrollEl: HTMLElement | null = ta.parentElement;
+        while (scrollEl) {
+          const csA = getComputedStyle(scrollEl);
+          if ((/(auto|scroll)/.test(csA.overflowY) || /(auto|scroll)/.test(csA.overflow))
+              && scrollEl.scrollHeight > scrollEl.clientHeight + 1) break;
+          scrollEl = scrollEl.parentElement;
+        }
+        if (scrollEl) {
+          const taRect = ta.getBoundingClientRect();
+          const scRect = scrollEl.getBoundingClientRect();
+          const lineYWithinTa = clamped * lineHeight - ta.scrollTop;
+          // Aim to centre the selected line inside the scroll viewport.
+          const desiredTop = (taRect.top + lineYWithinTa) - scRect.top - scRect.height / 2 + lineHeight / 2;
+          const startScroll = scrollEl.scrollTop;
+          const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
+          const targetScroll = Math.max(0, Math.min(maxScroll, startScroll + desiredTop));
+          const delta = targetScroll - startScroll;
+          const target = scrollEl;
+          const t0 = performance.now();
+          const tick = (now: number) => {
+            const u = Math.min(1, (now - t0) / 110);
+            const eased = 1 - Math.pow(1 - u, 3);
+            target.scrollTop = startScroll + delta * eased;
+            if (u < 1) requestAnimationFrame(tick);
+            else onScrollToSegmentConsumed?.();
+          };
+          requestAnimationFrame(tick);
+        } else {
+          onScrollToSegmentConsumed?.();
+        }
+        return;
+      }
+      const el = segmentElsRef.current[idx];
+      if (!el) { onScrollToSegmentConsumed?.(); return; }
+      let scrollEl: HTMLElement | null = el.parentElement;
+      while (scrollEl) {
+        const cs = getComputedStyle(scrollEl);
+        if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow)) {
+          if (scrollEl.scrollHeight > scrollEl.clientHeight + 1) break;
+        }
+        scrollEl = scrollEl.parentElement;
+      }
+      if (!scrollEl) { onScrollToSegmentConsumed?.(); return; }
+      const elRect = el.getBoundingClientRect();
+      const scRect = scrollEl.getBoundingClientRect();
+      // Centre the row in the scroll viewport (or as close as the
+      // scrollable extent allows).
+      const targetCentre = elRect.top + elRect.height / 2 - scRect.top - scRect.height / 2;
+      const startScroll = scrollEl.scrollTop;
+      const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
+      const targetScroll = Math.max(0, Math.min(maxScroll, startScroll + targetCentre));
+      const delta = targetScroll - startScroll;
+      const target = scrollEl;
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const u = Math.min(1, (now - t0) / 110);
+        const eased = 1 - Math.pow(1 - u, 3);
+        target.scrollTop = startScroll + delta * eased;
+        if (u < 1) requestAnimationFrame(tick);
+        else onScrollToSegmentConsumed?.();
+      };
+      requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(cancel);
+  }, [scrollToSegmentIndex, onScrollToSegmentConsumed]);
 
   // Push the current state out as a config preview on every change. Mount
   // fires it once (initial state). Subsequent state changes — style
@@ -917,6 +1024,9 @@ export default function WheelEditor({
   // index so color / weight / image stay intact when the user edits lines.
   const simpleModeText = segments.map(s => s.text).join('\n');
   const [simpleDraft, setSimpleDraft] = useState(simpleModeText);
+  // Ref to the list-mode textarea so the scroll-to-segment flow (from a
+  // wheel-canvas long-press) can focus + select the corresponding line.
+  const simpleTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Sync the draft when segments change externally (undo/redo, switching
   // wheel, etc.) and we're currently in simple mode.
   useEffect(() => {
@@ -952,6 +1062,7 @@ export default function WheelEditor({
   const renderSimpleMode = () => (
     <div>
       <textarea
+        ref={simpleTextareaRef}
         value={simpleDraft}
         onChange={e => {
           setSimpleDraft(e.target.value);
