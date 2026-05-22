@@ -356,7 +356,8 @@ export default function WheelEditor({
   };
 
   const removeSegment = (index: number) => {
-    if (stateRef.current.segments.length <= 2) return;
+    // No floor — let the user delete down to 0. Wheel paint handles
+    // empty / single-segment cases gracefully.
     setExpandedIndex(null);
     commitWithAnim(stateRef.current.segments.filter((_, i) => i !== index));
   };
