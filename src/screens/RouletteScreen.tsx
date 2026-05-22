@@ -4,7 +4,7 @@ import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
-import { withAlpha, oklchShadow } from '../utils/colorUtils';
+import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
@@ -1174,8 +1174,8 @@ export default function RouletteScreen({
               items={activeConfig.items}
               onFinished={onWheelFinished}
               size={clampedWheelSize}
-              textSizeMultiplier={activeConfig.textSize * dynamicScale}
-              headerTextSizeMultiplier={activeConfig.headerTextSize * dynamicScale}
+              textSizeMultiplier={activeConfig.textSize}
+              headerTextSizeMultiplier={activeConfig.headerTextSize}
               imageSize={activeConfig.imageSize * dynamicScale}
               cornerRadius={activeConfig.cornerRadius * dynamicScale}
               innerCornerStyle={activeConfig.innerCornerStyle}
@@ -1259,11 +1259,10 @@ export default function RouletteScreen({
                 touchAction: grabbedIndex !== null ? 'none' : undefined,
                 // Setting overflow-x to anything but visible forces overflow-y
                 // to clip per CSS spec — that crops the grabbed tile's scale
-                // halo + shadow. Padding gives the lifted state room INSIDE
-                // the row's content box so it never reaches the clip edge.
-                // 16 top / 13 bottom — slight top weight nudges the previews
-                // a touch below dead-center.
-                padding: '16px 0 13px 14px',
+                // halo + shadow AND the pagepointer.svg hovering above the
+                // selected tile. Top padding must clear both: ~28px for the
+                // pointer's `top: -28` overhang plus a small buffer.
+                padding: '34px 0 13px 14px',
                 cursor: 'grab',
               }}
             >
@@ -1364,7 +1363,21 @@ export default function RouletteScreen({
                         onGrabStart={handleGrabStart}
                         shouldSuppressClick={shouldSuppressTileClick}
                       >
-                        <WheelThumbnail items={previewItems} size={72} />
+                        <WheelThumbnail
+                          items={previewItems}
+                          size={72}
+                          style={(() => {
+                            const cfg = isCurrent ? activeConfig : step.wheelConfig;
+                            return cfg ? {
+                              strokeWidth: cfg.strokeWidth,
+                              centerMarkerSize: cfg.centerMarkerSize,
+                              showBackgroundCircle: cfg.showBackgroundCircle,
+                              cornerRadius: cfg.cornerRadius,
+                              innerCornerStyle: cfg.innerCornerStyle,
+                              centerInset: cfg.centerInset,
+                            } : undefined;
+                          })()}
+                        />
                       </PreviewTile>
                     </TileWithLabel>
                   );
@@ -1384,7 +1397,18 @@ export default function RouletteScreen({
                     onClick={() => setCtxMenuIndex(0)}
                     onContextOpen={() => setCtxMenuIndex(0)}
                   >
-                    <WheelThumbnail items={activeConfig.items} size={72} />
+                    <WheelThumbnail
+                      items={activeConfig.items}
+                      size={72}
+                      style={{
+                        strokeWidth: activeConfig.strokeWidth,
+                        centerMarkerSize: activeConfig.centerMarkerSize,
+                        showBackgroundCircle: activeConfig.showBackgroundCircle,
+                        cornerRadius: activeConfig.cornerRadius,
+                        innerCornerStyle: activeConfig.innerCornerStyle,
+                        centerInset: activeConfig.centerInset,
+                      }}
+                    />
                   </PreviewTile>
                 </TileWithLabel>
               )}
@@ -2212,34 +2236,60 @@ function PreviewTile({
         zIndex: effectiveGrabbed ? 2 : undefined,
       }}
     >
-      {/* Bottom layer — same 3D recipe as PushDownButton: a darker face
-          peeks out 4px below the top layer, with a faint outer stroke
-          (~25% alpha of the same shadow color) for the soft halo. */}
-      <div style={{
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        height: 88,
-        borderRadius: 16,
-        backgroundColor: oklchShadow(active ? PRIMARY : SURFACE),
-        boxShadow: `0 0 0 3.5px ${oklchShadow(active ? PRIMARY : SURFACE)}40`,
-      }} />
-      {/* Top layer — the face. */}
-      <div style={{
-        position: 'relative',
-        height: 88,
-        width: 88,
-        borderRadius: 16,
-        backgroundColor: SURFACE,
-        border: active ? `3px solid ${PRIMARY}` : `3px solid ${BORDER}`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxSizing: 'border-box',
-      }}>
-        {children}
-      </div>
+      {/* All tiles use SURFACE_ELEVATED via deriveCardSurfaces — no
+          colour change on selection. The active tile is marked instead
+          by a pagepointer.svg hovering above it (rendered below). */}
+      {(() => {
+        const surfaces = deriveCardSurfaces(SURFACE_ELEVATED);
+        return (
+          <>
+            {/* Bottom layer — peeks out 4px below the top face. */}
+            <div style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 88,
+              borderRadius: 16,
+              backgroundColor: surfaces.bottom,
+              boxShadow: `0 0 0 3.5px ${surfaces.halo}`,
+            }} />
+            {/* Top layer — the face. */}
+            <div style={{
+              position: 'relative',
+              height: 88,
+              width: 88,
+              borderRadius: 16,
+              backgroundColor: surfaces.top,
+              border: `3px solid ${surfaces.innerStroke}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxSizing: 'border-box',
+            }}>
+              {children}
+            </div>
+          </>
+        );
+      })()}
+      {/* Selection indicator — page-pointer SVG hovering above the
+          selected tile. Pointer-events off so it can't catch taps. */}
+      {active && (
+        <img
+          src="/images/pagepointer.svg"
+          alt=""
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: -16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 32,
+            height: 26,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
     </div>
   );
 }

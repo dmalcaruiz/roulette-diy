@@ -9,6 +9,18 @@ interface PushDownButtonProps {
   height?: number;
   bottomBorderWidth?: number;
   bottomBorderColor?: string;
+  // Override the top face's inner-stroke (border) colour. Default = the
+  // OKLCh-highlight derived from `color`. Useful for "outlined" looks
+  // where a visible dark border is wanted around a light fill.
+  innerStrokeColor?: string;
+  innerStrokeWidth?: number;
+  // When set, holding the button for `delayMs` starts firing `onTap`
+  // every `intervalMs`. If `maxIntervalMs` + `rampMs` are also set, the
+  // interval interpolates linearly from `intervalMs` down to
+  // `maxIntervalMs` (faster) over `rampMs` of continuous hold. Normal
+  // taps (release before `delayMs`) still commit once via the click
+  // event. Release / cancel stops the repeat.
+  repeatHold?: { delayMs: number; intervalMs: number; maxIntervalMs?: number; rampMs?: number };
   style?: CSSProperties;
 }
 
@@ -20,15 +32,20 @@ export function PushDownButton({
   height = 64,
   bottomBorderWidth = 6.5,
   bottomBorderColor,
+  innerStrokeColor,
+  innerStrokeWidth = 2.5,
+  repeatHold,
   style,
 }: PushDownButtonProps) {
   const [pressed, setPressed] = useState(false);
   // Same OKLCh-derived recipe as cards: top face + bottom face + halo + inner
-  // stroke all flow from one base. The optional `bottomBorderColor` override
-  // is preserved for callers that hand-pick the lower-layer colour.
+  // stroke all flow from one base. The optional `bottomBorderColor` /
+  // `innerStrokeColor` overrides are preserved for callers that hand-pick
+  // the lower-layer or stroke colour.
   const surfaces = deriveCardSurfaces(color);
   const bottomColor = bottomBorderColor ?? surfaces.bottom;
   const haloColor = bottomBorderColor ? `${bottomColor}40` : surfaces.halo;
+  const strokeColor = innerStrokeColor ?? surfaces.innerStroke;
   const faceHeight = height - bottomBorderWidth;
 
   // Press visual is tied to the live pointer state; the commit is tied to
@@ -40,9 +57,67 @@ export function PushDownButton({
   // the same element, i.e. a clean tap; doesn't fire if the user dragged
   // off or the gesture became a scroll). Pointer-leave / pointer-cancel
   // release the visual without committing.
-  const handlePointerDown = () => { if (onTap) setPressed(true); };
-  const releaseVisual = () => setPressed(false);
-  const handleClick = () => { onTap?.(); };
+  // Repeat-hold timers + flag. The flag tells the click handler whether a
+  // long-press already fired onTap (so we don't double-commit on release).
+  const repeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const repeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const didRepeatRef = useRef(false);
+
+  const stopRepeat = () => {
+    if (repeatTimerRef.current) { clearTimeout(repeatTimerRef.current); repeatTimerRef.current = null; }
+    if (repeatIntervalRef.current) { clearInterval(repeatIntervalRef.current); repeatIntervalRef.current = null; }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (!onTap) return;
+    setPressed(true);
+    if (!repeatHold) return;
+    // Repeat-hold buttons consume the gesture: stop propagation so the
+    // parent SwipeableActionCell (segment swipe) and SnappingSheet
+    // (vertical drag) don't see the press, and capture the pointer so
+    // subsequent moves/up stay on us regardless of finger drift.
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    didRepeatRef.current = false;
+    repeatTimerRef.current = setTimeout(() => {
+      repeatTimerRef.current = null;
+      didRepeatRef.current = true;
+      onTap();
+      // If ramp is configured, schedule recursively with an interpolated
+      // delay; otherwise use a fixed-interval setInterval. tStart anchors
+      // the ramp to "first auto-fire" so the slow-end is felt right away
+      // and the user has to keep holding to reach the fast end.
+      const { intervalMs, maxIntervalMs, rampMs } = repeatHold;
+      if (maxIntervalMs != null && rampMs != null && rampMs > 0) {
+        const tStart = performance.now();
+        const tick = () => {
+          onTap();
+          const elapsed = performance.now() - tStart;
+          const t = Math.min(1, elapsed / rampMs);
+          const cur = intervalMs + (maxIntervalMs - intervalMs) * t;
+          repeatTimerRef.current = setTimeout(tick, cur);
+        };
+        repeatTimerRef.current = setTimeout(tick, intervalMs);
+      } else {
+        repeatIntervalRef.current = setInterval(() => onTap(), intervalMs);
+      }
+    }, repeatHold.delayMs);
+  };
+
+  const releaseVisual = () => {
+    setPressed(false);
+    stopRepeat();
+  };
+
+  const handleClick = () => {
+    // Long-press already fired onTap (and possibly many more via interval).
+    // Don't double-commit on the release-click; consume the flag and bail.
+    if (didRepeatRef.current) {
+      didRepeatRef.current = false;
+      return;
+    }
+    onTap?.();
+  };
 
   return (
     <div
@@ -73,7 +148,11 @@ export function PushDownButton({
         // doesn't depend on whether an ancestor happens to have set the
         // same rules.
         WebkitTapHighlightColor: 'transparent',
-        touchAction: 'manipulation',
+        // Repeat-hold buttons need 'none' so the browser doesn't claim
+        // the touch for scrolling — without this the parent scroll
+        // container would cancel the pointer mid-hold and the repeat
+        // would stop unexpectedly. Normal buttons stay 'manipulation'.
+        touchAction: repeatHold ? 'none' : 'manipulation',
         ...style,
       }}
     >
@@ -107,7 +186,7 @@ export function PushDownButton({
         marginTop: pressed ? bottomBorderWidth : 0,
         borderRadius,
         backgroundColor: surfaces.top,
-        border: `2.5px solid ${surfaces.innerStroke}`,
+        border: `${innerStrokeWidth}px solid ${strokeColor}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

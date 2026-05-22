@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
-import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import {
@@ -179,6 +179,11 @@ export default function WheelEditor({
   // which sits above it in the DOM and would still leave the button below
   // the viewport after the add).
   const addSegmentBtnRef = useRef<HTMLDivElement | null>(null);
+  // Set true the moment a drag-reorder activates (either via long-press or
+  // grip). The card's onClick checks this on the next click and bails so
+  // the drop-release doesn't also expand the segment — drag-and-release
+  // should be a pure reorder, only a clean tap toggles expand/collapse.
+  const didDragRef = useRef(false);
   // Per-segment halo element refs. SwipeableActionCell calls onOffsetChange
   // with the current swipe offset; we look up the matching halo div and
   // imperatively translate it so it slides with the card. Without this the
@@ -233,12 +238,18 @@ export default function WheelEditor({
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  // Initial preview
+  // Push the current state out as a config preview on every change. Mount
+  // fires it once (initial state). Subsequent state changes — style
+  // sliders, name edits, anything else patched via history — also fire
+  // it. Previously only segment changes (via sendPreview in
+  // commitWithAnim) reached the parent; style changes never did, so the
+  // App-level block never received the update and profile thumbnails
+  // stayed stale until something else (item edit, sheet close) forced a
+  // save. handleWheelPreview in the parent already debounces 500ms.
   useEffect(() => {
     if (!onPreview || !state.name.trim()) return;
     onPreview(stateToConfig(state, configId));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [state, onPreview, configId]);
 
   // Lock the parent scroll container while a row is being dragged. Same
   // recipe as BlocksList — walks up to find every scrollable ancestor,
@@ -331,6 +342,9 @@ export default function WheelEditor({
       color: getNextColor(stateRef.current.segments),
       weight: 1,
     };
+    // Close any open segment so the freshly-added one (and the scroll
+    // landing on the Add button) aren't fighting an in-flight expand.
+    setExpandedIndex(null);
     commitWithAnim([...stateRef.current.segments, newSegment]);
     // commitWithAnim defers state-update via setTimeout(0). Chain another
     // setTimeout + rAF to land after React's render commits, then scroll
@@ -352,6 +366,9 @@ export default function WheelEditor({
     const id = `${segmentIdCounter++}`;
     const newSegs = [...stateRef.current.segments];
     newSegs.splice(index + 1, 0, { ...original, id });
+    // Close any open segment so the freshly-inserted duplicate doesn't
+    // fight an in-flight expand on the source row.
+    setExpandedIndex(null);
     commitWithAnim(newSegs);
   };
 
@@ -395,6 +412,9 @@ export default function WheelEditor({
       clearTimeout(settleTimeoutRef.current);
       settleTimeoutRef.current = null;
     }
+    // Mark this gesture as a drag — the card's onClick will see the flag
+    // on the post-release click and skip the expand toggle.
+    didDragRef.current = true;
     // Synchronous notify — host (e.g. SnappingSheet's parent) can flip a
     // ref / state immediately so its pointer handlers see the locked
     // value on the very next pointermove. Doing this via useEffect would
@@ -573,10 +593,10 @@ export default function WheelEditor({
     // inner stroke + halo still derive from segment.color so the card's
     // colour identity is preserved.
     const surfaces = deriveCardSurfaces(segment.color);
-    const bgColor = isExpanded ? SURFACE : surfaces.top;
+    const bgColor = isExpanded ? '#FFFFFF' : surfaces.top;
     const borderColor = surfaces.innerStroke;
     const bottomColor = surfaces.bottom;
-    const textColor = isExpanded ? ON_SURFACE : '#FFFFFF';
+    const textColor = isExpanded ? '#1E1E2C' : '#FFFFFF';
 
     const card = (
       // paddingBottom: 6.5 reserves room inside the SwipeableActionCell's
@@ -613,7 +633,16 @@ export default function WheelEditor({
                 two list types feel like the same component at different
                 call sites. */}
             <div
-              onClick={() => setExpandedIndex(isExpanded ? null : index)}
+              onClick={() => {
+                // Drag-and-release should NOT also toggle expand. didDragRef
+                // is set the moment handleGrabStart fires (either path:
+                // long-press or grip). Consume the flag and bail.
+                if (didDragRef.current) {
+                  didDragRef.current = false;
+                  return;
+                }
+                setExpandedIndex(isExpanded ? null : index);
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -626,41 +655,54 @@ export default function WheelEditor({
                 style={{ padding: '0 14px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
                 onPointerDown={isExpanded ? undefined : (e) => handleGripPointerDown(index, e)}
               >
-                <GripVertical size={22} color={isExpanded ? withAlpha(ON_SURFACE, 0.3) : 'rgba(255,255,255,0.6)'} />
+                <GripVertical size={22} color={isExpanded ? withAlpha('#1E1E2C', 0.35) : 'rgba(255,255,255,0.6)'} />
               </div>
               <div
                 style={{ flex: 1 }}
                 onClick={isExpanded ? (e) => e.stopPropagation() : undefined}
                 onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
               >
-                {isExpanded ? (
-                  <InsetTextField
-                    value={segment.text}
-                    onChange={v => patchSegment(index, { text: v })}
-                    onBlur={commit}
-                    placeholder="Segment name"
-                    inputStyle={{ fontWeight: 600, fontSize: 16, color: ON_SURFACE }}
-                  />
-                ) : (
-                  <div style={{
+                {/* Single text element, swaps modes — closed: transparent
+                    bg/border, parent onClick handles tap-to-expand;
+                    open: visible field bg/border, dark editable text.
+                    Position + font stay identical between modes so the
+                    text doesn't shift when the field appears, only the
+                    bounds + bg fade in. */}
+                <input
+                  type="text"
+                  value={segment.text}
+                  onChange={e => patchSegment(index, { text: e.target.value })}
+                  onBlur={isExpanded ? commit : undefined}
+                  placeholder="Segment name"
+                  readOnly={!isExpanded}
+                  tabIndex={isExpanded ? 0 : -1}
+                  style={{
+                    display: 'block',
+                    boxSizing: 'border-box',
+                    width: '100%',
+                    border: `2.5px solid ${isExpanded ? oklchShadow('#F8F8F9', 0.06) : 'transparent'}`,
+                    borderRadius: 14,
+                    outline: 'none',
+                    backgroundColor: isExpanded ? '#F8F8F9' : 'transparent',
                     padding: '10px 12px',
-                    fontWeight: 600,
                     fontSize: 16,
-                    color: textColor,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}>
-                    {segment.text}
-                  </div>
-                )}
+                    fontWeight: 600,
+                    fontFamily: 'inherit',
+                    color: isExpanded ? '#1E1E2C' : textColor,
+                    // Closed = non-interactive; parent's onClick toggles expand.
+                    pointerEvents: isExpanded ? 'auto' : 'none',
+                    cursor: isExpanded ? 'text' : 'pointer',
+                    transition: 'background-color 0.2s, border-color 0.2s, color 0.2s',
+                    minWidth: 0,
+                  }}
+                />
               </div>
               <div style={{
                 padding: '0 14px',
                 transform: `rotate(${isExpanded ? 180 : 0}deg)`,
                 transition: 'transform 0.2s',
               }}>
-                <ChevronDown size={26} color={isExpanded ? withAlpha(ON_SURFACE, 0.35) : 'rgba(255,255,255,0.6)'} />
+                <ChevronDown size={26} color={isExpanded ? withAlpha('#1E1E2C', 0.4) : 'rgba(255,255,255,0.6)'} />
               </div>
             </div>
 
@@ -673,37 +715,62 @@ export default function WheelEditor({
                 {/* Weight controls */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                   <PushDownButton
-                    color={SURFACE_ELEVATED}
+                    color={'#F8F8F9'}
+                    innerStrokeColor={'#EAEAEA'}
+                    innerStrokeWidth={4}
+                    bottomBorderColor={'#D4D4D4'}
                     borderRadius={10}
-                    height={36}
-                    bottomBorderWidth={3}
+                    height={44}
+                    bottomBorderWidth={5}
+                    repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                     onTap={() => {
-                      const newSegs = state.segments.map((s, i) =>
+                      // Read via stateRef so the long-press repeat sees
+                      // the LATEST weight each tick (the original closure
+                      // captures state at render-time → every tick would
+                      // compute the same +0.1 from the same base = no
+                      // visible compounding).
+                      const cur = stateRef.current;
+                      const newSegs = cur.segments.map((s, i) =>
                         i === index ? { ...s, weight: Math.max(0.1, s.weight - 0.1) } : s
                       );
-                      set({ ...state, segments: newSegs });
+                      set({ ...cur, segments: newSegs });
                     }}
-                    style={{ width: 36 }}
+                    style={{ width: 39 }}
                   >
-                    <Minus size={16} color={ON_SURFACE} />
+                    <Minus size={16} color={'#1E1E2C'} />
                   </PushDownButton>
-                  <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 14 }}>
-                    Weight: {segment.weight.toFixed(1)}
+                  <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 14, color: '#1E1E2C' }}>
+                    {(() => {
+                      // Decimal granularity scales with segment count:
+                      // > 20 segments → 2 decimals, > 10 → 1, else whole %.
+                      // All segments share the same formatter so the visible
+                      // percentages stay in lockstep (same precision, sum
+                      // close to 100 give or take rounding).
+                      const total = state.segments.reduce((s, x) => s + x.weight, 0);
+                      const pct = total > 0 ? (segment.weight / total) * 100 : 0;
+                      const decimals = state.segments.length > 21 ? 2 : state.segments.length > 10 ? 1 : 0;
+                      return `Weight: ${pct.toFixed(decimals)}%`;
+                    })()}
                   </div>
                   <PushDownButton
-                    color={SURFACE_ELEVATED}
+                    color={'#F8F8F9'}
+                    innerStrokeColor={'#EAEAEA'}
+                    innerStrokeWidth={4}
+                    bottomBorderColor={'#D4D4D4'}
                     borderRadius={10}
-                    height={36}
-                    bottomBorderWidth={3}
+                    height={44}
+                    bottomBorderWidth={5}
+                    repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                     onTap={() => {
-                      const newSegs = state.segments.map((s, i) =>
+                      const cur = stateRef.current;
+                      const newSegs = cur.segments.map((s, i) =>
                         i === index ? { ...s, weight: Math.min(10, s.weight + 0.1) } : s
                       );
-                      set({ ...state, segments: newSegs });
+                      set({ ...cur, segments: newSegs });
                     }}
-                    style={{ width: 36 }}
+                    style={{ width: 39 }}
                   >
-                    <Plus size={16} color={ON_SURFACE} />
+                    <Plus size={16} color={'#1E1E2C'} />
                   </PushDownButton>
                 </div>
 
@@ -719,19 +786,20 @@ export default function WheelEditor({
                       gap: 8,
                       padding: '10px 16px',
                       borderRadius: 12,
-                      backgroundColor: SURFACE_ELEVATED,
-                      border: `1.5px solid ${BORDER}`,
+                      backgroundColor: '#F8F8F9',
+                      border: `1.5px solid ${withAlpha('#1E1E2C', 0.12)}`,
                       cursor: 'pointer',
                       fontSize: 14,
                       fontWeight: 600,
+                      color: '#1E1E2C',
                     }}
                   >
-                    <Palette size={18} />
+                    <Palette size={18} color={withAlpha('#1E1E2C', 0.6)} />
                     <div style={{
                       width: 20, height: 20,
                       borderRadius: '50%',
                       backgroundColor: segment.color,
-                      border: `1.5px solid ${BORDER}`,
+                      border: `1.5px solid ${withAlpha('#1E1E2C', 0.12)}`,
                     }} />
                   </button>
                 </div>
@@ -758,7 +826,9 @@ export default function WheelEditor({
                           flex: 1,
                           padding: '8px 12px',
                           borderRadius: 10,
-                          border: `1.5px solid ${BORDER}`,
+                          border: `1.5px solid ${withAlpha('#1E1E2C', 0.15)}`,
+                          backgroundColor: '#F8F8F9',
+                          color: '#1E1E2C',
                           fontSize: 14,
                           fontWeight: 600,
                           fontFamily: 'inherit',
@@ -956,9 +1026,9 @@ export default function WheelEditor({
           onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
       )}
 
-      <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={10} step={0.1}
+      <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
         onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
-      <SettingSlider label="Center Marker" value={state.centerMarkerSize} min={100} max={250} step={1}
+      <SettingSlider label="Center Marker" value={state.centerMarkerSize} min={100} max={200} step={1}
         onChange={v => patch({ centerMarkerSize: v })} onChangeEnd={commit} />
 
       {/* Background circle toggle */}
@@ -1124,6 +1194,11 @@ function SegmentRow({
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
   const capturedRef = useRef<{ target: Element; pointerId: number } | null>(null);
   const didLongPressRef = useRef(false);
+  // True if the pointer moved more than ~10px during the gesture. Used to
+  // swallow the click that the browser fires on release — if the user
+  // dragged (e.g. the sheet up/down with their finger on a segment), the
+  // tap shouldn't open the segment.
+  const didMoveRef = useRef(false);
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -1132,18 +1207,40 @@ function SegmentRow({
     }
   };
 
+  // Always-on pointer tracking for the drag-suppression flag (separate
+  // from the long-press tracking, which is conditional on
+  // onLongPressActivate being passed — when the card is expanded the
+  // parent omits that callback, but we still want to swallow drag-clicks).
+  const handlePointerDownAlways = (e: React.PointerEvent) => {
+    if (e.button === 2) return;
+    didMoveRef.current = false;
+    if (!startPosRef.current) startPosRef.current = { x: e.clientX, y: e.clientY };
+  };
+  const handlePointerMoveAlways = (e: React.PointerEvent) => {
+    const start = startPosRef.current;
+    if (!start) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) > 10) didMoveRef.current = true;
+  };
+
   return (
     <div
       ref={innerRef}
       onClickCapture={e => {
-        if (didLongPressRef.current) {
+        // Either a long-press fired (drag-reorder activation) OR the
+        // pointer moved enough to count as a drag (sheet pull, scroll,
+        // etc.). Either way, the click is unintended — swallow it.
+        if (didLongPressRef.current || didMoveRef.current) {
           e.stopPropagation();
           e.preventDefault();
           didLongPressRef.current = false;
+          didMoveRef.current = false;
         }
       }}
-      onPointerDown={onLongPressActivate ? (e => {
-        if (e.button === 2) return;
+      onPointerDown={(e) => {
+        handlePointerDownAlways(e);
+        if (!onLongPressActivate || e.button === 2) return;
         didLongPressRef.current = false;
         startPosRef.current = { x: e.clientX, y: e.clientY };
         capturedRef.current = { target: e.target as Element, pointerId: e.pointerId };
@@ -1158,22 +1255,24 @@ function SegmentRow({
           }
           onLongPressActivate(index, sx, sy);
         }, 300);
-      }) : undefined}
-      onPointerMove={onLongPressActivate ? (e => {
+      }}
+      onPointerMove={(e) => {
+        handlePointerMoveAlways(e);
+        if (!onLongPressActivate) return;
         const start = startPosRef.current;
         if (!start) return;
         const dx = e.clientX - start.x;
         const dy = e.clientY - start.y;
         if (Math.hypot(dx, dy) > 8) clearLongPress();
-      }) : undefined}
-      onPointerUp={onLongPressActivate ? (() => {
+      }}
+      onPointerUp={() => {
         clearLongPress();
         startPosRef.current = null;
-      }) : undefined}
-      onPointerCancel={onLongPressActivate ? (() => {
+      }}
+      onPointerCancel={() => {
         clearLongPress();
         startPosRef.current = null;
-      }) : undefined}
+      }}
       style={{
         marginBottom: 8,
         position: 'relative',

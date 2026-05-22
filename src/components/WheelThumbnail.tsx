@@ -1,14 +1,23 @@
 import { useRef, useEffect } from 'react';
 import { WheelItem } from '../models/types';
-import { paintWheelThumbnail } from './WheelCanvas';
+import { paintWheelThumbnail, type WheelThumbnailStyle } from './WheelCanvas';
 
 interface WheelThumbnailProps {
   items: WheelItem[];
   size?: number;
+  // Optional style from the source wheel's config — strokeWidth,
+  // centerMarkerSize, showBackgroundCircle — scaled proportionally so the
+  // thumbnail reads as a true miniature. Omitted = defaultWheelConfig
+  // values used.
+  style?: WheelThumbnailStyle;
 }
 
-export default function WheelThumbnail({ items, size = 40 }: WheelThumbnailProps) {
+export default function WheelThumbnail({ items, size = 40, style }: WheelThumbnailProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Stable JSON of style so the effect doesn't re-run when an inline
+  // object identity changes but the values didn't.
+  const styleKey = JSON.stringify(style ?? {});
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -20,8 +29,9 @@ export default function WheelThumbnail({ items, size = 40 }: WheelThumbnailProps
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
-    paintWheelThumbnail(ctx, size, size, items);
-  }, [items, size]);
+    paintWheelThumbnail(ctx, size, size, items, style);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, size, styleKey]);
 
   return (
     <canvas

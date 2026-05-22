@@ -289,7 +289,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       ctx.scale(dpr, dpr);
     }
 
-    const fontSize = (items.length >= 16 ? 24 : displaySize / 16) * textSizeMultiplier;
+    // Font size scales with wheel display size AND tapers down as segment
+    // count grows past 16 (each slice gets thinner so text needs to follow).
+    // The previous formula hard-coded 24px for `items.length >= 16`, which
+    // (a) created a visible jump at 15→16 segments on small wheels and
+    // (b) stopped scaling with displaySize entirely past 16 — text stayed
+    // big when the wheel shrunk. `displaySize / Math.max(16, items.length)`
+    // gives identical output for ≤16 segments and a smooth taper after.
+    const fontSize = displaySize / Math.max(16, items.length) * textSizeMultiplier;
 
     const config: WheelPainterConfig = {
       items,
@@ -696,11 +703,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Release-velocity threshold above which a drag counts as an intentional
   // spin attempt (and earns the win-overlay flash on natural stop).
   const SPIN_ATTEMPT_VELOCITY = 0.004; // rad/ms — roughly a casual flick
-  // Hard cap on accumulated post-release velocity. ~45 clicks/sec on a
-  // 12-segment wheel, still inside WebAudio's comfort zone but high
-  // enough that consecutive flicks meaningfully build speed before
-  // hitting the ceiling.
-  const MAX_VELOCITY = 0.024;
+  // Hard cap on accumulated post-release velocity. ~67 clicks/sec on a
+  // 12-segment wheel — still inside WebAudio's comfort zone but high
+  // enough that aggressive flicks have meaningful headroom.
+  const MAX_VELOCITY = 0.035;
 
   // (cancelInFlight + playWinOverlay are declared before spin() so that
   // spin's useCallback can include playWinOverlay in its deps.)
@@ -789,22 +795,42 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     }
 
     // Release velocity: angular distance over the last sample window.
+    // The move handler trims samples to the last 80ms — but it only runs
+    // on pointer-move. If the user stops moving but keeps the finger
+    // down, no new samples come in and the buffer freezes on whatever
+    // was there last (potentially seconds-old motion). So:
+    //   (a) re-trim at release time using the CURRENT clock, and
+    //   (b) if the most recent sample is older than the window itself,
+    //       the user wasn't actually moving on release — velocity = 0.
+    const SAMPLE_WINDOW_MS = 80;
+    const now = performance.now();
+    while (drag.samples.length > 1 && now - drag.samples[0].time > SAMPLE_WINDOW_MS) {
+      drag.samples.shift();
+    }
     let dragVelocity = 0;
     if (drag.samples.length >= 2) {
-      const first = drag.samples[0];
       const last = drag.samples[drag.samples.length - 1];
-      const dt = last.time - first.time;
-      if (dt > 0) dragVelocity = (last.rotation - first.rotation) / dt;
+      if (now - last.time <= SAMPLE_WINDOW_MS) {
+        const first = drag.samples[0];
+        const dt = last.time - first.time;
+        if (dt > 0) dragVelocity = (last.rotation - first.rotation) / dt;
+      }
     }
-    // Combine with any momentum carried over from a re-grabbed decay,
-    // then clamp to MAX_VELOCITY. Same-direction flicks accumulate;
-    // opposite-direction flicks subtract (or reverse direction). The
-    // RELEASE_BOOST scales the user's input so the wheel feels lively
-    // — a casual flick now produces a meaningful spin instead of a
-    // lazy half-turn. The clamp keeps the click rate inside WebAudio's
-    // comfort zone regardless of how aggressive the boost is.
+    // RELEASE_BOOST is applied ONLY to the new drag input — the carried
+    // velocity from a re-grabbed decay is preserved at face value. Old
+    // formula `(dragVelocity + carriedVelocity) * BOOST` doubled the
+    // carry too, which at lower drag speeds made a gentle nudge feel
+    // like a hard re-flick (the wheel jumped ahead because the carry
+    // got boosted, not the user's input). Same-direction nudges still
+    // accumulate; opposite-direction nudges still subtract / reverse.
+    //
+    // If `dragVelocity` is exactly 0 (stale-sample guard above triggered:
+    // the user wasn't moving on release), they grabbed to stop or slow
+    // the wheel rather than to re-flick — discard the carry entirely so
+    // the wheel actually halts instead of resuming its pre-grab speed.
     const RELEASE_BOOST = 2;
-    let velocity = (dragVelocity + drag.carriedVelocity) * RELEASE_BOOST;
+    const carried = dragVelocity === 0 ? 0 : drag.carriedVelocity;
+    let velocity = dragVelocity * RELEASE_BOOST + carried;
     if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
     else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
     const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;

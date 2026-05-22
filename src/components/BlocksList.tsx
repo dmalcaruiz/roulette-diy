@@ -619,18 +619,22 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
     : 0;
   // Flow preview thumbnails: resolve step blockIds via allBlocks. Standalone
   // roulettes preview their own wheel. Experiences preview their child
-  // roulettes in order. Non-roulette children are skipped for now.
-  const flowPreviewItems = (() => {
+  // roulettes in order. Non-roulette children are skipped for now. Each
+  // entry is the full wheelConfig so the thumbnail can pass per-wheel
+  // style (strokeWidth, cornerRadius, etc.) — without that, profile
+  // thumbnails would always render with default config values and never
+  // reflect a wheel's actual style edits.
+  const flowPreviewConfigs = (() => {
     if (!asFlow) return [];
     if (block.type === 'roulette' && block.wheelConfig) {
-      return [block.wheelConfig.items];
+      return [block.wheelConfig];
     }
     if (block.type === 'experience' && allBlocks) {
       const stepIds = block.experienceConfig?.steps.map(s => s.blockId) ?? [];
       return stepIds
         .map(id => allBlocks.find(b => b.id === id))
         .filter((b): b is CloudBlock => !!b && b.type === 'roulette' && !!b.wheelConfig)
-        .map(b => b.wheelConfig!.items);
+        .map(b => b.wheelConfig!);
     }
     return [];
   })();
@@ -667,11 +671,35 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
         }}>
           <GripVertical size={18} color={withAlpha(ON_SURFACE, 0.25)} />
 
-          {/* Thumbnail */}
-          {asFlow && flowPreviewItems.length > 0 ? (
-            <WheelThumbnail items={flowPreviewItems[0]} size={44} />
+          {/* Thumbnail — pass the wheelConfig's style fields so the
+              thumbnail mirrors the actual wheel (rounded corners, ring,
+              stroke, marker), not default-config values. */}
+          {asFlow && flowPreviewConfigs.length > 0 ? (
+            <WheelThumbnail
+              items={flowPreviewConfigs[0].items}
+              size={44}
+              style={{
+                strokeWidth: flowPreviewConfigs[0].strokeWidth,
+                centerMarkerSize: flowPreviewConfigs[0].centerMarkerSize,
+                showBackgroundCircle: flowPreviewConfigs[0].showBackgroundCircle,
+                cornerRadius: flowPreviewConfigs[0].cornerRadius,
+                innerCornerStyle: flowPreviewConfigs[0].innerCornerStyle,
+                centerInset: flowPreviewConfigs[0].centerInset,
+              }}
+            />
           ) : block.type === 'roulette' && block.wheelConfig ? (
-            <WheelThumbnail items={block.wheelConfig.items} size={44} />
+            <WheelThumbnail
+              items={block.wheelConfig.items}
+              size={44}
+              style={{
+                strokeWidth: block.wheelConfig.strokeWidth,
+                centerMarkerSize: block.wheelConfig.centerMarkerSize,
+                showBackgroundCircle: block.wheelConfig.showBackgroundCircle,
+                cornerRadius: block.wheelConfig.cornerRadius,
+                innerCornerStyle: block.wheelConfig.innerCornerStyle,
+                centerInset: block.wheelConfig.centerInset,
+              }}
+            />
           ) : (
             <div style={{
               width: 44, height: 44,
