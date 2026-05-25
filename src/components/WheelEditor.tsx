@@ -820,66 +820,92 @@ export default function WheelEditor({
                 onClick={e => e.stopPropagation()}
                 style={{ padding: '0 14px 14px' }}
               >
-                {/* Weight controls */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                  <PushDownButton
-                    color={'#F8F8F9'}
-                    innerStrokeColor={'#EAEAEA'}
-                    innerStrokeWidth={4}
-                    bottomBorderColor={'#D4D4D4'}
-                    borderRadius={10}
-                    height={44}
-                    bottomBorderWidth={5}
-                    repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
-                    onTap={() => {
-                      // Read via stateRef so the long-press repeat sees
-                      // the LATEST weight each tick (the original closure
-                      // captures state at render-time → every tick would
-                      // compute the same +0.1 from the same base = no
-                      // visible compounding).
-                      const cur = stateRef.current;
-                      const newSegs = cur.segments.map((s, i) =>
-                        i === index ? { ...s, weight: Math.max(0.1, s.weight - 0.1) } : s
-                      );
-                      set({ ...cur, segments: newSegs });
-                    }}
-                    style={{ width: 39 }}
-                  >
-                    <Minus size={16} color={'#1E1E2C'} />
-                  </PushDownButton>
-                  <div style={{ flex: 1, textAlign: 'center', fontWeight: 700, fontSize: 14, color: '#1E1E2C' }}>
-                    {(() => {
-                      // Decimal granularity scales with segment count:
-                      // > 20 segments → 2 decimals, > 10 → 1, else whole %.
-                      // All segments share the same formatter so the visible
-                      // percentages stay in lockstep (same precision, sum
-                      // close to 100 give or take rounding).
-                      const total = state.segments.reduce((s, x) => s + x.weight, 0);
-                      const pct = total > 0 ? (segment.weight / total) * 100 : 0;
-                      const decimals = state.segments.length > 21 ? 2 : state.segments.length > 10 ? 1 : 0;
-                      return `Weight: ${pct.toFixed(decimals)}%`;
-                    })()}
+                {/* Weight controls — label left + percentage right on top,
+                    [−] slider [+] row below for both granular taps and
+                    rapid drag-to-set adjustments. */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: 8,
+                  }}>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: '#1E1E2C' }}>
+                      Weight
+                    </span>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: '#1E1E2C' }}>
+                      {(() => {
+                        // Decimal granularity scales with segment count:
+                        // > 21 segments → 2 decimals, > 10 → 1, else whole %.
+                        const total = state.segments.reduce((s, x) => s + x.weight, 0);
+                        const pct = total > 0 ? (segment.weight / total) * 100 : 0;
+                        const decimals = state.segments.length > 21 ? 2 : state.segments.length > 10 ? 1 : 0;
+                        return `${pct.toFixed(decimals)}%`;
+                      })()}
+                    </span>
                   </div>
-                  <PushDownButton
-                    color={'#F8F8F9'}
-                    innerStrokeColor={'#EAEAEA'}
-                    innerStrokeWidth={4}
-                    bottomBorderColor={'#D4D4D4'}
-                    borderRadius={10}
-                    height={44}
-                    bottomBorderWidth={5}
-                    repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
-                    onTap={() => {
-                      const cur = stateRef.current;
-                      const newSegs = cur.segments.map((s, i) =>
-                        i === index ? { ...s, weight: Math.min(10, s.weight + 0.1) } : s
-                      );
-                      set({ ...cur, segments: newSegs });
-                    }}
-                    style={{ width: 39 }}
-                  >
-                    <Plus size={16} color={'#1E1E2C'} />
-                  </PushDownButton>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <PushDownButton
+                      color={'#F8F8F9'}
+                      innerStrokeColor={'#EAEAEA'}
+                      innerStrokeWidth={4}
+                      bottomBorderColor={'#D4D4D4'}
+                      borderRadius={10}
+                      height={44}
+                      bottomBorderWidth={5}
+                      repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
+                      onTap={() => {
+                        const cur = stateRef.current;
+                        const newSegs = cur.segments.map((s, i) =>
+                          i === index ? { ...s, weight: Math.max(0.1, s.weight - 0.1) } : s
+                        );
+                        set({ ...cur, segments: newSegs });
+                      }}
+                      style={{ width: 39 }}
+                    >
+                      <Minus size={16} color={'#1E1E2C'} />
+                    </PushDownButton>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={10}
+                      step={0.1}
+                      value={segment.weight}
+                      onChange={e => patchSegment(index, { weight: parseFloat(e.target.value) })}
+                      onPointerUp={commit}
+                      onTouchEnd={commit}
+                      // Block pointer events from bubbling to the SegmentRow
+                      // (long-press / drag detection) and the wrapping
+                      // SwipeableActionCell (horizontal swipe-to-reveal).
+                      // Bubble phase so the slider handles its own drag
+                      // first; capture phase would intercept before the
+                      // slider saw the events.
+                      onPointerDown={e => e.stopPropagation()}
+                      onMouseDown={e => e.stopPropagation()}
+                      onTouchStart={e => e.stopPropagation()}
+                      style={{ flex: 1, accentColor: '#1E1E2C' }}
+                    />
+                    <PushDownButton
+                      color={'#F8F8F9'}
+                      innerStrokeColor={'#EAEAEA'}
+                      innerStrokeWidth={4}
+                      bottomBorderColor={'#D4D4D4'}
+                      borderRadius={10}
+                      height={44}
+                      bottomBorderWidth={5}
+                      repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
+                      onTap={() => {
+                        const cur = stateRef.current;
+                        const newSegs = cur.segments.map((s, i) =>
+                          i === index ? { ...s, weight: Math.min(10, s.weight + 0.1) } : s
+                        );
+                        set({ ...cur, segments: newSegs });
+                      }}
+                      style={{ width: 39 }}
+                    >
+                      <Plus size={16} color={'#1E1E2C'} />
+                    </PushDownButton>
+                  </div>
                 </div>
 
                 {/* Color + image buttons */}
@@ -914,7 +940,19 @@ export default function WheelEditor({
 
                 {/* Inline color picker */}
                 {colorPickerSegment === index && (
-                  <div style={{ marginTop: 12 }}>
+                  <div
+                    style={{ marginTop: 12 }}
+                    // Block pointer events from bubbling to the SegmentRow
+                    // (long-press detection / didMoveRef) and the wrapping
+                    // SwipeableActionCell (horizontal swipe-to-reveal).
+                    // Bubble phase (no Capture suffix) so the color picker
+                    // itself handles its own pointer events first — capture
+                    // phase would intercept them before the picker saw them
+                    // and the saturation / hue drags would do nothing.
+                    onPointerDown={e => e.stopPropagation()}
+                    onMouseDown={e => e.stopPropagation()}
+                    onTouchStart={e => e.stopPropagation()}
+                  >
                     <HexColorPicker
                       color={segment.color}
                       onChange={c => patchSegment(index, { color: c })}

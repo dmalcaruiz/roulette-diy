@@ -965,11 +965,16 @@ export default function RouletteScreen({
   // wheel is sized to leave room for it.
   const headerSizeProg = (isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0);
   const wheelHeaderOverhead = ((56 * activeConfig.headerTextSize + 16) + 16) * headerSizeProg + 16;
-  const wheelPadding = 20; // breathing room
+  // Breathing room between the wheel and the sheet — 3% of the wheel's
+  // own height, not a fixed strip, so the gap scales with wheel size
+  // (small wheel = tight gap, big wheel = generous gap). Solving for
+  // wheelSize: wheelSize + 0.03 · wheelSize ≤ availableForWheel
+  //   ⇒  wheelSize ≤ availableForWheel / 1.03.
+  const WHEEL_PADDING_RATIO = 0.03;
   const availableForWheel = isMobile
     ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover - wheelHeaderOverhead
     : screenHeight - 100 - wheelHeaderOverhead;
-  const maxWheelSize = Math.min(availableForWheel - wheelPadding, effectiveWheelSize);
+  const maxWheelSize = Math.min(availableForWheel / (1 + WHEEL_PADDING_RATIO), effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
   const dynamicScale = clampedWheelSize / idealWheelSize;
   // Wheel fades out when sheet goes past mid snap toward full height
@@ -1840,6 +1845,11 @@ function PinnedChipBar({
   onRedo: () => void;
   onPlay: () => void;
 }) {
+  // Set true if the chip row's scrollLeft changes between pointerdown
+  // and click. Used by onClickCapture to swallow the click so a
+  // horizontal scroll (mouse drag OR touch pan) doesn't ALSO activate
+  // whichever chip the gesture started on.
+  const didScrollRef = useRef(false);
   const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; Icon: typeof LayoutList }[] = [
     { key: 'segments', label: 'Segments', Icon: LayoutList },
     { key: 'style', label: 'Style', Icon: Paintbrush },
@@ -1882,6 +1892,15 @@ function PinnedChipBar({
     }}>
       <div
         className="no-scrollbar"
+        onPointerDownCapture={() => { didScrollRef.current = false; }}
+        onScroll={() => { didScrollRef.current = true; }}
+        onClickCapture={e => {
+          if (didScrollRef.current) {
+            e.stopPropagation();
+            e.preventDefault();
+            didScrollRef.current = false;
+          }
+        }}
         onWheel={e => {
           if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
             e.currentTarget.scrollLeft += e.deltaY;
