@@ -964,17 +964,24 @@ export default function RouletteScreen({
   // a unit between the app bar and spin button. Subtract its overhead so the
   // wheel is sized to leave room for it.
   const headerSizeProg = (isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0);
-  const wheelHeaderOverhead = ((56 * activeConfig.headerTextSize + 16) + 16) * headerSizeProg + 16;
-  // Breathing room between the wheel and the sheet — 3% of the wheel's
-  // own height, not a fixed strip, so the gap scales with wheel size
-  // (small wheel = tight gap, big wheel = generous gap). Solving for
-  // wheelSize: wheelSize + 0.03 · wheelSize ≤ availableForWheel
-  //   ⇒  wheelSize ≤ availableForWheel / 1.03.
+  // Wheel-bottom breathing room: 3% of wheel size (kept from previous fix).
+  // Header text padding: was a fixed 16px in the header box, now 1.5% of
+  // wheel size — gives the header text snugger vertical padding without
+  // affecting any other spacing. Both are size-dependent, so the wheel
+  // size has to be solved algebraically:
+  //   wheel + 0.03·wheel + 0.015·wheel·headerProg + constHeader + constSpacers = avail
+  //   wheel · (1.03 + 0.015·headerProg) = avail − constHeader − constSpacers
   const WHEEL_PADDING_RATIO = 0.03;
+  const HEADER_TEXT_PAD_RATIO = 0.015;
+  // Constant (size-independent) header overhead: text height + the
+  // original top-spacer 16 (scaled by prog) + the original bottom-spacer
+  // 16 (fixed). The internal text padding moved to size-dependent.
+  const constHeader = (56 * activeConfig.headerTextSize) * headerSizeProg + 16 * headerSizeProg + 16;
   const availableForWheel = isMobile
-    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover - wheelHeaderOverhead
-    : screenHeight - 100 - wheelHeaderOverhead;
-  const maxWheelSize = Math.min(availableForWheel / (1 + WHEEL_PADDING_RATIO), effectiveWheelSize);
+    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover - constHeader
+    : screenHeight - 100 - constHeader;
+  const sizeFactor = 1 + WHEEL_PADDING_RATIO + HEADER_TEXT_PAD_RATIO * headerSizeProg;
+  const maxWheelSize = Math.min(availableForWheel / sizeFactor, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
   const dynamicScale = clampedWheelSize / idealWheelSize;
   // Wheel fades out when sheet goes past mid snap toward full height

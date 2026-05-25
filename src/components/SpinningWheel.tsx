@@ -1056,9 +1056,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         opacity: headerOpacity,
         transform: `scale(${headerSizeProgress})`,
         transformOrigin: 'center bottom',
-        height: (headerFontSize + 16) * headerSizeProgress,
+        height: (headerFontSize + size * 0.015) * headerSizeProgress,
         display: 'flex',
-        alignItems: 'center',
+        // alignItems: 'flex-start' pushes the text to the top of the
+        // header box — kills the upper padding without changing the
+        // box's overall height or any other wheel sizing. All of the
+        // size*0.015 padding now sits below the text instead of split
+        // evenly above and below.
+        alignItems: 'flex-start',
         justifyContent: 'center',
         willChange: 'transform, height, opacity',
       }}>
