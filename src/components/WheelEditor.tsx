@@ -1,9 +1,9 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
-import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
+import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CheckCircle, Circle, Settings,
@@ -147,6 +147,12 @@ export default function WheelEditor({
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // Segment id currently mid-delete animation. While set, the matching
+  // SegmentRow plays a two-phase exit (card+buttons zoom to 0, then the
+  // row's height collapses) before the segment is actually removed from
+  // state. Keyed by id (not index) so neighbour reorders during the
+  // animation don't lose the reference.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   // Tab selection is controlled by the chips in the red footer via the
   // selectedTab prop; the internal fallback stays at 0 (Segments).
   const selectedTab = selectedTabProp ?? 0;
@@ -466,7 +472,26 @@ export default function WheelEditor({
     // No floor — let the user delete down to 0. Wheel paint handles
     // empty / single-segment cases gracefully.
     setExpandedIndex(null);
-    commitWithAnim(stateRef.current.segments.filter((_, i) => i !== index));
+    const segment = stateRef.current.segments[index];
+    if (!segment) return;
+    // Kick the wheel's segment-shrink preview off IMMEDIATELY so the
+    // wheel animates in parallel with the card's exit (instead of
+    // sequentially after, which is what commitWithAnim would do if
+    // called at the end of the timeout).
+    const prev = stateRef.current.segments;
+    sendPreview(prev.map(s => s.id === segment.id ? { ...s, weight: 0.001 } : s));
+    // Two-phase card delete: SegmentRow plays scale-down (180ms) +
+    // height-collapse (180ms) once its `isDeleting` prop flips. After
+    // the animation timeline we commit the actual filter — `set`
+    // directly (not commitWithAnim) because the wheel already has the
+    // shrunk preview in flight; running commitWithAnim's length-1
+    // branch here would re-fire the same preview and the wheel would
+    // double-animate.
+    setDeletingId(segment.id);
+    setTimeout(() => {
+      setDeletingId(null);
+      set({ ...stateRef.current, segments: stateRef.current.segments.filter(s => s.id !== segment.id) });
+    }, 360);
   };
 
   const duplicateSegment = (index: number) => {
@@ -499,7 +524,7 @@ export default function WheelEditor({
   // (mirroring BlockRow in BlocksList). Margin is OUTSIDE the row's box,
   // so getBoundingClientRect.height excludes it — slot-shift math adds
   // the gap to compute neighbor displacement.
-  const SEGMENT_ROW_GAP = 8;
+  const SEGMENT_ROW_GAP = 9;
 
   // Slot-shift offset for a non-grabbed row at index `i` while the user
   // is dragging the row at `grabbedIndex` toward `dropTargetIndex`.
@@ -732,7 +757,6 @@ export default function WheelEditor({
             backgroundColor: bgColor,
             border: `3px solid ${borderColor}`,
             overflow: 'hidden',
-            transition: 'background-color 0.2s, border-color 0.2s',
           }}>
             {/* Collapsed row — minHeight matches the profile card's top
                 face height (3px border + 12px padding + 44px thumbnail +
@@ -755,15 +779,38 @@ export default function WheelEditor({
                 display: 'flex',
                 alignItems: 'center',
                 padding: '8px 0',
-                minHeight: 65,
+                minHeight: 58,
                 cursor: 'pointer',
               }}
             >
               <div
-                style={{ padding: '0 14px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
+                // Asymmetric padding tucks the grip icon to the left
+                // (10px left) while the right padding sets the gap
+                // between grip and text — reducing this widens the
+                // text input on its left side. Pair any change here
+                // with an equal reduction on the chevron container's
+                // right padding to keep the text centred.
+                style={{ padding: '0 10px 0 10px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
                 onPointerDown={isExpanded ? undefined : (e) => handleGripPointerDown(index, e)}
               >
-                <GripVertical size={22} color={isExpanded ? withAlpha('#1E1E2C', 0.35) : 'rgba(255,255,255,0.6)'} />
+                <div style={{
+                  width: 28,
+                  height: 28,
+                  // Closed: stronger OKLCh-darken of the segment colour
+                  // (delta 0.10 vs default 0.05) so the grip reads more
+                  // clearly against the card's bright top face. Open:
+                  // the existing dark-grey alpha that contrasts on the
+                  // white expanded card.
+                  backgroundColor: isExpanded ? withAlpha('#1E1E2C', 0.35) : oklchShadow(segment.color, 0.07),
+                  WebkitMaskImage: 'url(/images/drag.svg)',
+                  WebkitMaskRepeat: 'no-repeat',
+                  WebkitMaskSize: 'contain',
+                  WebkitMaskPosition: 'center',
+                  maskImage: 'url(/images/drag.svg)',
+                  maskRepeat: 'no-repeat',
+                  maskSize: 'contain',
+                  maskPosition: 'center',
+                }} />
               </div>
               <div
                 style={{ flex: 1 }}
@@ -793,24 +840,82 @@ export default function WheelEditor({
                     outline: 'none',
                     backgroundColor: isExpanded ? '#F8F8F9' : 'transparent',
                     padding: '10px 12px',
-                    fontSize: 16,
+                    fontSize: 17,
                     fontWeight: 600,
                     fontFamily: 'inherit',
                     color: isExpanded ? '#1E1E2C' : textColor,
                     // Closed = non-interactive; parent's onClick toggles expand.
                     pointerEvents: isExpanded ? 'auto' : 'none',
                     cursor: isExpanded ? 'text' : 'pointer',
-                    transition: 'background-color 0.2s, border-color 0.2s, color 0.2s',
                     minWidth: 0,
                   }}
                 />
               </div>
               <div style={{
-                padding: '0 14px',
-                transform: `rotate(${isExpanded ? 180 : 0}deg)`,
-                transition: 'transform 0.2s',
+                padding: '0 11px 0 9px',
               }}>
-                <ChevronDown size={26} color={isExpanded ? withAlpha('#1E1E2C', 0.4) : 'rgba(255,255,255,0.6)'} />
+                {(() => {
+                  // Faux SVG stroke via 8 layered masked-div copies
+                  // around a central fill copy. Each "stroke" copy is
+                  // an absolutely-positioned full-size masked div
+                  // offset by ±2px in the 8 cardinal/diagonal
+                  // directions — together they paint a 2px outline
+                  // around the chevron shape, centred symmetrically.
+                  // More deterministic than drop-shadow + mask, which
+                  // can render unevenly across browsers because of how
+                  // filter / mask interact in the rendering pipeline.
+                  //
+                  // Stroke colour = `oklchShadow(segment.color)` — same
+                  // OKLCh-darken the cards use for their lifted bottom
+                  // face. Red card → darker red rim, blue → darker
+                  // blue, etc.
+                  // When the card is expanded the chevron sits on a
+                  // white surface and the segment-coloured stroke
+                  // would clash, so we skip the stroke layers entirely.
+                  const fillColor = isExpanded ? withAlpha('#1E1E2C', 0.4) : '#FFFFFF';
+                  // Light OKLCh darken — keeps the outline subtle so it
+                  // doesn't overpower the chevron's white fill. Used
+                  // only in the closed state (strokeOffsets is empty
+                  // when expanded, so no stroke layers render).
+                  const strokeColor = oklchShadow(segment.color, 0.03);
+                  const maskStyle: React.CSSProperties = {
+                    position: 'absolute',
+                    inset: 0,
+                    WebkitMaskImage: 'url(/images/chevrons.svg)',
+                    WebkitMaskRepeat: 'no-repeat',
+                    WebkitMaskSize: 'contain',
+                    WebkitMaskPosition: 'center',
+                    maskImage: 'url(/images/chevrons.svg)',
+                    maskRepeat: 'no-repeat',
+                    maskSize: 'contain',
+                    maskPosition: 'center',
+                  };
+                  // 3px cardinal + 2.12px diagonal (3 / √2) → all 8
+                  // strokes sit exactly 3px from the centre. Thicker
+                  // outline than the previous 2px setup.
+                  const strokeOffsets: [number, number][] = isExpanded ? [] : [
+                    [3, 0], [-3, 0], [0, 3], [0, -3],
+                    [2.12, 2.12], [-2.12, 2.12], [2.12, -2.12], [-2.12, -2.12],
+                  ];
+                  return (
+                    <div style={{
+                      position: 'relative',
+                      width: 26,
+                      height: 26,
+                      transform: `rotate(${isExpanded ? 180 : 0}deg)`,
+                      transition: 'transform 0.2s',
+                    }}>
+                      {strokeOffsets.map(([dx, dy], i) => (
+                        <div key={i} style={{
+                          ...maskStyle,
+                          backgroundColor: strokeColor,
+                          transform: `translate(${dx}px, ${dy}px)`,
+                        }} />
+                      ))}
+                      <div style={{ ...maskStyle, backgroundColor: fillColor }} />
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -863,7 +968,19 @@ export default function WheelEditor({
                       }}
                       style={{ width: 39 }}
                     >
-                      <Minus size={16} color={'#1E1E2C'} />
+                      <div style={{
+                        width: 25,
+                        height: 25,
+                        backgroundColor: withAlpha('#1E1E2C', 0.5),
+                        WebkitMaskImage: 'url(/images/subtractl.svg)',
+                        WebkitMaskRepeat: 'no-repeat',
+                        WebkitMaskSize: 'contain',
+                        WebkitMaskPosition: 'center',
+                        maskImage: 'url(/images/subtractl.svg)',
+                        maskRepeat: 'no-repeat',
+                        maskSize: 'contain',
+                        maskPosition: 'center',
+                      }} />
                     </PushDownButton>
                     <input
                       type="range"
@@ -903,7 +1020,19 @@ export default function WheelEditor({
                       }}
                       style={{ width: 39 }}
                     >
-                      <Plus size={16} color={'#1E1E2C'} />
+                      <div style={{
+                        width: 25,
+                        height: 25,
+                        backgroundColor: withAlpha('#1E1E2C', 0.5),
+                        WebkitMaskImage: 'url(/images/addl.svg)',
+                        WebkitMaskRepeat: 'no-repeat',
+                        WebkitMaskSize: 'contain',
+                        WebkitMaskPosition: 'center',
+                        maskImage: 'url(/images/addl.svg)',
+                        maskRepeat: 'no-repeat',
+                        maskSize: 'contain',
+                        maskPosition: 'center',
+                      }} />
                     </PushDownButton>
                   </div>
                 </div>
@@ -1033,7 +1162,7 @@ export default function WheelEditor({
               top: 6.5,
               bottom: 0,
               borderRadius: 21,
-              boxShadow: `0 0 0 3.5px ${deriveCardSurfaces(segment.color).halo}`,
+              boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.4)`,
               pointerEvents: 'none',
             }}
           />
@@ -1219,7 +1348,56 @@ export default function WheelEditor({
         <>
           <SegmentsModeToggle value={segmentsMode} onChange={setSegmentsMode} />
           {segmentsMode === 'list' ? renderSimpleMode() : (
-            <>
+            <div style={{ marginLeft: -12, marginRight: -12, position: 'relative' }}>
+              {/* Left-edge drag-proxy strip. Sits on top of the leftmost
+                  ~56px of the segment cards stack and forwards drag
+                  pointerdowns to the matching row's drag handler, so
+                  the user can grab anywhere along the sheet's left
+                  margin instead of needing to land on the small grip
+                  icon. Disabled when any card is expanded (so the
+                  expanded card's inner controls keep raw pointer
+                  access). The strip itself only captures pointerdown;
+                  vertical-move > 8px in handleGripPointerDown commits
+                  to a drag (so taps still bubble naturally for the
+                  card's onClick → toggle expand path, and short
+                  intentional gestures don't accidentally grab). */}
+              {expandedIndex == null && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 56,
+                    zIndex: 1,
+                    touchAction: 'none',
+                  }}
+                  onPointerDown={(e) => {
+                    const y = e.clientY;
+                    for (let i = 0; i < segmentElsRef.current.length; i++) {
+                      const el = segmentElsRef.current[i];
+                      if (!el) continue;
+                      const r = el.getBoundingClientRect();
+                      if (y >= r.top && y <= r.bottom) {
+                        handleGripPointerDown(i, e);
+                        break;
+                      }
+                    }
+                  }}
+                  onClick={(e) => {
+                    const y = e.clientY;
+                    for (let i = 0; i < segmentElsRef.current.length; i++) {
+                      const el = segmentElsRef.current[i];
+                      if (!el) continue;
+                      const r = el.getBoundingClientRect();
+                      if (y >= r.top && y <= r.bottom) {
+                        setExpandedIndex(i);
+                        break;
+                      }
+                    }
+                  }}
+                />
+              )}
               {segments.map((seg, i) => {
                 const isGrabbed = grabbedIndex === i;
                 const slotOffset = isGrabbed ? dragOffsetY : computeSlotOffset(i);
@@ -1244,6 +1422,7 @@ export default function WheelEditor({
                     isGrabbed={isGrabbed}
                     transform={transform}
                     transition={transition}
+                    isDeleting={deletingId === seg.id}
                     // Long-press is gated to the collapsed state — when the
                     // card is open, all the inner controls (color picker,
                     // weight buttons, text input) need raw pointer access.
@@ -1253,23 +1432,35 @@ export default function WheelEditor({
                   </SegmentRow>
                 );
               })}
-              <div style={{ height: 12 }} />
-              <div ref={addSegmentBtnRef}>
-                <PushDownButton color={PRIMARY} onTap={addSegment} borderRadius={32}>
+              <div style={{ height: 10 }} />
+              <div ref={addSegmentBtnRef} style={{ padding: '0 8px' }}>
+                <PushDownButton color={PRIMARY} onTap={addSegment} borderRadius={32} innerStrokeWidth={3} height={54} bottomBorderWidth={6}>
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: 10,
+                    gap: 0,
                     color: '#FFFFFF',
                   }}>
-                    <Plus size={22} />
+                    <div style={{
+                      width: 36,
+                      height: 36,
+                      backgroundColor: '#FFFFFF',
+                      WebkitMaskImage: 'url(/images/addsegment.svg)',
+                      WebkitMaskRepeat: 'no-repeat',
+                      WebkitMaskSize: 'contain',
+                      WebkitMaskPosition: 'center',
+                      maskImage: 'url(/images/addsegment.svg)',
+                      maskRepeat: 'no-repeat',
+                      maskSize: 'contain',
+                      maskPosition: 'center',
+                    }} />
                     <span style={{ fontWeight: 700, fontSize: 16 }}>Add Segment</span>
                   </div>
                 </PushDownButton>
               </div>
-              <div style={{ height: 32 }} />
-            </>
+              <div style={{ height: 2 }} />
+            </div>
           )}
         </>
       )}
@@ -1330,12 +1521,13 @@ function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onCh
 // (omitted when the card is currently expanded, so its inner controls get
 // raw pointer access).
 function SegmentRow({
-  index, isGrabbed, transform, transition, onLongPressActivate, innerRef, children,
+  index, isGrabbed, transform, transition, isDeleting, onLongPressActivate, innerRef, children,
 }: {
   index: number;
   isGrabbed: boolean;
   transform: string;
   transition: string;
+  isDeleting?: boolean;
   onLongPressActivate?: (index: number, startX: number, startY: number) => void;
   innerRef?: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
@@ -1344,6 +1536,30 @@ function SegmentRow({
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
   const capturedRef = useRef<{ target: Element; pointerId: number } | null>(null);
   const didLongPressRef = useRef(false);
+  // Two-phase exit when `isDeleting` flips true. Phase 1 (0-180ms) — the
+  // inner wrapper scales to 0 + fades; the outer row stays at full
+  // height. Phase 2 (180-360ms) — outer row collapses height +
+  // marginBottom to 0 so neighbours slide up. We need an explicit
+  // starting height for the height transition (transitions don't run
+  // from `auto`), so useLayoutEffect captures the measured height the
+  // moment deletion starts.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [collapsedHeight, setCollapsedHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!isDeleting) {
+      setCollapsedHeight(null);
+      return;
+    }
+    if (!rowRef.current) return;
+    const h = rowRef.current.getBoundingClientRect().height;
+    setCollapsedHeight(h);
+    const t = setTimeout(() => setCollapsedHeight(0), 180);
+    return () => clearTimeout(t);
+  }, [isDeleting]);
+  const setRefs = (el: HTMLDivElement | null) => {
+    rowRef.current = el;
+    innerRef?.(el);
+  };
   // True if the pointer moved more than ~10px during the gesture. Used to
   // swallow the click that the browser fires on release — if the user
   // dragged (e.g. the sheet up/down with their finger on a segment), the
@@ -1376,7 +1592,7 @@ function SegmentRow({
 
   return (
     <div
-      ref={innerRef}
+      ref={setRefs}
       onClickCapture={e => {
         // Either a long-press fired (drag-reorder activation) OR the
         // pointer moved enough to count as a drag (sheet pull, scroll,
@@ -1424,11 +1640,18 @@ function SegmentRow({
         startPosRef.current = null;
       }}
       style={{
-        marginBottom: 8,
+        marginBottom: collapsedHeight === 0 ? 0 : 9,
+        height: collapsedHeight != null ? collapsedHeight : undefined,
+        overflow: isDeleting ? 'hidden' : undefined,
         position: 'relative',
         zIndex: isGrabbed ? 5 : undefined,
         transform,
-        transition,
+        // Compose the parent-driven transition list with our own height /
+        // margin transitions so all four animate together while a delete
+        // is in flight. Height transition timing is matched to the inner
+        // scale duration (180ms) — phase 1 finishes just as phase 2
+        // begins, giving the row a continuous zoom-then-collapse.
+        transition: `${transition}, height 0.18s ease, margin-bottom 0.18s ease`,
         // Drop shadow lives here (emerges from the visible card outline
         // when grabbed). Halo ring is on the absolute child below,
         // positioned at the bottom face's location so it hugs the lower
@@ -1443,11 +1666,28 @@ function SegmentRow({
         WebkitUserSelect: 'none',
       }}
     >
-      {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
-          `halo` prop) so it z-stacks above the action buttons but below
-          the card's translate layer. See SwipeableActionCell for the
-          structural reasoning. */}
-      {children}
+      {/* Scale wrapper — only animates on delete. Wrapping (not styling
+          the outer row) keeps the existing translateY/scale transform
+          chain on the row untouched, so drag-reorder and slot-shift
+          aren't disturbed. Transform / opacity / transition are ALWAYS
+          set (not toggled to/from undefined) so the transition rule is
+          on the element the render BEFORE `isDeleting` flips — without
+          this the value would jump from `none` straight to `scale(0)`
+          on the same render that introduces the transition, and the
+          browser would skip the animation entirely (perceived as a
+          flicker). */}
+      <div style={{
+        transformOrigin: 'center',
+        transform: isDeleting ? 'scale(0)' : 'scale(1)',
+        opacity: isDeleting ? 0 : 1,
+        transition: 'transform 0.18s cubic-bezier(0.4, 0, 1, 1), opacity 0.18s ease',
+      }}>
+        {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
+            `halo` prop) so it z-stacks above the action buttons but below
+            the card's translate layer. See SwipeableActionCell for the
+            structural reasoning. */}
+        {children}
+      </div>
     </div>
   );
 }

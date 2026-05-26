@@ -1857,11 +1857,14 @@ function PinnedChipBar({
   // horizontal scroll (mouse drag OR touch pan) doesn't ALSO activate
   // whichever chip the gesture started on.
   const didScrollRef = useRef(false);
-  const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; Icon: typeof LayoutList }[] = [
-    { key: 'segments', label: 'Segments', Icon: LayoutList },
-    { key: 'style', label: 'Style', Icon: Paintbrush },
-    { key: 'settings', label: 'Settings', Icon: SettingsIcon },
-    { key: 'templates', label: 'Templates', Icon: LayoutGrid },
+  // Each item maps a tab key to its SVG icon path. The icons are rendered
+  // as CSS masks (via the SvgMaskIcon helper below) so a single asset
+  // can be tinted any colour — supports the active/inactive chip colours.
+  const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; iconSrc: string }[] = [
+    { key: 'segments', label: 'Segments', iconSrc: '/images/segments.svg' },
+    { key: 'style', label: 'Style', iconSrc: '/images/style.svg' },
+    { key: 'settings', label: 'Settings', iconSrc: '/images/settings.svg' },
+    { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
   ];
   // ── Bar spacing recipe ────────────────────────────────────────────────
   // Bar height: 56px. alignItems: 'flex-end' bottom-aligns every child so
@@ -1888,7 +1891,7 @@ function PinnedChipBar({
       height: 56,
       display: 'flex',
       alignItems: 'flex-end',
-      gap: 12,
+      gap: 4,
       padding: 0,
       backgroundColor: SURFACE,
       borderTop: `1px solid ${BORDER}`,
@@ -1941,14 +1944,21 @@ function PinnedChipBar({
           flex: 1,
           cursor: 'grab',
           paddingLeft: 14,
+          // Stepped right-edge fade — 2 rectangular bands (~14px each)
+          // at 66% / 33% opacity, replacing the smooth gradient for a
+          // more pixel-styled look that matches the rest of the chunky-
+          // block UI.
           WebkitMaskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), transparent 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 3px), rgba(0,0,0,0.075) calc(100% - 3px), rgba(0,0,0,0.075) 100%)',
           maskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), transparent 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 3px), rgba(0,0,0,0.075) calc(100% - 3px), rgba(0,0,0,0.075) 100%)',
         }}
       >
-        {items.map(({ key, label, Icon }) => {
+        {items.map(({ key, label, iconSrc }) => {
           const isActive = activeTab === key;
+          // Active chip = light surface (ON_SURFACE) → dark text (BG).
+          // Inactive chip = dark surface (SURFACE_ELEVATED) → light text.
+          const iconColor = isActive ? BG : withAlpha(ON_SURFACE, 0.85);
           return (
             <PushDownButton
               key={key}
@@ -1957,26 +1967,45 @@ function PinnedChipBar({
               borderRadius={26}
               height={38}
               bottomBorderWidth={4}
+              innerStrokeWidth={3}
               style={{ flexShrink: 0, marginBottom: 10 }}
             >
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 7,
-                padding: '0 17px',
-                // Active chip = light surface (ON_SURFACE) → dark text (BG).
-                // Inactive chip = dark surface (SURFACE_ELEVATED) → light text.
-                color: isActive ? BG : withAlpha(ON_SURFACE, 0.85),
+                color: iconColor,
                 fontWeight: 700,
                 fontSize: 16,
                 whiteSpace: 'nowrap',
               }}>
-                <Icon size={17} />
-                {label}
+                <div style={{
+                  width: 30,
+                  height: 29,
+                  // Padding lives on the ICON, not the button's content
+                  // box — keeps the button's own bounds tight and gives
+                  // the icon its own left breathing room. Icon flush
+                  // against the label (no right margin).
+                  marginLeft: 7,
+                  backgroundColor: iconColor,
+                  WebkitMaskImage: `url(${iconSrc})`,
+                  WebkitMaskRepeat: 'no-repeat',
+                  WebkitMaskSize: 'contain',
+                  WebkitMaskPosition: 'center',
+                  maskImage: `url(${iconSrc})`,
+                  maskRepeat: 'no-repeat',
+                  maskSize: 'contain',
+                  maskPosition: 'center',
+                  flexShrink: 0,
+                }} />
+                <span style={{ marginRight: 12 }}>{label}</span>
               </div>
             </PushDownButton>
           );
         })}
+        {/* Trailing 20px spacer — gives the chip row a little extra scroll
+            headroom past the last chip so the user can flick the row
+            slightly further than the chip itself. */}
+        <div style={{ width: 20, flexShrink: 0 }} />
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, flexShrink: 0, paddingRight: 14 }}>
         <PushDownButton
@@ -1987,7 +2016,20 @@ function PinnedChipBar({
           bottomBorderWidth={4}
           style={{ width: 38, marginBottom: 8 }}
         >
-          <Undo2 size={19} color={ON_SURFACE} style={{ opacity: canUndo ? 1 : 0.35 }} />
+          <div style={{
+            width: 22,
+            height: 22,
+            backgroundColor: ON_SURFACE,
+            opacity: canUndo ? 1 : 0.35,
+            WebkitMaskImage: 'url(/images/undo.svg)',
+            WebkitMaskRepeat: 'no-repeat',
+            WebkitMaskSize: 'contain',
+            WebkitMaskPosition: 'center',
+            maskImage: 'url(/images/undo.svg)',
+            maskRepeat: 'no-repeat',
+            maskSize: 'contain',
+            maskPosition: 'center',
+          }} />
         </PushDownButton>
         <PushDownButton
           onTap={canRedo ? onRedo : undefined}
@@ -1997,7 +2039,20 @@ function PinnedChipBar({
           bottomBorderWidth={4}
           style={{ width: 38, marginBottom: 8 }}
         >
-          <Redo2 size={19} color={ON_SURFACE} style={{ opacity: canRedo ? 1 : 0.35 }} />
+          <div style={{
+            width: 22,
+            height: 22,
+            backgroundColor: ON_SURFACE,
+            opacity: canRedo ? 1 : 0.35,
+            WebkitMaskImage: 'url(/images/redo.svg)',
+            WebkitMaskRepeat: 'no-repeat',
+            WebkitMaskSize: 'contain',
+            WebkitMaskPosition: 'center',
+            maskImage: 'url(/images/redo.svg)',
+            maskRepeat: 'no-repeat',
+            maskSize: 'contain',
+            maskPosition: 'center',
+          }} />
         </PushDownButton>
         <PushDownButton
           onTap={onPlay}
@@ -2007,7 +2062,23 @@ function PinnedChipBar({
           bottomBorderWidth={4}
           style={{ width: 42, marginLeft: 8, marginBottom: 6 }}
         >
-          <Play size={20} color="#FFFFFF" fill="#FFFFFF" />
+          <div style={{
+            width: 22,
+            height: 22,
+            // Optical-center fix: a play triangle's visual mass sits on
+            // the left edge, so a geometrically-centered icon reads as
+            // shifted right. ~2px nudge to the right balances the eye.
+            marginLeft: 3,
+            backgroundColor: '#FFFFFF',
+            WebkitMaskImage: 'url(/images/playl.svg)',
+            WebkitMaskRepeat: 'no-repeat',
+            WebkitMaskSize: 'contain',
+            WebkitMaskPosition: 'center',
+            maskImage: 'url(/images/playl.svg)',
+            maskRepeat: 'no-repeat',
+            maskSize: 'contain',
+            maskPosition: 'center',
+          }} />
         </PushDownButton>
       </div>
     </div>
@@ -2236,7 +2307,7 @@ function PreviewTile({
         width: 88,
         height: 92,
         position: 'relative',
-        borderRadius: 16,
+        borderRadius: 13,
         flexShrink: 0,
         cursor: onClick ? 'pointer' : 'default',
         // Pop-in animation fires on initial mount (tile added or sheet opened),
@@ -2289,7 +2360,7 @@ function PreviewTile({
               right: 0,
               bottom: 0,
               height: 88,
-              borderRadius: 16,
+              borderRadius: 13,
               backgroundColor: surfaces.bottom,
               boxShadow: `0 0 0 3.5px ${surfaces.halo}`,
             }} />
@@ -2298,7 +2369,7 @@ function PreviewTile({
               position: 'relative',
               height: 88,
               width: 88,
-              borderRadius: 16,
+              borderRadius: 13,
               backgroundColor: surfaces.top,
               border: `3px solid ${surfaces.innerStroke}`,
               display: 'flex',

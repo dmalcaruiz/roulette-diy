@@ -1,5 +1,6 @@
 import { useState, useRef, type ReactNode, type CSSProperties } from 'react';
-import { oklchShadow, deriveCardSurfaces } from '../utils/colorUtils';
+import { oklchShadow, oklchHighlight, deriveCardSurfaces } from '../utils/colorUtils';
+import { SURFACE } from '../utils/constants';
 
 interface PushDownButtonProps {
   children: ReactNode;
@@ -185,12 +186,17 @@ export function PushDownButton({
         height: faceHeight,
         marginTop: pressed ? bottomBorderWidth : 0,
         borderRadius,
-        backgroundColor: surfaces.top,
-        border: `${innerStrokeWidth}px solid ${strokeColor}`,
+        // While pressed (top face fully down on the bottom face, peek =
+        // 0), OKLCh-lighten both the fill and the inner stroke so the
+        // button reads as briefly "lit up" at the bottom of its press
+        // animation — same recipe as the card stack uses for derived
+        // highlights, applied a beat brighter on press.
+        backgroundColor: pressed ? oklchHighlight(surfaces.top, 0.05) : surfaces.top,
+        border: `${innerStrokeWidth}px solid ${pressed ? oklchHighlight(strokeColor, 0.05) : strokeColor}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'margin-top 0.1s ease',
+        transition: 'margin-top 0.1s ease, background-color 0.1s ease, border-color 0.1s ease',
       }}>
         {children}
       </div>
@@ -296,14 +302,20 @@ export function SunkenPushDownButton({
       width: '100%',
       ...style,
     }}>
-      {/* Back face */}
+      {/* Back face — outer 3px boxShadow ring acts as a stroke just
+          outside the button silhouette, slightly lighter than the sheet
+          bg (SURFACE) so the button reads as cut into a separate
+          surface from the row behind it. */}
       <div style={{
         position: 'absolute',
         inset: 0,
         borderRadius,
         backgroundColor: surfaces.bottom,
+        boxShadow: `0 0 0 3px ${oklchHighlight(SURFACE, 0.04)}`,
       }} />
-      {/* Front face */}
+      {/* Front face — 3px inner stroke on top + sides only; the bottom
+          edge is left strokeless so the front face blends straight into
+          the back face's bottom curve. */}
       <div style={{
         position: 'absolute',
         left: 0,
@@ -312,7 +324,9 @@ export function SunkenPushDownButton({
         top: depth,
         borderRadius,
         backgroundColor: surfaces.top,
-        border: `2.5px solid ${surfaces.innerStroke}`,
+        borderTop: `3px solid ${surfaces.innerStroke}`,
+        borderLeft: `3px solid ${surfaces.innerStroke}`,
+        borderRight: `3px solid ${surfaces.innerStroke}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
