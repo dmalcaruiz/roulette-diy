@@ -989,7 +989,13 @@ export default function RouletteScreen({
   const sizeFactor = 1 + WHEEL_PADDING_RATIO + HEADER_TEXT_PAD_RATIO * headerSizeProg;
   const maxWheelSize = Math.min(availableForWheel / sizeFactor, effectiveWheelSize);
   const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
-  const dynamicScale = clampedWheelSize / idealWheelSize;
+  // Static scale: stays constant across sheet drags so the canvas never
+  // needs to re-paint for size changes. The wheel renders once at
+  // effectiveWheelSize (the max it would ever need at this screen
+  // width), and the per-frame visual shrinking happens via the
+  // wheelDisplayScale CSS transform below — GPU-composited, sub-frame.
+  const staticScale = effectiveWheelSize / idealWheelSize;
+  const wheelDisplayScale = clampedWheelSize / effectiveWheelSize;
   // Wheel fades out when sheet goes past mid snap toward full height
   const upperSnap = screenHeight - 80;
   const wheelOpacity = isMobile && sheetHeight > midSnap
@@ -1214,20 +1220,34 @@ export default function RouletteScreen({
                   : 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >
+            <div style={{
+              width: clampedWheelSize,
+              height: clampedWheelSize,
+              position: 'relative',
+            }}>
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: effectiveWheelSize,
+              height: effectiveWheelSize,
+              transform: `scale(${wheelDisplayScale})`,
+              transformOrigin: 'top left',
+            }}>
             <SpinningWheel
               ref={wheelRef}
               items={activeConfig.items}
               onFinished={onWheelFinished}
-              size={clampedWheelSize}
+              size={effectiveWheelSize}
               textSizeMultiplier={activeConfig.textSize}
               headerTextSizeMultiplier={activeConfig.headerTextSize}
-              imageSize={activeConfig.imageSize * dynamicScale}
-              cornerRadius={activeConfig.cornerRadius * dynamicScale}
+              imageSize={activeConfig.imageSize * staticScale}
+              cornerRadius={activeConfig.cornerRadius * staticScale}
               innerCornerStyle={activeConfig.innerCornerStyle}
-              centerInset={activeConfig.centerInset * dynamicScale}
-              strokeWidth={activeConfig.strokeWidth * dynamicScale}
+              centerInset={activeConfig.centerInset * staticScale}
+              strokeWidth={activeConfig.strokeWidth * staticScale}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
-              centerMarkerSize={activeConfig.centerMarkerSize * dynamicScale}
+              centerMarkerSize={activeConfig.centerMarkerSize * staticScale}
               spinIntensity={spinIntensity}
               isRandomIntensity={isRandomIntensity}
               headerTextColor={textColor}
@@ -1243,6 +1263,8 @@ export default function RouletteScreen({
                 setSheetTabAnimated('segments');
               }}
             />
+            </div>
+            </div>
           </div>
           {/* Bottom spacer — slightly larger flex than the top spacer to
               shift the wheel group up by a few px (optical centering). */}
