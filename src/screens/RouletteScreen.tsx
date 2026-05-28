@@ -9,6 +9,7 @@ import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../u
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
+import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
 import { useHistory } from '../hooks/useHistory';
 import WheelThumbnail from '../components/WheelThumbnail';
 import { useAuth } from '../contexts/AuthContext';
@@ -99,8 +100,32 @@ export default function RouletteScreen({
   // for the sheet body so chip switches feel like sideways navigation.
   const [tabSlideDir, setTabSlideDir] = useState<'left' | 'right' | null>(null);
   const prevSheetTabRef = useRef<SheetTab | null>(null);
+  // Set when the sheet is opening AND the active wheel has many
+  // segments — toggles the SnappingSheet's transition off for one
+  // frame so the open snaps to its target height instantly. The wheel
+  // resize naturally piggybacks because handleSheetHeightChange writes
+  // the final scale on the very first onHeightChange tick.
+  const [skipSheetOpenAnim, setSkipSheetOpenAnim] = useState(false);
+  // Reset skipSheetOpenAnim whenever the active wheel changes — so a
+  // skip flag set while editing a heavy wheel can't carry over and
+  // cause the next sheet open on a lighter wheel to snap instantly
+  // when it should animate.
+  useEffect(() => {
+    setSkipSheetOpenAnim(false);
+  }, [block.id]);
   const setSheetTabAnimated = useCallback((next: SheetTab | null) => {
     const prev = prevSheetTabRef.current;
+    // Skip the sheet's height transition for chip-press dismiss (ALWAYS
+    // — any wheel size) and for opening when the active wheel has many
+    // segments (>25). The X-button close has its own internal
+    // `instantClose` flag inside SnappingSheet.
+    const opening = next !== null && prev === null;
+    const closing = next === null && prev !== null;
+    const segCount = block.wheelConfig?.items?.length ?? 0;
+    if (closing || (opening && segCount > 25)) {
+      setSkipSheetOpenAnim(true);
+      requestAnimationFrame(() => setSkipSheetOpenAnim(false));
+    }
     if (next && prev && next !== prev) {
       const prevIdx = SHEET_TAB_ORDER.indexOf(prev);
       const nextIdx = SHEET_TAB_ORDER.indexOf(next);
@@ -117,7 +142,7 @@ export default function RouletteScreen({
     // height-polling rAF, which occasionally lands short and leaves the
     // wheel smaller than its open-screen baseline.
     if (next === null) setSheetHeight(0);
-  }, []);
+  }, [block.wheelConfig]);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -168,6 +193,18 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
+  // For heavy wheels (45+ segments) the per-frame React re-render +
+  // canvas repaint chain is too expensive to keep up with the sheet's
+  // 60Hz height ticks. Skip the non-committed (continuous drag /
+  // animation) ticks and only update sheetHeight at discrete snap
+  // commits — the sheet itself still animates smoothly via its own
+  // internal state, but RouletteScreen (and the wheel canvas) only
+  // re-renders at snap targets, making the resize a single-frame jump.
+  const handleSheetHeightChange = useCallback((h: number, committed?: boolean) => {
+    const segCount = block.wheelConfig?.items?.length ?? 0;
+    if (segCount >= 45 && !committed) return;
+    setSheetHeight(h);
+  }, [block.wheelConfig]);
   // [SHEET-DBG] refs for the chip bar + sheet so the debug effect can
   // read live bounding rects on every height change. Defined here so
   // they're stable across renders; the effect itself lives after
@@ -183,7 +220,14 @@ export default function RouletteScreen({
   const handleEditorReorderingChange = useCallback((active: boolean) => {
     editorReorderingRef.current = active;
   }, []);
-  const isEditorReordering = useCallback(() => editorReorderingRef.current, []);
+  // Sheet drag is suppressed while EITHER a segment reorder OR a
+  // SwipeableActionCell horizontal swipe is in progress — both
+  // gestures compete for the same vertical pointer movement and we
+  // don't want them firing concurrently.
+  const isSheetDragLocked = useCallback(
+    () => editorReorderingRef.current || isAnyCellSwipeDragActive(),
+    [],
+  );
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // activeConfig: previewConfig wins only if it belongs to the CURRENT block.
   // Comparing by wheelConfig.id protects against stale previewConfig carrying
@@ -1566,11 +1610,21 @@ export default function RouletteScreen({
             visible={sheetTab !== null}
             snapPositions={[0, 400, screenHeight - 105]}
             initialSnap={1}
-            onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
-            onHeightChange={setSheetHeight}
-            isDragLocked={isEditorReordering}
+            onCollapsed={() => {
+              // Sync prevSheetTabRef so the next chip-open correctly
+              // sees prev === null and triggers the skip-animation
+              // check for many-segment wheels. Without this, X-button
+              // and drag-collapse leave the ref stuck at the previous
+              // tab, making chip-press skipping inconsistent.
+              prevSheetTabRef.current = null;
+              setSheetTab(null);
+              setSheetHeight(0);
+            }}
+            onHeightChange={handleSheetHeightChange}
+            isDragLocked={isSheetDragLocked}
             outerRef={sheetDbgRef}
             keepAlive
+            disableHeightTransition={skipSheetOpenAnim}
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
@@ -1675,7 +1729,7 @@ export default function RouletteScreen({
               label="Edit wheel"
               onTap={() => {
                 setCtxMenuIndex(null);
-                setSheetTab('segments');
+                setSheetTabAnimated('segments');
               }}
             />
             <CtxRow
@@ -1987,9 +2041,9 @@ function PinnedChipBar({
           // more pixel-styled look that matches the rest of the chunky-
           // block UI.
           WebkitMaskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 3px), rgba(0,0,0,0.075) calc(100% - 3px), rgba(0,0,0,0.075) 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0) 100%)',
           maskImage:
-            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 29px), rgba(0,0,0,0.88) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 15px), rgba(0,0,0,0.66) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 9px), rgba(0,0,0,0.58) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 6px), rgba(0,0,0,0.29) calc(100% - 3px), rgba(0,0,0,0.075) calc(100% - 3px), rgba(0,0,0,0.075) 100%)',
+            'linear-gradient(to right, #000 0, #000 calc(100% - 29px), rgba(0,0,0,0) 100%)',
         }}
       >
         {items.map(({ key, label, iconSrc }) => {

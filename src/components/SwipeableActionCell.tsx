@@ -9,6 +9,16 @@ import { SunkenPushDownButton } from './PushDownButton';
 // unmount.
 let activeCloseRef: { current: () => void } | null = null;
 
+// Module-level flag — true while ANY SwipeableActionCell is currently in
+// active swipe-drag mode (after the horizontal threshold committed). The
+// host page checks this from its sheet's `isDragLocked` so the sheet's
+// scroll-to-drag handler doesn't ALSO start dragging the sheet at the
+// same time. Cleared on pointerup/cancel.
+let activeSwipeDrag = false;
+export function isAnyCellSwipeDragActive(): boolean {
+  return activeSwipeDrag;
+}
+
 export interface SwipeAction {
   color: string;
   icon: ReactNode;
@@ -160,6 +170,7 @@ export default function SwipeableActionCell({
         isDraggingRef.current = true;
         setIsDragging(true);
         didSwipeRef.current = true;
+        activeSwipeDrag = true;
         // Take over the single global swipe slot: if another cell is
         // currently open, kick its close() so it animates back to rest.
         // Identity-compare on the ref object itself so re-grabbing the
@@ -203,6 +214,7 @@ export default function SwipeableActionCell({
     if (!isDraggingRef.current) return;
     isDraggingRef.current = false;
     setIsDragging(false);
+    activeSwipeDrag = false;
 
     const absOffset = Math.abs(offset);
     const containerWidth = containerRef.current?.offsetWidth ?? 300;

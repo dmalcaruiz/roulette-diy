@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { SURFACE, BORDER } from '../utils/constants';
 import { oklchShadow, oklchHighlight } from '../utils/colorUtils';
 
@@ -11,8 +11,12 @@ interface SnappingSheetProps {
   bottomOffset?: number;
   /** Called when sheet is dragged to lowest snap */
   onCollapsed?: () => void;
-  /** Called with current height in px as sheet moves */
-  onHeightChange?: (h: number) => void;
+  /** Called with current height in px as sheet moves. `committed` is
+   *  true only at discrete snap targets (drag release, visibility flip,
+   *  snap-to commit) — used by callers to distinguish per-frame ticks
+   *  from settled-snap moments so they can skip expensive work during
+   *  continuous moves. */
+  onHeightChange?: (h: number, committed?: boolean) => void;
   /** Returns true when sheet drag gestures should be suppressed. Checked
    *  synchronously inside every pointer handler, so a competing gesture
    *  inside the sheet (e.g. drag-to-reorder a list item) can flip the
@@ -31,6 +35,12 @@ interface SnappingSheetProps {
    *  Named `keepAlive` (not `keepMounted`) because there's an internal
    *  `keepMounted` state below for the close-animation grace period. */
   keepAlive?: boolean;
+  /** When true, suppresses the height transition. Used to skip the
+   *  open animation when the child is expensive to render (e.g. a wheel
+   *  with many segments) so the sheet snaps to its target height in a
+   *  single frame instead of dragging the heavy child through 28 paints
+   *  of a 450ms animation. */
+  disableHeightTransition?: boolean;
 }
 
 export default function SnappingSheet({
@@ -44,6 +54,7 @@ export default function SnappingSheet({
   visible,
   outerRef,
   keepAlive = false,
+  disableHeightTransition = false,
 }: SnappingSheetProps) {
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const [dragOffset, setDragOffset] = useState(0);
@@ -95,15 +106,34 @@ export default function SnappingSheet({
 
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
 
-  // Track opening animation so wheel resizes immediately
+  // Sync currentSnap with `visible` during render (not in useEffect) so
+  // it lands in the same React commit as the parent's prop changes —
+  // critical for `disableHeightTransition`, which only needs to be true
+  // for the single render where currentSnap moves from 0 → initialSnap.
+  // If we did this in a useEffect, currentSnap would change one render
+  // later, after the parent's one-frame `disableHeightTransition` flag
+  // had already cleared, and the height would animate again.
+  const [prevVisible, setPrevVisible] = useState(visible);
+  if (visible !== prevVisible) {
+    setPrevVisible(visible);
+    setCurrentSnap(visible ? initialSnap : 0);
+  }
+
+  // Kick the rAF height-polling tracker on every visibility flip — this
+  // is a side effect, not derived state, so it stays in useEffect.
   useEffect(() => {
-    if (visible) {
-      setCurrentSnap(initialSnap);
-    } else {
-      setCurrentSnap(0);
-    }
     requestAnimationFrame(() => startAnimationTracking());
-  }, [visible, initialSnap, startAnimationTracking]);
+  }, [visible, startAnimationTracking]);
+
+  // When `disableHeightTransition` is set during a visibility flip, fire
+  // onHeightChange synchronously with the target height so the parent's
+  // imperative wheel-resize handler runs in the same paint as the sheet
+  // change — without this the wheel only catches up one rAF tick later
+  // (when the height-polling tracker reports the new offsetHeight).
+  useLayoutEffect(() => {
+    if (!disableHeightTransition) return;
+    onHeightChangeRef.current?.(visible ? (snapPositions[initialSnap] ?? 0) : 0, true);
+  }, [visible, disableHeightTransition, initialSnap, snapPositions]);
 
   // Solapa stagger — when the sheet flips visible, delay 90ms then
   // slide the close-tab up into view. Short delay + tight animation
@@ -112,6 +142,10 @@ export default function SnappingSheet({
   // instantly (no exit animation, since the sheet's height collapse
   // already removes the tab from view by carrying it down).
   const [solapaShown, setSolapaShown] = useState(false);
+  // True for the one frame when the X-close fires — suppresses the
+  // height transition so the sheet collapses instantly. Reset on the
+  // next animation frame so subsequent opens/drags animate normally.
+  const [instantClose, setInstantClose] = useState(false);
   useEffect(() => {
     if (visible) {
       const t = setTimeout(() => setSolapaShown(true), 90);
@@ -267,6 +301,11 @@ export default function SnappingSheet({
 
     setCurrentSnap(bestIndex);
     setDragOffset(0);
+    // Fire a `committed` onHeightChange with the snap's target height
+    // so callers (e.g. RouletteScreen's wheel-scale handler) can react
+    // to the snap commit immediately rather than waiting for the rAF
+    // tracker to poll the new offsetHeight on the next frame.
+    onHeightChangeRef.current?.(snapPositions[bestIndex] ?? 0, true);
     startAnimationTracking();
 
     if (bestIndex === 0) {
@@ -291,7 +330,7 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: (dragging || isScrollDraggingRef.current) ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
+        transition: (dragging || isScrollDraggingRef.current || instantClose || disableHeightTransition) ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
         // overflow:visible so the close-button solapa can peek ABOVE
         // the sheet's top edge without being clipped.
         overflow: 'visible',
@@ -304,13 +343,18 @@ export default function SnappingSheet({
           snaps to 0 (fires onCollapsed). */}
       <button
         onClick={() => {
-          // Flip solapaShown false IMMEDIATELY so the tab slides back
-          // down in lockstep with the sheet's height collapse — without
-          // this it stays at translateY(0) while the sheet shrinks,
-          // ending up briefly hovering near the chip bar before the
-          // visibility-driven unmount fires.
+          // X-press = instant close, no animation. Flip the instantClose
+          // flag and the solapa state in the same batch as snapToNearest,
+          // then rAF-reset instantClose so subsequent opens/drags animate
+          // normally again. Fire onHeightChange(0) synchronously too —
+          // RouletteScreen's imperative handler resets the wheel scale /
+          // marginBottom right now instead of waiting for the rAF tracker
+          // to poll the new offsetHeight on the next frame.
           setSolapaShown(false);
+          setInstantClose(true);
+          onHeightChangeRef.current?.(0, true);
           snapToNearest(0);
+          requestAnimationFrame(() => setInstantClose(false));
         }}
         aria-label="Close"
         style={{
