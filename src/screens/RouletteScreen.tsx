@@ -1247,7 +1247,7 @@ export default function RouletteScreen({
           {/* Top spacer — slightly less flex than the bottom spacer so the
               wheel+header group sits a hair above the geometric center
               (which optically reads as centered). */}
-          <div style={{ flex: (0.7 + 0.8 * spacerProgress) * (1 - headerSizeProg) }} />
+          <div style={{ flex: (1.0 + 0.5 * spacerProgress) * (1 - headerSizeProg) }} />
           {/* Keyed wrapper forces a remount on block change so the CSS
               fade/scale animation re-fires each time the user switches
               wheel (or a new wheel is appended and navigated-to). */}
@@ -1304,6 +1304,7 @@ export default function RouletteScreen({
               showWinAnimation={showWinAnimation}
               headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
               headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
+              headerCanvasGap={showSpinButton && showSegmentHeader ? 28 : 16}
               onSegmentLongPress={idx => {
                 // Open the segments sheet and queue a scroll to the
                 // tapped segment. WheelEditor's effect picks up the

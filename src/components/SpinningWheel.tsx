@@ -106,6 +106,10 @@ export interface SpinningWheelProps {
   showWinAnimation?: boolean;
   headerOpacity?: number;
   headerSizeProgress?: number;
+  /** Vertical gap (px) between the segment header and the wheel canvas
+   *  at headerSizeProgress=1. Defaults to 16. Multiplied by
+   *  headerSizeProgress so the gap collapses with the header. */
+  headerCanvasGap?: number;
   // Fires after a ~500ms long-press on the wheel canvas (no movement
   // during the hold). Receives the index of the segment under the
   // pointer. Use to open an editor / context menu for that segment.
@@ -139,6 +143,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     showWinAnimation = true,
     headerOpacity = 1,
     headerSizeProgress = 1,
+    headerCanvasGap = 16,
     onSegmentLongPress,
   } = props;
 
@@ -1079,7 +1084,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         </div>
       </div>
 
-      <div style={{ height: 16 * headerSizeProgress }} />
+      <div style={{ height: headerCanvasGap * headerSizeProgress }} />
 
       {/* Wheel + marker */}
       <div style={{
