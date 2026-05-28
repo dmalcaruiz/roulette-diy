@@ -1141,7 +1141,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         </div>
       </div>
 
-      <div style={{ height: 16 }} />
+      <div style={{ height: 16 * (0.5 + 0.5 * headerSizeProgress) }} />
     </div>
   );
 });

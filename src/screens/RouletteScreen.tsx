@@ -995,10 +995,11 @@ export default function RouletteScreen({
   const grabbingHeight = 30;
   const midSnap = 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
-  // App bar and spin button stay at constant size (always visible). The
-  // wheel area between them shrinks as the sheet rises so the wheel still
-  // resizes to fit.
-  const appBarPadCurrent = APP_BAR_PAD;
+  // Scales down with sheet progress to match the actual `paddingTop`
+  // on Stack 1 (which uses the same formula). Keeping them in sync
+  // means `availableForWheel` correctly reflects the reclaimed top
+  // space and the wheel can grow into it at midSnap.
+  const appBarPadCurrent = APP_BAR_PAD * (1 - 0.4 * spacerProgress);
   // Spin button collapses (height + margin + opacity) as the sheet opens,
   // and is removed entirely when the user disables it from Settings.
   const spinHCurrent = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - spacerProgress);
@@ -1222,8 +1223,12 @@ export default function RouletteScreen({
           flex: 1,
           position: 'relative',
           minHeight: 0,
-          // Constant — reserves space for the always-visible app bar.
-          paddingTop: APP_BAR_PAD,
+          // Scales down with sheet open progress so the constant
+          // APP_BAR_PAD doesn't dominate the top of a compressed
+          // wheel area — when the sheet is open the wheel header is
+          // hidden anyway, so the wheel canvas can sit closer to the
+          // app bar and the top space stops being lopsided vs bottom.
+          paddingTop: APP_BAR_PAD * (1 - 0.3 * spacerProgress),
           paddingBottom: isMobile ? 0 : bottomControlsHeight,
           // When the sheet rises past the red box, push the wheel area up so
           // the spin button stays above the sheet's top edge instead of being
@@ -1242,7 +1247,7 @@ export default function RouletteScreen({
           {/* Top spacer — slightly less flex than the bottom spacer so the
               wheel+header group sits a hair above the geometric center
               (which optically reads as centered). */}
-          <div style={{ flex: 1 }} />
+          <div style={{ flex: (0.7 + 0.8 * spacerProgress) * (1 - headerSizeProg) }} />
           {/* Keyed wrapper forces a remount on block change so the CSS
               fade/scale animation re-fires each time the user switches
               wheel (or a new wheel is appended and navigated-to). */}
@@ -1310,9 +1315,11 @@ export default function RouletteScreen({
             </div>
             </div>
           </div>
-          {/* Bottom spacer — slightly larger flex than the top spacer to
-              shift the wheel group up by a few px (optical centering). */}
-          <div style={{ flex: 1.4 }} />
+          {/* Bottom spacer — slightly larger flex than the top spacer
+              (optical centering when sheet is closed), scaled down by
+              the same factor as paddingTop so the bottom space shrinks
+              in step with the top when the sheet compresses the area. */}
+          <div style={{ flex: 1.8 + 0.4 * spacerProgress }} />
           {/* Spin button — pinned to bottom of wheel section, collapses
               instantly with the sheet drag (no transition lag). Hidden
               entirely when the user disables it from Settings. */}
