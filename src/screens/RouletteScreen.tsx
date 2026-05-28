@@ -168,6 +168,12 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
+  // [SHEET-DBG] refs for the chip bar + sheet so the debug effect can
+  // read live bounding rects on every height change. Defined here so
+  // they're stable across renders; the effect itself lives after
+  // screenHeight is computed (further down).
+  const chipBarDbgRef = useRef<HTMLDivElement | null>(null);
+  const sheetDbgRef = useRef<HTMLDivElement | null>(null);
   // True while a segment-reorder gesture is active inside the WheelEditor.
   // Stored in a ref so the SnappingSheet can read it synchronously from
   // its pointer handlers — using state would lag by one render commit
@@ -990,6 +996,33 @@ export default function RouletteScreen({
     ? Math.max(0, 1 - 2 * (sheetHeight - midSnap) / (upperSnap - midSnap))
     : 1;
 
+  // [SHEET-DBG] On every sheetHeight commit, measure the chip bar and
+  // sheet's live bounding rects and log them. Dedups against the
+  // last-logged sheetHeight + chipBar-top combo so frame-by-frame ticks
+  // during a snap animation only log at points where SOMETHING actually
+  // changed — but the initial measurement always logs.
+  const lastDbgSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    const chip = chipBarDbgRef.current?.getBoundingClientRect();
+    const sheet = sheetDbgRef.current?.getBoundingClientRect();
+    const chipTop = chip ? Math.round(chip.top * 10) / 10 : null;
+    const sheetTop = sheet ? Math.round(sheet.top * 10) / 10 : null;
+    const sig = `${Math.round(sheetHeight)}|${chipTop}|${sheetTop}`;
+    if (sig === lastDbgSigRef.current) return;
+    lastDbgSigRef.current = sig;
+    // eslint-disable-next-line no-console
+    console.log('[SHEET-DBG]', {
+      sheetHeightState: sheetHeight,
+      sheet: sheet ? { top: sheetTop, bottom: Math.round(sheet.bottom * 10) / 10, height: Math.round(sheet.height * 10) / 10 } : null,
+      chipBar: chip ? { top: chipTop, bottom: Math.round(chip.bottom * 10) / 10, height: Math.round(chip.height * 10) / 10 } : null,
+      vp: {
+        innerH: window.innerHeight,
+        vvH: window.visualViewport?.height ?? null,
+      },
+      screenHeight,
+    });
+  }, [sheetHeight, screenHeight]);
+
   return (
     <div style={{
       display: 'flex',
@@ -1524,6 +1557,7 @@ export default function RouletteScreen({
             onUndo={unifiedUndo}
             onRedo={unifiedRedo}
             onPlay={() => setIsPlayMode(true)}
+            innerRef={chipBarDbgRef}
           />
         )}
 
@@ -1539,6 +1573,7 @@ export default function RouletteScreen({
             onCollapsed={() => { setSheetTab(null); setSheetHeight(0); }}
             onHeightChange={setSheetHeight}
             isDragLocked={isEditorReordering}
+            outerRef={sheetDbgRef}
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
@@ -1843,6 +1878,7 @@ function PinnedChipBar({
   onUndo,
   onRedo,
   onPlay,
+  innerRef,
 }: {
   activeTab: 'segments' | 'style' | 'settings' | 'templates' | null;
   onChange: (t: 'segments' | 'style' | 'settings' | 'templates' | null) => void;
@@ -1851,6 +1887,7 @@ function PinnedChipBar({
   onUndo: () => void;
   onRedo: () => void;
   onPlay: () => void;
+  innerRef?: React.MutableRefObject<HTMLDivElement | null>;
 }) {
   // Set true if the chip row's scrollLeft changes between pointerdown
   // and click. Used by onClickCapture to swallow the click so a
@@ -1885,7 +1922,9 @@ function PinnedChipBar({
   // buttons (i.e. shift all marginBottoms by the same delta as the bar).
   // ──────────────────────────────────────────────────────────────────────
   return (
-    <div style={{
+    <div
+      ref={el => { if (innerRef) innerRef.current = el; }}
+      style={{
       flexShrink: 0,
       width: '100%',
       height: 56,

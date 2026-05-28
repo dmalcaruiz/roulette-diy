@@ -46,6 +46,13 @@ interface SwipeableActionCellProps {
   // is applied only to the inner translate wrapper, so the halo can
   // extend outside the cell on its sides / below without being clipped.
   halo?: ReactNode;
+  // Increment-on-change signal to auto-open the trailing actions. Any
+  // strictly-positive value that differs from the last seen one triggers
+  // the cell to animate open to its trailing snap position. Used by the
+  // host to chain "delete next" — when a card is deleted via its
+  // revealed trailing action, the next card auto-opens to the same
+  // state so the user can keep deleting without re-swiping.
+  openTrailingTrigger?: number;
 }
 
 export default function SwipeableActionCell({
@@ -58,6 +65,7 @@ export default function SwipeableActionCell({
   disabled = false,
   onOffsetChange,
   halo,
+  openTrailingTrigger = 0,
 }: SwipeableActionCellProps) {
   const [offset, setOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
@@ -109,6 +117,23 @@ export default function SwipeableActionCell({
     }
     setOffset(0);
   }, [disabled]);
+
+  // Auto-open trailing actions on every increment of openTrailingTrigger.
+  // Snap position = (#trailing actions * 60 + 12) so the action buttons
+  // sit fully revealed; revealedSide flips so they're mounted underneath.
+  // Take over the single global swipe slot from any currently-open cell.
+  const lastOpenTriggerRef = useRef(openTrailingTrigger);
+  useEffect(() => {
+    if (openTrailingTrigger > 0 && openTrailingTrigger !== lastOpenTriggerRef.current) {
+      lastOpenTriggerRef.current = openTrailingTrigger;
+      if (trailingActions.length === 0) return;
+      const snap = trailingActions.length * 60 + 12;
+      if (activeCloseRef && activeCloseRef !== closeRef) activeCloseRef.current();
+      activeCloseRef = closeRef;
+      setRevealedSide('trailing');
+      setOffset(-snap);
+    }
+  }, [openTrailingTrigger, trailingActions.length]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (disabled) return;

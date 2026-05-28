@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight } from '../utils/colorUtils';
@@ -147,12 +147,18 @@ export default function WheelEditor({
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  // Segment id currently mid-delete animation. While set, the matching
-  // SegmentRow plays a two-phase exit (card+buttons zoom to 0, then the
-  // row's height collapses) before the segment is actually removed from
-  // state. Keyed by id (not index) so neighbour reorders during the
-  // animation don't lose the reference.
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Segment ids that the user just hit delete on but are still in
+  // state.segments — kept around for 360ms so the wheel can play its
+  // shrink-to-0.001 preview before the actual commit lands. The card
+  // for these ids is filtered out of the rendered list immediately
+  // (no card-side animation), so only the wheel animates.
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set());
+  // After a delete, auto-open the trailing actions of the card that
+  // now occupies the deleted card's slot (the one that was directly
+  // below in the pre-delete list). `tick` increments on every delete
+  // so the matching SwipeableActionCell's open effect re-fires even if
+  // the same id auto-opens twice in a row.
+  const [autoOpenSpec, setAutoOpenSpec] = useState<{ id: string; tick: number }>({ id: '', tick: 0 });
   // Tab selection is controlled by the chips in the red footer via the
   // selectedTab prop; the internal fallback stays at 0 (Segments).
   const selectedTab = selectedTabProp ?? 0;
@@ -474,23 +480,23 @@ export default function WheelEditor({
     setExpandedIndex(null);
     const segment = stateRef.current.segments[index];
     if (!segment) return;
-    // Kick the wheel's segment-shrink preview off IMMEDIATELY so the
-    // wheel animates in parallel with the card's exit (instead of
-    // sequentially after, which is what commitWithAnim would do if
-    // called at the end of the timeout).
+    // Kick the wheel's segment-shrink preview off IMMEDIATELY, then
+    // commit the actual filter after the wheel animation window — the
+    // timeout is what gives the wheel time to play its shrink before
+    // the commit lands. The card just unmounts (no card-side animation).
     const prev = stateRef.current.segments;
     sendPreview(prev.map(s => s.id === segment.id ? { ...s, weight: 0.001 } : s));
-    // Two-phase card delete: SegmentRow plays scale-down (180ms) +
-    // height-collapse (180ms) once its `isDeleting` prop flips. After
-    // the animation timeline we commit the actual filter — `set`
-    // directly (not commitWithAnim) because the wheel already has the
-    // shrunk preview in flight; running commitWithAnim's length-1
-    // branch here would re-fire the same preview and the wheel would
-    // double-animate.
-    setDeletingId(segment.id);
+    setPendingDeleteIds(s => { const n = new Set(s); n.add(segment.id); return n; });
+    // Auto-swipe-open the card directly ABOVE the deleted one so the
+    // user can chain deletes upward. Bumping `tick` makes the open
+    // effect re-fire even if the same id auto-opens twice in a row.
+    const nextSegment = prev[index - 1];
+    if (nextSegment) {
+      setAutoOpenSpec(s => ({ id: nextSegment.id, tick: s.tick + 1 }));
+    }
     setTimeout(() => {
-      setDeletingId(null);
       set({ ...stateRef.current, segments: stateRef.current.segments.filter(s => s.id !== segment.id) });
+      setPendingDeleteIds(s => { const n = new Set(s); n.delete(segment.id); return n; });
     }, 360);
   };
 
@@ -990,88 +996,132 @@ export default function WheelEditor({
                         }} />
                       )}
                     </PushDownButton>
-                    {/* Flex slot for the slider. The input itself is
-                        absolutely positioned 3.5px wider than its slot
-                        on each side, so the thumb's motion range
-                        extends one halo-width past the slot edges —
-                        the thumb's visible edge at min/max ends up
-                        where its halo would otherwise be. */}
-                    <div style={{ flex: 1, position: 'relative', height: 44 }}>
-                    <input
-                      type="range"
-                      className="segment-weight-slider"
-                      min={0.1}
-                      max={10}
-                      step={0.1}
-                      value={segment.weight}
-                      onChange={e => patchSegment(index, { weight: parseFloat(e.target.value) })}
-                      onPointerUp={commit}
-                      onTouchEnd={commit}
-                      // Block pointer events from bubbling to the SegmentRow
-                      // (long-press / drag detection) and the wrapping
-                      // SwipeableActionCell (horizontal swipe-to-reveal).
-                      // Bubble phase so the slider handles its own drag
-                      // first; capture phase would intercept before the
-                      // slider saw the events.
-                      onPointerDown={e => e.stopPropagation()}
-                      onMouseDown={e => e.stopPropagation()}
-                      onTouchStart={e => e.stopPropagation()}
-                      // --thumb-shadow = peek color (drawn via the
-                      // element's own background-color, clipped by
-                      // border-radius). --thumb-bg = inline SVG with
-                      // two stacked paths: an OUTER stroke-color shape
-                      // (top face silhouette) and an INNER top-color
-                      // shape inset 3px uniformly on all sides — bottom
-                      // corner radius = 4 - 3 = 1 so the stroke band
-                      // stays a constant 3px wide around the full top
-                      // face. Matches the PushDownButtons' fully-
-                      // enclosed inner stroke look.
-                      style={(() => {
-                        const surfaces = deriveCardSurfaces(segment.color);
-                        const top = segment.color;
-                        const bot = surfaces.bottom;
-                        const stroke = surfaces.innerStroke;
-                        const outer = 'M5 0 H13 Q18 0 18 5 V34.5 Q18 39.5 13 39.5 H5 Q0 39.5 0 34.5 V5 Q0 0 5 0 Z';
-                        const inner = 'M5 3 H13 Q15 3 15 5 V34.5 Q15 36.5 13 36.5 H5 Q3 36.5 3 34.5 V5 Q3 3 5 3 Z';
-                        // Center grip — two thin vertical pills with
-                        // an OKLCh-darkened tint, symmetric about the
-                        // top face's horizontal center, so the knob
-                        // reads with a subtle "grip" indicator.
-                        const pillColor = oklchShadow(top, 0.05, 1.2);
-                        const pill = `<rect x='5' y='6.75' width='2.5' height='26' rx='1.25' fill='${pillColor}'/><rect x='10.5' y='6.75' width='2.5' height='26' rx='1.25' fill='${pillColor}'/>`;
-                        // Bottom layer = rounded rect from y=5 to
-                        // y=44.5 (5px shorter from the top, matching
-                        // PushDownButton: top face spans full height,
-                        // bottom face inset by the peek amount).
-                        const bottomLayer = `<rect x='0' y='5' width='18' height='39.5' rx='5' fill='${bot}'/>`;
-                        // Halo matches the +/- PushDownButtons exactly:
-                        // fixed grey #C4C4C4 at 25% alpha (40 = 64/255),
-                        // 3.5px ring around the bottom layer only — so
-                        // the thumb's shadow reads neutral regardless
-                        // of segment color, instead of tinting with it.
-                        // SVG viewBox is 25×51.5 = visible 18×44.5 +
-                        // 3.5px halo padding on all sides; inner content
-                        // runs in its own 0-18 × 0-44.5 coord system
-                        // via translate(3.5,3.5).
-                        const halo = `<rect x='0' y='5' width='25' height='46.5' rx='8.5' fill='#B5B5B540'/>`;
-                        const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 25 51.5'>${halo}<g transform='translate(3.5 3.5)'>${bottomLayer}<path d='${outer}' fill='${stroke}'/><path d='${inner}' fill='${top}'/>${pill}</g></svg>`;
-                        // Track-fill percent (clamped 0–100) and base
-                        // color drive the linear-gradient on the track
-                        // so the filled portion picks up the segment's
-                        // own color, the unfilled portion stays grey.
-                        const percent = Math.max(0, Math.min(100, ((segment.weight - 0.1) / 9.9) * 100));
-                        return {
-                          position: 'absolute' as const,
-                          left: -3.5,
-                          width: 'calc(100% + 7px)',
-                          height: 44,
-                          ['--thumb-bg' as string]: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`,
-                          ['--track-fill' as string]: top,
-                          ['--track-percent' as string]: `${percent}%`,
-                        };
-                      })()}
-                    />
-                    </div>
+                    {/* Custom slider — track + absolutely-positioned
+                        thumb, no <input type="range">. The thumb is a
+                        regular div so its left/right edges can extend
+                        past the slot at min/max (12.5px = halfThumb +
+                        halo) without fighting the browser's locked
+                        thumb-position rules. The slot itself captures
+                        pointer events for drag-to-change. */}
+                    {(() => {
+                      const surfaces = deriveCardSurfaces(segment.color);
+                      const top = segment.color;
+                      const bot = surfaces.bottom;
+                      const stroke = surfaces.innerStroke;
+                      const pillColor = oklchShadow(top, 0.05, 1.2);
+                      // Piecewise weight↔position mapping. The slider's
+                      // value range (0.1–10) is unchanged, but its
+                      // VISUAL distribution is split so the balanced
+                      // position (weight=1) sits at the 1/4 mark of
+                      // the track. Below balanced (0.1–1) gets the
+                      // left 25% of the track (looser scale);
+                      // above balanced (1–10) gets the right 75%.
+                      const weightToFrac = (w: number) => {
+                        if (w <= 1) return Math.max(0, (w - 0.1) / 0.9) * 0.25;
+                        return 0.25 + Math.min(1, (w - 1) / 9) * 0.75;
+                      };
+                      const fracToWeight = (f: number) => {
+                        if (f <= 0.25) return 0.1 + (f / 0.25) * 0.9;
+                        return 1 + ((f - 0.25) / 0.75) * 9;
+                      };
+                      const percentFrac = Math.max(0, Math.min(1, weightToFrac(segment.weight)));
+                      const percent = percentFrac * 100;
+                      const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        patchSegment(index, { weight: fracToWeight(fraction) });
+                      };
+                      return (
+                        <div
+                          style={{
+                            flex: 1,
+                            position: 'relative',
+                            height: 44,
+                            touchAction: 'none',
+                            userSelect: 'none',
+                          }}
+                          onPointerDown={e => {
+                            e.stopPropagation();
+                            e.currentTarget.setPointerCapture(e.pointerId);
+                            updateFromPointer(e);
+                          }}
+                          onPointerMove={e => {
+                            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+                            updateFromPointer(e);
+                          }}
+                          onPointerUp={e => {
+                            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                              e.currentTarget.releasePointerCapture(e.pointerId);
+                            }
+                            commit();
+                          }}
+                        >
+                          {/* Track — filled with segment color up to the
+                              current percent, grey beyond, same halo
+                              recipe as the thumb / +/- buttons. */}
+                          <div style={{
+                            position: 'absolute',
+                            left: 8,
+                            right: 8,
+                            top: '50%',
+                            transform: 'translateY(calc(-50% + 3px))',
+                            height: 6,
+                            borderRadius: 4,
+                            background: `linear-gradient(to right, ${top} 0%, ${top} ${percent}%, #C4C4C4 ${percent}%, #C4C4C4 100%)`,
+                            boxShadow: '0 0 0 3.5px #00000012',
+                            pointerEvents: 'none',
+                          }} />
+                          {/* Thumb — `left` formula maps percent ∈ [0,1]
+                              into [4, slot-26] so the thumb stays
+                              4px inside the slot at min/max (slight
+                              inset). */}
+                          <div style={{
+                            position: 'absolute',
+                            left: `calc(${percentFrac} * (100% - 28px) + 4px)`,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: 20,
+                            height: 44,
+                            pointerEvents: 'none',
+                          }}>
+                            {/* Bottom layer (peek) — 5px shorter from
+                                the top of the thumb so the top face
+                                hangs over it; halo wraps just this. */}
+                            <div style={{
+                              position: 'absolute',
+                              top: 5,
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              borderRadius: 5,
+                              backgroundColor: bot,
+                              boxShadow: '0 0 0 3.5px #00000012',
+                            }} />
+                            {/* Top face — colored fill + 3px inner
+                                stroke (border), two grip pills centered
+                                via flex. */}
+                            <div style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: 20,
+                              height: 39,
+                              borderRadius: 5,
+                              backgroundColor: top,
+                              border: `3px solid ${stroke}`,
+                              boxSizing: 'border-box',
+                              display: 'flex',
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                              gap: 2,
+                            }}>
+                              <div style={{ width: 3, height: 26, borderRadius: 1.5, backgroundColor: pillColor }} />
+                              <div style={{ width: 3, height: 26, borderRadius: 1.5, backgroundColor: pillColor }} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <PushDownButton
                       color={'#F8F8F9'}
                       innerStrokeColor={'#E5E5E5'}
@@ -1245,6 +1295,7 @@ export default function WheelEditor({
             }}
           />
         }
+        openTrailingTrigger={autoOpenSpec.id === segment.id ? autoOpenSpec.tick : 0}
         trailingActions={[
           {
             color: PRIMARY,
@@ -1477,6 +1528,10 @@ export default function WheelEditor({
                 />
               )}
               {segments.map((seg, i) => {
+                // Skip segments the user just deleted — they're still in
+                // state for the wheel's 360ms shrink animation but the
+                // card should disappear immediately (no card animation).
+                if (pendingDeleteIds.has(seg.id)) return null;
                 const isGrabbed = grabbedIndex === i;
                 const slotOffset = isGrabbed ? dragOffsetY : computeSlotOffset(i);
                 const grabbedNotSettling = isGrabbed && !isSettling;
@@ -1500,7 +1555,6 @@ export default function WheelEditor({
                     isGrabbed={isGrabbed}
                     transform={transform}
                     transition={transition}
-                    isDeleting={deletingId === seg.id}
                     // Long-press is gated to the collapsed state — when the
                     // card is open, all the inner controls (color picker,
                     // weight buttons, text input) need raw pointer access.
@@ -1599,13 +1653,12 @@ function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onCh
 // (omitted when the card is currently expanded, so its inner controls get
 // raw pointer access).
 function SegmentRow({
-  index, isGrabbed, transform, transition, isDeleting, onLongPressActivate, innerRef, children,
+  index, isGrabbed, transform, transition, onLongPressActivate, innerRef, children,
 }: {
   index: number;
   isGrabbed: boolean;
   transform: string;
   transition: string;
-  isDeleting?: boolean;
   onLongPressActivate?: (index: number, startX: number, startY: number) => void;
   innerRef?: (el: HTMLDivElement | null) => void;
   children: React.ReactNode;
@@ -1614,30 +1667,6 @@ function SegmentRow({
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
   const capturedRef = useRef<{ target: Element; pointerId: number } | null>(null);
   const didLongPressRef = useRef(false);
-  // Two-phase exit when `isDeleting` flips true. Phase 1 (0-180ms) — the
-  // inner wrapper scales to 0 + fades; the outer row stays at full
-  // height. Phase 2 (180-360ms) — outer row collapses height +
-  // marginBottom to 0 so neighbours slide up. We need an explicit
-  // starting height for the height transition (transitions don't run
-  // from `auto`), so useLayoutEffect captures the measured height the
-  // moment deletion starts.
-  const rowRef = useRef<HTMLDivElement | null>(null);
-  const [collapsedHeight, setCollapsedHeight] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    if (!isDeleting) {
-      setCollapsedHeight(null);
-      return;
-    }
-    if (!rowRef.current) return;
-    const h = rowRef.current.getBoundingClientRect().height;
-    setCollapsedHeight(h);
-    const t = setTimeout(() => setCollapsedHeight(0), 180);
-    return () => clearTimeout(t);
-  }, [isDeleting]);
-  const setRefs = (el: HTMLDivElement | null) => {
-    rowRef.current = el;
-    innerRef?.(el);
-  };
   // True if the pointer moved more than ~10px during the gesture. Used to
   // swallow the click that the browser fires on release — if the user
   // dragged (e.g. the sheet up/down with their finger on a segment), the
@@ -1670,7 +1699,7 @@ function SegmentRow({
 
   return (
     <div
-      ref={setRefs}
+      ref={innerRef}
       onClickCapture={e => {
         // Either a long-press fired (drag-reorder activation) OR the
         // pointer moved enough to count as a drag (sheet pull, scroll,
@@ -1718,18 +1747,11 @@ function SegmentRow({
         startPosRef.current = null;
       }}
       style={{
-        marginBottom: collapsedHeight === 0 ? 0 : 9,
-        height: collapsedHeight != null ? collapsedHeight : undefined,
-        overflow: isDeleting ? 'hidden' : undefined,
+        marginBottom: 9,
         position: 'relative',
         zIndex: isGrabbed ? 5 : undefined,
         transform,
-        // Compose the parent-driven transition list with our own height /
-        // margin transitions so all four animate together while a delete
-        // is in flight. Height transition timing is matched to the inner
-        // scale duration (180ms) — phase 1 finishes just as phase 2
-        // begins, giving the row a continuous zoom-then-collapse.
-        transition: `${transition}, height 0.18s ease, margin-bottom 0.18s ease`,
+        transition,
         // Drop shadow lives here (emerges from the visible card outline
         // when grabbed). Halo ring is on the absolute child below,
         // positioned at the bottom face's location so it hugs the lower
@@ -1744,28 +1766,11 @@ function SegmentRow({
         WebkitUserSelect: 'none',
       }}
     >
-      {/* Scale wrapper — only animates on delete. Wrapping (not styling
-          the outer row) keeps the existing translateY/scale transform
-          chain on the row untouched, so drag-reorder and slot-shift
-          aren't disturbed. Transform / opacity / transition are ALWAYS
-          set (not toggled to/from undefined) so the transition rule is
-          on the element the render BEFORE `isDeleting` flips — without
-          this the value would jump from `none` straight to `scale(0)`
-          on the same render that introduces the transition, and the
-          browser would skip the animation entirely (perceived as a
-          flicker). */}
-      <div style={{
-        transformOrigin: 'center',
-        transform: isDeleting ? 'scale(0)' : 'scale(1)',
-        opacity: isDeleting ? 0 : 1,
-        transition: 'transform 0.18s cubic-bezier(0.4, 0, 1, 1), opacity 0.18s ease',
-      }}>
-        {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
-            `halo` prop) so it z-stacks above the action buttons but below
-            the card's translate layer. See SwipeableActionCell for the
-            structural reasoning. */}
-        {children}
-      </div>
+      {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
+          `halo` prop) so it z-stacks above the action buttons but below
+          the card's translate layer. See SwipeableActionCell for the
+          structural reasoning. */}
+      {children}
     </div>
   );
 }

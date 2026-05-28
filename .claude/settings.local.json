@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force)"
+      "PowerShell(Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force)",
+      "Bash(awk 'NR>=1142&&NR<=1545')",
+      "Bash(awk 'NR>=1242 && NR<=1518' c:/Users/dmalc/Documents/GitHub/roulette-diy/src/screens/RouletteScreen.tsx)"
     ]
   }
 }

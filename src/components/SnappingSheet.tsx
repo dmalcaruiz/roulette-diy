@@ -22,6 +22,9 @@ interface SnappingSheetProps {
   isDragLocked?: () => boolean;
   children: React.ReactNode;
   visible: boolean;
+  /** Optional ref exposing the sheet's outer container — used by
+   *  external debug code that needs to read live bounding rects. */
+  outerRef?: React.MutableRefObject<HTMLDivElement | null>;
 }
 
 export default function SnappingSheet({
@@ -33,6 +36,7 @@ export default function SnappingSheet({
   isDragLocked,
   children,
   visible,
+  outerRef,
 }: SnappingSheetProps) {
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const [dragOffset, setDragOffset] = useState(0);
@@ -267,7 +271,10 @@ export default function SnappingSheet({
 
   return (
     <div
-      ref={containerRef}
+      ref={el => {
+        containerRef.current = el;
+        if (outerRef) outerRef.current = el;
+      }}
       style={{
         position: 'fixed',
         left: 0,
