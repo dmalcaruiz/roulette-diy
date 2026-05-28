@@ -3,7 +3,11 @@ import { oklchShadow, oklchHighlight, deriveCardSurfaces } from '../utils/colorU
 import { SURFACE } from '../utils/constants';
 
 interface PushDownButtonProps {
-  children: ReactNode;
+  // Plain children, or a render function that receives the live
+  // `pressed` state — use the function form when the icon/label
+  // inside the button needs to react to the press (e.g. lighten in
+  // sync with the top face's own press lighten).
+  children: ReactNode | ((pressed: boolean) => ReactNode);
   onTap?: () => void;
   color: string;
   borderRadius?: number;
@@ -198,7 +202,7 @@ export function PushDownButton({
         justifyContent: 'center',
         transition: 'margin-top 0.1s ease, background-color 0.1s ease, border-color 0.1s ease',
       }}>
-        {children}
+        {typeof children === 'function' ? children(pressed) : children}
       </div>
     </div>
   );

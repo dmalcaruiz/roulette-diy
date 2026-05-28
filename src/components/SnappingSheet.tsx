@@ -306,7 +306,7 @@ export default function SnappingSheet({
           // overlap — so a manual drag-down can never expose any
           // extra solapa underneath.
           top: -36,
-          right: 16,
+          right: 20,
           width: 40,
           height: 36,
           borderRadius: '999px 999px 0 0',

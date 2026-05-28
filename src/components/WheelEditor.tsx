@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
-import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
@@ -952,15 +952,20 @@ export default function WheelEditor({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <PushDownButton
                       color={'#F8F8F9'}
-                      innerStrokeColor={'#EAEAEA'}
+                      innerStrokeColor={'#E5E5E5'}
                       innerStrokeWidth={4}
-                      bottomBorderColor={'#D4D4D4'}
+                      bottomBorderColor={'#B5B5B5'}
                       borderRadius={10}
                       height={44}
                       bottomBorderWidth={5}
                       repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                       onTap={() => {
                         const cur = stateRef.current;
+                        const currentWeight = cur.segments[index]?.weight ?? 0;
+                        // Already at min — bail (don't push a no-op state
+                        // update that could float the value past the
+                        // floor over a long repeat-hold session).
+                        if (currentWeight <= 0.1) return;
                         const newSegs = cur.segments.map((s, i) =>
                           i === index ? { ...s, weight: Math.max(0.1, s.weight - 0.1) } : s
                         );
@@ -968,22 +973,33 @@ export default function WheelEditor({
                       }}
                       style={{ width: 39 }}
                     >
-                      <div style={{
-                        width: 25,
-                        height: 25,
-                        backgroundColor: withAlpha('#1E1E2C', 0.5),
-                        WebkitMaskImage: 'url(/images/subtractl.svg)',
-                        WebkitMaskRepeat: 'no-repeat',
-                        WebkitMaskSize: 'contain',
-                        WebkitMaskPosition: 'center',
-                        maskImage: 'url(/images/subtractl.svg)',
-                        maskRepeat: 'no-repeat',
-                        maskSize: 'contain',
-                        maskPosition: 'center',
-                      }} />
+                      {(pressed) => (
+                        <div style={{
+                          width: 25,
+                          height: 25,
+                          backgroundColor: withAlpha(pressed ? oklchHighlight('#1E1E2C', 0.20) : '#1E1E2C', 0.5),
+                          WebkitMaskImage: 'url(/images/subtractl.svg)',
+                          WebkitMaskRepeat: 'no-repeat',
+                          WebkitMaskSize: 'contain',
+                          WebkitMaskPosition: 'center',
+                          maskImage: 'url(/images/subtractl.svg)',
+                          maskRepeat: 'no-repeat',
+                          maskSize: 'contain',
+                          maskPosition: 'center',
+                          transition: 'background-color 0.1s ease',
+                        }} />
+                      )}
                     </PushDownButton>
+                    {/* Flex slot for the slider. The input itself is
+                        absolutely positioned 3.5px wider than its slot
+                        on each side, so the thumb's motion range
+                        extends one halo-width past the slot edges —
+                        the thumb's visible edge at min/max ends up
+                        where its halo would otherwise be. */}
+                    <div style={{ flex: 1, position: 'relative', height: 44 }}>
                     <input
                       type="range"
+                      className="segment-weight-slider"
                       min={0.1}
                       max={10}
                       step={0.1}
@@ -1000,39 +1016,101 @@ export default function WheelEditor({
                       onPointerDown={e => e.stopPropagation()}
                       onMouseDown={e => e.stopPropagation()}
                       onTouchStart={e => e.stopPropagation()}
-                      style={{ flex: 1, accentColor: '#1E1E2C' }}
+                      // --thumb-shadow = peek color (drawn via the
+                      // element's own background-color, clipped by
+                      // border-radius). --thumb-bg = inline SVG with
+                      // two stacked paths: an OUTER stroke-color shape
+                      // (top face silhouette) and an INNER top-color
+                      // shape inset 3px uniformly on all sides — bottom
+                      // corner radius = 4 - 3 = 1 so the stroke band
+                      // stays a constant 3px wide around the full top
+                      // face. Matches the PushDownButtons' fully-
+                      // enclosed inner stroke look.
+                      style={(() => {
+                        const surfaces = deriveCardSurfaces(segment.color);
+                        const top = segment.color;
+                        const bot = surfaces.bottom;
+                        const stroke = surfaces.innerStroke;
+                        const outer = 'M5 0 H13 Q18 0 18 5 V34.5 Q18 39.5 13 39.5 H5 Q0 39.5 0 34.5 V5 Q0 0 5 0 Z';
+                        const inner = 'M5 3 H13 Q15 3 15 5 V34.5 Q15 36.5 13 36.5 H5 Q3 36.5 3 34.5 V5 Q3 3 5 3 Z';
+                        // Center grip — two thin vertical pills with
+                        // an OKLCh-darkened tint, symmetric about the
+                        // top face's horizontal center, so the knob
+                        // reads with a subtle "grip" indicator.
+                        const pillColor = oklchShadow(top, 0.05, 1.2);
+                        const pill = `<rect x='5' y='6.75' width='2.5' height='26' rx='1.25' fill='${pillColor}'/><rect x='10.5' y='6.75' width='2.5' height='26' rx='1.25' fill='${pillColor}'/>`;
+                        // Bottom layer = rounded rect from y=5 to
+                        // y=44.5 (5px shorter from the top, matching
+                        // PushDownButton: top face spans full height,
+                        // bottom face inset by the peek amount).
+                        const bottomLayer = `<rect x='0' y='5' width='18' height='39.5' rx='5' fill='${bot}'/>`;
+                        // Halo matches the +/- PushDownButtons exactly:
+                        // fixed grey #C4C4C4 at 25% alpha (40 = 64/255),
+                        // 3.5px ring around the bottom layer only — so
+                        // the thumb's shadow reads neutral regardless
+                        // of segment color, instead of tinting with it.
+                        // SVG viewBox is 25×51.5 = visible 18×44.5 +
+                        // 3.5px halo padding on all sides; inner content
+                        // runs in its own 0-18 × 0-44.5 coord system
+                        // via translate(3.5,3.5).
+                        const halo = `<rect x='0' y='5' width='25' height='46.5' rx='8.5' fill='#B5B5B540'/>`;
+                        const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 25 51.5'>${halo}<g transform='translate(3.5 3.5)'>${bottomLayer}<path d='${outer}' fill='${stroke}'/><path d='${inner}' fill='${top}'/>${pill}</g></svg>`;
+                        // Track-fill percent (clamped 0–100) and base
+                        // color drive the linear-gradient on the track
+                        // so the filled portion picks up the segment's
+                        // own color, the unfilled portion stays grey.
+                        const percent = Math.max(0, Math.min(100, ((segment.weight - 0.1) / 9.9) * 100));
+                        return {
+                          position: 'absolute' as const,
+                          left: -3.5,
+                          width: 'calc(100% + 7px)',
+                          height: 44,
+                          ['--thumb-bg' as string]: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`,
+                          ['--track-fill' as string]: top,
+                          ['--track-percent' as string]: `${percent}%`,
+                        };
+                      })()}
                     />
+                    </div>
                     <PushDownButton
                       color={'#F8F8F9'}
-                      innerStrokeColor={'#EAEAEA'}
+                      innerStrokeColor={'#E5E5E5'}
                       innerStrokeWidth={4}
-                      bottomBorderColor={'#D4D4D4'}
+                      bottomBorderColor={'#B5B5B5'}
                       borderRadius={10}
                       height={44}
                       bottomBorderWidth={5}
                       repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                       onTap={() => {
                         const cur = stateRef.current;
+                        // No upper cap on `+` — the slider's max=10 is
+                        // a VISUAL ceiling only; the underlying weight
+                        // is free to keep climbing past it (which then
+                        // raises this segment's percentage as the rest
+                        // of the wheel stays put).
                         const newSegs = cur.segments.map((s, i) =>
-                          i === index ? { ...s, weight: Math.min(10, s.weight + 0.1) } : s
+                          i === index ? { ...s, weight: s.weight + 0.1 } : s
                         );
                         set({ ...cur, segments: newSegs });
                       }}
                       style={{ width: 39 }}
                     >
-                      <div style={{
-                        width: 25,
-                        height: 25,
-                        backgroundColor: withAlpha('#1E1E2C', 0.5),
-                        WebkitMaskImage: 'url(/images/addl.svg)',
-                        WebkitMaskRepeat: 'no-repeat',
-                        WebkitMaskSize: 'contain',
-                        WebkitMaskPosition: 'center',
-                        maskImage: 'url(/images/addl.svg)',
-                        maskRepeat: 'no-repeat',
-                        maskSize: 'contain',
-                        maskPosition: 'center',
-                      }} />
+                      {(pressed) => (
+                        <div style={{
+                          width: 25,
+                          height: 25,
+                          backgroundColor: withAlpha(pressed ? oklchHighlight('#1E1E2C', 0.20) : '#1E1E2C', 0.5),
+                          WebkitMaskImage: 'url(/images/addl.svg)',
+                          WebkitMaskRepeat: 'no-repeat',
+                          WebkitMaskSize: 'contain',
+                          WebkitMaskPosition: 'center',
+                          maskImage: 'url(/images/addl.svg)',
+                          maskRepeat: 'no-repeat',
+                          maskSize: 'contain',
+                          maskPosition: 'center',
+                          transition: 'background-color 0.1s ease',
+                        }} />
+                      )}
                     </PushDownButton>
                   </div>
                 </div>

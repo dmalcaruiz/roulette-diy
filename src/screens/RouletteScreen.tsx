@@ -2014,6 +2014,7 @@ function PinnedChipBar({
           borderRadius={50}
           height={42}
           bottomBorderWidth={4}
+          innerStrokeWidth={3}
           style={{ width: 38, marginBottom: 8 }}
         >
           <div style={{
@@ -2037,6 +2038,7 @@ function PinnedChipBar({
           borderRadius={50}
           height={42}
           bottomBorderWidth={4}
+          innerStrokeWidth={3}
           style={{ width: 38, marginBottom: 8 }}
         >
           <div style={{
@@ -2060,6 +2062,7 @@ function PinnedChipBar({
           borderRadius={50}
           height={46}
           bottomBorderWidth={4}
+          innerStrokeWidth={3}
           style={{ width: 42, marginLeft: 8, marginBottom: 6 }}
         >
           <div style={{
