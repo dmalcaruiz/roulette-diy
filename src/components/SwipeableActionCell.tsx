@@ -19,6 +19,13 @@ export function isAnyCellSwipeDragActive(): boolean {
   return activeSwipeDrag;
 }
 
+// Imperatively close any currently-revealed cell (snap back to rest).
+// No-op if no cell is open. Used by hosts whose own actions (e.g. "Add
+// segment") should pre-empt a stray swipe-revealed state.
+export function closeActiveSwipeCell(): void {
+  activeCloseRef?.current();
+}
+
 export interface SwipeAction {
   color: string;
   icon: ReactNode;
@@ -164,7 +171,13 @@ export default function SwipeableActionCell({
     const dy = e.clientY - startYRef.current;
 
     if (isPendingRef.current) {
-      if (Math.abs(dx) > 10) {
+      // Side-swipe gets priority over scroll: a small horizontal
+      // movement that's also horizontally dominant wins immediately,
+      // while the dy threshold to fall back to scroll is set high so
+      // a slightly-diagonal swipe doesn't get hijacked by the page
+      // scroll. Tuned to make sliding feel effortless and scrolling
+      // require deliberate vertical intent.
+      if (Math.abs(dx) > 5 && Math.abs(dx) >= Math.abs(dy)) {
         // Horizontal movement — start swiping
         isPendingRef.current = false;
         isDraggingRef.current = true;
@@ -180,7 +193,7 @@ export default function SwipeableActionCell({
         }
         activeCloseRef = closeRef;
         // Fall through to process offset
-      } else if (Math.abs(dy) > 10) {
+      } else if (Math.abs(dy) > 18) {
         // Vertical movement — not a swipe, cancel
         isPendingRef.current = false;
         return;

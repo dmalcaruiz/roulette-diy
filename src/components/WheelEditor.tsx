@@ -8,7 +8,7 @@ import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CheckCircle, Circle, Settings,
 } from 'lucide-react';
-import SwipeableActionCell from './SwipeableActionCell';
+import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
@@ -159,6 +159,11 @@ export default function WheelEditor({
   // so the matching SwipeableActionCell's open effect re-fires even if
   // the same id auto-opens twice in a row.
   const [autoOpenSpec, setAutoOpenSpec] = useState<{ id: string; tick: number }>({ id: '', tick: 0 });
+  // Timestamp of the last delete-button press — used to gate the
+  // chain-delete auto-open. Only when two deletes happen within 5
+  // seconds does the second one auto-open the card above; an isolated
+  // delete leaves the next card closed.
+  const lastDeleteTimeRef = useRef<number>(0);
   // Tab selection is controlled by the chips in the red footer via the
   // selectedTab prop; the internal fallback stays at 0 (Segments).
   const selectedTab = selectedTabProp ?? 0;
@@ -464,6 +469,9 @@ export default function WheelEditor({
     // Close any open segment so the freshly-added one (and the scroll
     // landing on the Add button) aren't fighting an in-flight expand.
     setExpandedIndex(null);
+    // Snap any swipe-revealed card back to rest so the add gesture
+    // doesn't leave a stray hanging-open cell behind the new segment.
+    closeActiveSwipeCell();
     commitWithAnim([...stateRef.current.segments, newSegment]);
     // commitWithAnim defers state-update via setTimeout(0). Chain another
     // setTimeout + rAF to land after React's render commits, then scroll
@@ -487,11 +495,18 @@ export default function WheelEditor({
     const prev = stateRef.current.segments;
     sendPreview(prev.map(s => s.id === segment.id ? { ...s, weight: 0.001 } : s));
     setPendingDeleteIds(s => { const n = new Set(s); n.add(segment.id); return n; });
-    // Auto-swipe-open the card directly ABOVE the deleted one so the
-    // user can chain deletes upward. Bumping `tick` makes the open
+    // Auto-swipe-open the card directly ABOVE the deleted one — but
+    // ONLY if (a) this delete fires within 5s of the previous one
+    // (chain-delete gesture), AND (b) more than one segment remains
+    // after this delete. An isolated delete or the last-pair delete
+    // leaves the next card closed. Bumping `tick` makes the open
     // effect re-fire even if the same id auto-opens twice in a row.
+    const now = Date.now();
+    const isChainDelete = now - lastDeleteTimeRef.current < 4000;
+    lastDeleteTimeRef.current = now;
+    const willHaveMultipleLeft = prev.length - 1 > 1;
     const nextSegment = prev[index - 1];
-    if (nextSegment) {
+    if (isChainDelete && willHaveMultipleLeft && nextSegment) {
       setAutoOpenSpec(s => ({ id: nextSegment.id, tick: s.tick + 1 }));
     }
     setTimeout(() => {
@@ -948,9 +963,14 @@ export default function WheelEditor({
                       {(() => {
                         // Decimal granularity scales with segment count:
                         // > 21 segments → 2 decimals, > 10 → 1, else whole %.
+                        // Also bumped up by at least 1 if ANY segment has a
+                        // fractional weight — so the percentages reflect
+                        // the precision the user actually entered.
                         const total = state.segments.reduce((s, x) => s + x.weight, 0);
                         const pct = total > 0 ? (segment.weight / total) * 100 : 0;
-                        const decimals = state.segments.length > 21 ? 2 : state.segments.length > 10 ? 1 : 0;
+                        const hasFractionalWeight = state.segments.some(s => s.weight !== Math.floor(s.weight));
+                        const baseDecimals = state.segments.length > 21 ? 2 : state.segments.length > 10 ? 1 : 0;
+                        const decimals = Math.max(baseDecimals, hasFractionalWeight ? 1 : 0);
                         return `${pct.toFixed(decimals)}%`;
                       })()}
                     </span>
