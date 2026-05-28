@@ -1570,7 +1570,7 @@ export default function RouletteScreen({
             onHeightChange={setSheetHeight}
             isDragLocked={isEditorReordering}
             outerRef={sheetDbgRef}
-            keepMounted
+            keepAlive
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}

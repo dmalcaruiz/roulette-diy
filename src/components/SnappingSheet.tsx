@@ -27,8 +27,10 @@ interface SnappingSheetProps {
   outerRef?: React.MutableRefObject<HTMLDivElement | null>;
   /** When true, keep the sheet (and its children) mounted across
    *  close/open cycles. Used by callers whose children are expensive
-   *  to mount — they trade a bit of memory for a much faster re-open. */
-  keepMounted?: boolean;
+   *  to mount — they trade a bit of memory for a much faster re-open.
+   *  Named `keepAlive` (not `keepMounted`) because there's an internal
+   *  `keepMounted` state below for the close-animation grace period. */
+  keepAlive?: boolean;
 }
 
 export default function SnappingSheet({
@@ -41,7 +43,7 @@ export default function SnappingSheet({
   children,
   visible,
   outerRef,
-  keepMounted = false,
+  keepAlive = false,
 }: SnappingSheetProps) {
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const [dragOffset, setDragOffset] = useState(0);
@@ -272,7 +274,7 @@ export default function SnappingSheet({
     }
   }, [snapPositions, onCollapsed, startAnimationTracking]);
 
-  if (!visible && !keepMounted && displayHeight <= 0) return null;
+  if (!visible && !keepMounted && !keepAlive && displayHeight <= 0) return null;
 
   return (
     <div

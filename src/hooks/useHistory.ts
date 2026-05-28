@@ -35,8 +35,6 @@ export function useHistory<T>(
     index: 0,
     dirty: false,
   });
-
-  const state = hist.entries[hist.index];
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -45,27 +43,23 @@ export function useHistory<T>(
   const initialRef = useRef(initial);
   initialRef.current = initial;
 
-  // Reset on resetKey change — skip the first render so mount doesn't
-  // double-initialize.
-  const prevResetKeyRef = useRef<string | number | undefined>(resetKey);
-  const mountedResetRef = useRef(false);
-  useEffect(() => {
-    if (!mountedResetRef.current) {
-      mountedResetRef.current = true;
-      prevResetKeyRef.current = resetKey;
-      return;
-    }
-    if (resetKey !== prevResetKeyRef.current) {
-      dbg('useHistory', 'reset', { from: String(prevResetKeyRef.current ?? 'null'), to: String(resetKey ?? 'null') });
-      prevResetKeyRef.current = resetKey;
-      setHist({ entries: [initialRef.current], index: 0, dirty: false });
-      mountedOnChangeRef.current = false;
-    }
-  }, [resetKey]);
-
-  // Fire onChange whenever hist changes (skip initial AND skip immediately
-  // after a reset so we don't re-fire a preview for the reset.)
+  // Reset on resetKey change — done DURING render (the "derive state from
+  // props" pattern). If we did this in useEffect, the first render after
+  // the switch would still display the OLD state (the effect runs after
+  // commit, then a second render catches up) — visible as a 1-frame
+  // flash of the previous wheel's segments when switching wheels.
+  // Setting state during render makes React re-render with the new state
+  // before committing, so the first commit already shows the new wheel.
   const mountedOnChangeRef = useRef(false);
+  const [prevResetKey, setPrevResetKey] = useState<string | number | undefined>(resetKey);
+  if (resetKey !== prevResetKey) {
+    dbg('useHistory', 'reset', { from: String(prevResetKey ?? 'null'), to: String(resetKey ?? 'null') });
+    setPrevResetKey(resetKey);
+    setHist({ entries: [initial], index: 0, dirty: false });
+    mountedOnChangeRef.current = false;
+  }
+
+  const state = hist.entries[hist.index];
   useEffect(() => {
     if (!mountedOnChangeRef.current) {
       mountedOnChangeRef.current = true;
