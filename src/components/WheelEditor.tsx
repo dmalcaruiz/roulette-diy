@@ -1290,7 +1290,7 @@ export default function WheelEditor({
               top: 6.5,
               bottom: 0,
               borderRadius: 21,
-              boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.4)`,
+              boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.36)`,
               pointerEvents: 'none',
             }}
           />

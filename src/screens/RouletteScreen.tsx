@@ -1010,17 +1010,13 @@ export default function RouletteScreen({
     const sig = `${Math.round(sheetHeight)}|${chipTop}|${sheetTop}`;
     if (sig === lastDbgSigRef.current) return;
     lastDbgSigRef.current = sig;
+    // Flat log so the console doesn't collapse nested objects to {…}.
+    const sB = sheet ? Math.round(sheet.bottom * 10) / 10 : null;
+    const sH = sheet ? Math.round(sheet.height * 10) / 10 : null;
+    const cB = chip ? Math.round(chip.bottom * 10) / 10 : null;
+    const cH = chip ? Math.round(chip.height * 10) / 10 : null;
     // eslint-disable-next-line no-console
-    console.log('[SHEET-DBG]', {
-      sheetHeightState: sheetHeight,
-      sheet: sheet ? { top: sheetTop, bottom: Math.round(sheet.bottom * 10) / 10, height: Math.round(sheet.height * 10) / 10 } : null,
-      chipBar: chip ? { top: chipTop, bottom: Math.round(chip.bottom * 10) / 10, height: Math.round(chip.height * 10) / 10 } : null,
-      vp: {
-        innerH: window.innerHeight,
-        vvH: window.visualViewport?.height ?? null,
-      },
-      screenHeight,
-    });
+    console.log(`[SHEET-DBG] state=${sheetHeight} sheet[top=${sheetTop} bot=${sB} h=${sH}] chip[top=${chipTop} bot=${cB} h=${cH}] vp[innerH=${window.innerHeight} vvH=${window.visualViewport?.height ?? '∅'}] screenH=${screenHeight}`);
   }, [sheetHeight, screenHeight]);
 
   return (
@@ -1185,7 +1181,7 @@ export default function RouletteScreen({
           // shove the red+chip past the viewport bottom; the viewport-safety
           // min handles tiny viewports where 450 itself would overflow.
           marginBottom: isMobile
-            ? Math.min(Math.max(0, sheetHeight - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE))
+            ? Math.min(Math.max(0, sheetHeight - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE - APP_BAR_PAD))
             : 0,
           display: 'flex',
           flexDirection: 'column',
@@ -1574,13 +1570,28 @@ export default function RouletteScreen({
             onHeightChange={setSheetHeight}
             isDragLocked={isEditorReordering}
             outerRef={sheetDbgRef}
+            keepMounted
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
             <div style={{ overflowX: 'hidden' }}>
-            {/* Keyed wrapper — remounts on chip change so the slide-in
-                animation re-fires. Direction is set by setSheetTabAnimated
-                based on the order of the chips. */}
+            {/* WheelEditor stays mounted across close/open and across
+                segments↔style tab switches — both are toggled via the
+                surrounding `display`. The keyed wrapper below still
+                remounts for the other tabs (settings/templates) so the
+                slide-in animation only re-fires for those. */}
+            <div style={{ display: (sheetTab === 'segments' || sheetTab === 'style') ? 'block' : 'none' }}>
+              <WheelEditor
+                key={baseConfig.id}
+                initialConfig={baseConfig}
+                history={wrappedEditorHistory}
+                onPreview={handleWheelPreview}
+                selectedTab={sheetTab === 'segments' ? 0 : 1}
+                onReorderActiveChange={handleEditorReorderingChange}
+                scrollToSegmentIndex={pendingScrollSegment}
+                onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
+              />
+            </div>
             <div
               key={sheetTab ?? 'closed'}
               style={{
@@ -1591,18 +1602,6 @@ export default function RouletteScreen({
                     : undefined,
               }}
             >
-            {(sheetTab === 'segments' || sheetTab === 'style') && (
-              <WheelEditor
-                key={`${baseConfig.id}:${sheetTab}`}
-                initialConfig={baseConfig}
-                history={wrappedEditorHistory}
-                onPreview={handleWheelPreview}
-                selectedTab={sheetTab === 'segments' ? 0 : 1}
-                onReorderActiveChange={handleEditorReorderingChange}
-                scrollToSegmentIndex={pendingScrollSegment}
-                onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
-              />
-            )}
             {sheetTab === 'settings' && (
               <div style={{ padding: '0 20px 24px' }}>
                 <ToggleRow
@@ -1933,7 +1932,7 @@ function PinnedChipBar({
       gap: 4,
       padding: 0,
       backgroundColor: SURFACE,
-      borderTop: `1px solid ${BORDER}`,
+      borderTop: `3px solid rgba(0, 0, 0, 0.2)`,
       boxSizing: 'border-box',
       // Stack above red so red can never bleed into the chip's footprint.
       position: 'relative',
@@ -2007,7 +2006,7 @@ function PinnedChipBar({
               height={38}
               bottomBorderWidth={4}
               innerStrokeWidth={3}
-              style={{ flexShrink: 0, marginBottom: 10 }}
+              style={{ flexShrink: 0, marginBottom: 8 }}
             >
               <div style={{
                 display: 'flex',
@@ -2054,7 +2053,7 @@ function PinnedChipBar({
           height={42}
           bottomBorderWidth={4}
           innerStrokeWidth={3}
-          style={{ width: 38, marginBottom: 8 }}
+          style={{ width: 38, marginBottom: 6 }}
         >
           <div style={{
             width: 22,
@@ -2078,7 +2077,7 @@ function PinnedChipBar({
           height={42}
           bottomBorderWidth={4}
           innerStrokeWidth={3}
-          style={{ width: 38, marginBottom: 8 }}
+          style={{ width: 38, marginBottom: 6 }}
         >
           <div style={{
             width: 22,

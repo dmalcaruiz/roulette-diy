@@ -25,6 +25,10 @@ interface SnappingSheetProps {
   /** Optional ref exposing the sheet's outer container — used by
    *  external debug code that needs to read live bounding rects. */
   outerRef?: React.MutableRefObject<HTMLDivElement | null>;
+  /** When true, keep the sheet (and its children) mounted across
+   *  close/open cycles. Used by callers whose children are expensive
+   *  to mount — they trade a bit of memory for a much faster re-open. */
+  keepMounted?: boolean;
 }
 
 export default function SnappingSheet({
@@ -37,6 +41,7 @@ export default function SnappingSheet({
   children,
   visible,
   outerRef,
+  keepMounted = false,
 }: SnappingSheetProps) {
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const [dragOffset, setDragOffset] = useState(0);
