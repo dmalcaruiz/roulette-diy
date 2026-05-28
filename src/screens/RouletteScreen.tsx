@@ -1388,7 +1388,7 @@ export default function RouletteScreen({
                 // halo + shadow AND the pagepointer.svg hovering above the
                 // selected tile. Top padding must clear both: ~28px for the
                 // pointer's `top: -28` overhang plus a small buffer.
-                padding: '34px 0 13px 14px',
+                padding: '34px 14px 13px 14px',
                 cursor: 'grab',
               }}
             >
