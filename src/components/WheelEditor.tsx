@@ -1524,7 +1524,17 @@ export default function WheelEditor({
 
   return (
     <div style={{ padding: '4px 20px 16px' }}>
-      {selectedTab === 1 ? renderStyleTab() : (
+      {/* Both tabs stay mounted in the DOM so tab switches (and the
+          first chip-tap-open) don't have to remount the segment list —
+          on a wheel with many segments, that remount is the bulk of
+          the "segments sheet feels slower than style sheet" lag. The
+          inactive tab is hidden with display:none (zero layout cost)
+          but its React tree stays intact, so the next switch back is
+          a single display flip. */}
+      <div style={{ display: selectedTab === 1 ? 'block' : 'none' }}>
+        {renderStyleTab()}
+      </div>
+      <div style={{ display: selectedTab === 0 ? 'block' : 'none' }}>
         <>
           <SegmentsModeToggle value={segmentsMode} onChange={setSegmentsMode} />
           {segmentsMode === 'list' ? renderSimpleMode() : (
@@ -1646,7 +1656,7 @@ export default function WheelEditor({
             </div>
           )}
         </>
-      )}
+      </div>
     </div>
   );
 }
@@ -1820,6 +1830,17 @@ function SegmentRow({
         WebkitTouchCallout: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
+        // Skip layout + paint for off-screen rows. With a long segment
+        // list this is the difference between the browser laying out N
+        // cards on sheet-open (laggy) vs only the ~5 that fit in the
+        // sheet viewport. `contain-intrinsic-size` is the assumed
+        // height while the element is skipped — set conservatively to
+        // the typical collapsed card height so scrollbar sizing /
+        // scroll-anchoring stay reasonable. Disabled while the row is
+        // being drag-reordered (the transform can carry it past the
+        // viewport edge and we want it rendered the whole time).
+        contentVisibility: isGrabbed ? 'visible' : 'auto',
+        containIntrinsicSize: 'auto 80px',
       }}
     >
       {/* Halo is rendered INSIDE the SwipeableActionCell now (via its

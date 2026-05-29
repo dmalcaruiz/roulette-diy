@@ -225,7 +225,6 @@ export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScre
       if (idx < 0) return prev;
       const next = [...prev];
       next[idx] = { ...next[idx], ...updated } as CloudBlock;
-      dbg('BlockScreen', 'flowSteps:patch-on-block-update', { id: sid(updated.id), idx });
       return next;
     });
     onBlockUpdated?.(updated);
