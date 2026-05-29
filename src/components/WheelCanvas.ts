@@ -113,10 +113,11 @@ export function paintWheel(
     // that's the flicker the user sees just before/after the animation.
     if (effSize < 0.005) continue;
 
-    // Segment fill with optional transition color lerp
-    const effectiveColor = (fromItems && i < fromItems.length && transition < 1)
-      ? lerpColor(fromItems[i].color, item.color, transition)
-      : item.color;
+    // Segment fill — colors snap instantly to the new value (no lerp
+    // across the transition window) so swapping segment cards doesn't
+    // produce a cross-fade. Weights still interpolate above so the
+    // wedge size animation is preserved.
+    const effectiveColor = item.color;
 
     ctx.fillStyle = effectiveColor;
     ctx.fill(path);
