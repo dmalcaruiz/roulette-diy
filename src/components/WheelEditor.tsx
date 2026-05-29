@@ -147,6 +147,16 @@ export default function WheelEditor({
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // On collapse, blur whatever input was focused inside the card and
+  // clear any text selection so the closing card doesn't leave a
+  // highlighted-but-unfocused-and-unreadable trail in the DOM.
+  useEffect(() => {
+    if (expandedIndex !== null) return;
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    window.getSelection()?.removeAllRanges();
+  }, [expandedIndex]);
   // Segment ids that the user just hit delete on but are still in
   // state.segments — kept around for 360ms so the wheel can play its
   // shrink-to-0.001 preview before the actual commit lands. The card
@@ -842,7 +852,21 @@ export default function WheelEditor({
               </div>
               <div
                 style={{ flex: 1 }}
-                onClick={isExpanded ? (e) => e.stopPropagation() : undefined}
+                onClick={isExpanded ? (e) => e.stopPropagation() : (e) => {
+                  // Tap-on-text while collapsed: let the click bubble to
+                  // the parent (which expands the card), then focus the
+                  // input and select its existing text so the user can
+                  // immediately overwrite. rAF defers until React has
+                  // committed the expand-driven readOnly=false flip.
+                  const wrapper = e.currentTarget as HTMLDivElement;
+                  requestAnimationFrame(() => {
+                    const input = wrapper.querySelector('input');
+                    if (input) {
+                      input.focus();
+                      input.select();
+                    }
+                  });
+                }}
                 onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
               >
                 {/* Single text element, swaps modes — closed: transparent

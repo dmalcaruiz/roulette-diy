@@ -2471,11 +2471,13 @@ function PreviewTile({
         zIndex: effectiveGrabbed ? 2 : undefined,
       }}
     >
-      {/* All tiles use SURFACE_ELEVATED via deriveCardSurfaces — no
-          colour change on selection. The active tile is marked instead
-          by a pagepointer.svg hovering above it (rendered below). */}
+      {/* Active tiles use PRIMARY (the same light-blue as the Add
+          segment button) so the selection reads colour-first; inactive
+          tiles stay on SURFACE_ELEVATED. The pagepointer.svg above the
+          tile (rendered below) still marks the selection on top of the
+          colour change. */}
       {(() => {
-        const surfaces = deriveCardSurfaces(SURFACE_ELEVATED);
+        const surfaces = deriveCardSurfaces(active ? PRIMARY : SURFACE_ELEVATED);
         return (
           <>
             {/* Bottom layer — peeks out 4px below the top face. */}
