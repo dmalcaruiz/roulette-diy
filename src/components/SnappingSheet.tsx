@@ -41,6 +41,24 @@ interface SnappingSheetProps {
    *  single frame instead of dragging the heavy child through 28 paints
    *  of a 450ms animation. */
   disableHeightTransition?: boolean;
+  /** Fires whenever the sheet's snap target changes — visibility flip,
+   *  drag-release snap, or X-button close. Parent uses this to drive
+   *  matching CSS transitions on sibling elements (e.g. wheel size) so
+   *  they animate in lockstep with the sheet without going through any
+   *  per-frame JS callback. `instant=true` means the sheet itself is
+   *  jumping to this target with no transition (X-close path) — the
+   *  caller should match it (disable its own transition for this
+   *  commit) to keep the elements in sync. */
+  onSnapTargetChange?: (targetHeight: number, instant?: boolean) => void;
+  /** Fires on pointerdown of the grab handle OR when the scroll-to-drag
+   *  handoff engages. Parent uses this to switch sibling animations
+   *  into "drag mode" (no CSS transition, imperative per-pointer-move
+   *  updates) so they track the finger 1:1 instead of easing toward
+   *  whatever the next snap target is. */
+  onDragStart?: () => void;
+  /** Fires on pointerup / pointercancel when a drag ends — paired with
+   *  `onDragStart`. */
+  onDragEnd?: () => void;
 }
 
 export default function SnappingSheet({
@@ -55,7 +73,26 @@ export default function SnappingSheet({
   outerRef,
   keepAlive = false,
   disableHeightTransition = false,
+  onSnapTargetChange,
+  onDragStart,
+  onDragEnd,
 }: SnappingSheetProps) {
+  // Stash the latest snap/drag callbacks in refs so pointer handlers
+  // (which are wrapped in useCallback with their own deps) can call the
+  // freshest version without forcing a re-create on every prop change.
+  const onSnapTargetChangeRef = useRef(onSnapTargetChange);
+  onSnapTargetChangeRef.current = onSnapTargetChange;
+  const onDragStartRef = useRef(onDragStart);
+  onDragStartRef.current = onDragStart;
+  const onDragEndRef = useRef(onDragEnd);
+  onDragEndRef.current = onDragEnd;
+  // Set true momentarily right before an X-close fires its snapToNearest
+  // — read + cleared by the snap-target useLayoutEffect so the parent
+  // receives `instant=true` in the same commit it gets the new target.
+  // This is the only way the X-close path (which uses an internal
+  // instantClose flag) communicates "snap, don't animate" to the
+  // wheel/margin transitions outside the sheet.
+  const pendingInstantSnapRef = useRef(false);
   const [currentSnap, setCurrentSnap] = useState(initialSnap);
   const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -118,6 +155,20 @@ export default function SnappingSheet({
     setPrevVisible(visible);
     setCurrentSnap(visible ? initialSnap : 0);
   }
+  // Fire onSnapTargetChange whenever the effective target height
+  // changes — using a useLayoutEffect (NOT render-time) because the
+  // callback updates the parent's state. Layout-effect is synchronous
+  // after commit + before paint, so the parent's CSS-transition target
+  // value still lands BEFORE the browser paints the sheet's new
+  // height — keeping wheel and sheet in lockstep. Target is 0 when
+  // the sheet is hidden (regardless of currentSnap) so the wheel sits
+  // at its closed size while invisible.
+  const effectiveSnapTargetH = visible ? (snapPositions[currentSnap] ?? 0) : 0;
+  useLayoutEffect(() => {
+    const instant = pendingInstantSnapRef.current;
+    pendingInstantSnapRef.current = false;
+    onSnapTargetChangeRef.current?.(effectiveSnapTargetH, instant);
+  }, [effectiveSnapTargetH]);
 
   // Kick the rAF height-polling tracker on every visibility flip — this
   // is a side effect, not derived state, so it stays in useEffect.
@@ -203,6 +254,7 @@ export default function SnappingSheet({
     startYRef.current = e.clientY;
     startHeightRef.current = targetHeight;
     setDragging(true);
+    onDragStartRef.current?.();
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, [targetHeight, isDragLocked]);
 
@@ -220,6 +272,7 @@ export default function SnappingSheet({
   const onPointerUp = useCallback(() => {
     if (!dragging) return;
     setDragging(false);
+    onDragEndRef.current?.();
     snapToNearest(startHeightRef.current - dragOffset);
   }, [dragging, dragOffset]);
 
@@ -266,6 +319,7 @@ export default function SnappingSheet({
       scrollDragStartYRef.current = e.clientY;
       scrollEl.style.overflowY = 'hidden';
       setScrollDragOffset(0);
+      onDragStartRef.current?.();
       e.preventDefault();
     }
   }, [targetHeight, isDragLocked, releaseInFlightDrag]);
@@ -277,6 +331,7 @@ export default function SnappingSheet({
       isScrollDraggingRef.current = false;
       scrollDragActiveRef.current = false;
       if (scrollEl) scrollEl.style.overflowY = 'auto';
+      onDragEndRef.current?.();
       snapToNearest(targetHeight - scrollDragOffset);
       setScrollDragOffset(0);
     } else {
@@ -305,6 +360,8 @@ export default function SnappingSheet({
     // so callers (e.g. RouletteScreen's wheel-scale handler) can react
     // to the snap commit immediately rather than waiting for the rAF
     // tracker to poll the new offsetHeight on the next frame.
+    // (onSnapTargetChange fires automatically via the useLayoutEffect
+    // on currentSnap above.)
     onHeightChangeRef.current?.(snapPositions[bestIndex] ?? 0, true);
     startAnimationTracking();
 
@@ -330,7 +387,7 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: (dragging || isScrollDraggingRef.current || instantClose || disableHeightTransition) ? 'none' : 'height 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
+        transition: (dragging || isScrollDraggingRef.current || instantClose || disableHeightTransition) ? 'none' : 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
         // overflow:visible so the close-button solapa can peek ABOVE
         // the sheet's top edge without being clipped.
         overflow: 'visible',
@@ -352,6 +409,11 @@ export default function SnappingSheet({
           // to poll the new offsetHeight on the next frame.
           setSolapaShown(false);
           setInstantClose(true);
+          // Tell the parent's snap-target listener that this snap is
+          // instant (no transition) — flag is consumed by the useLayout-
+          // Effect that fires onSnapTargetChange when currentSnap below
+          // updates to 0.
+          pendingInstantSnapRef.current = true;
           onHeightChangeRef.current?.(0, true);
           snapToNearest(0);
           requestAnimationFrame(() => setInstantClose(false));

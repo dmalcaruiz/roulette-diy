@@ -110,6 +110,13 @@ export interface SpinningWheelProps {
    *  at headerSizeProgress=1. Defaults to 16. Multiplied by
    *  headerSizeProgress so the gap collapses with the header. */
   headerCanvasGap?: number;
+  /** Optional CSS transition string applied to the header/spacer DOM
+   *  elements whose size/opacity track headerOpacity + headerSizeProgress.
+   *  Used so the header can animate via the browser compositor in
+   *  lockstep with the parent's sheet/wheel transition — instead of
+   *  reading new values per React render (which would force the parent
+   *  to call setSheetHeight 60×/sec just to animate the header). */
+  headerTransition?: string;
   // Fires after a ~500ms long-press on the wheel canvas (no movement
   // during the hold). Receives the index of the segment under the
   // pointer. Use to open an editor / context menu for that segment.
@@ -144,6 +151,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     headerOpacity = 1,
     headerSizeProgress = 1,
     headerCanvasGap = 16,
+    headerTransition,
     onSegmentLongPress,
   } = props;
 
@@ -1071,6 +1079,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         alignItems: 'flex-start',
         justifyContent: 'center',
         willChange: 'transform, height, opacity',
+        transition: headerTransition,
       }}>
         <div style={{
           opacity: segmentHeaderOpacity,
@@ -1084,7 +1093,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         </div>
       </div>
 
-      <div style={{ height: headerCanvasGap * headerSizeProgress }} />
+      <div style={{ height: headerCanvasGap * headerSizeProgress, transition: headerTransition }} />
 
       {/* Wheel + marker */}
       <div style={{
@@ -1146,7 +1155,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         </div>
       </div>
 
-      <div style={{ height: 16 * (0.5 + 0.5 * headerSizeProgress) }} />
+      <div style={{ height: 16 * (0.5 + 0.5 * headerSizeProgress), transition: headerTransition }} />
     </div>
   );
 });

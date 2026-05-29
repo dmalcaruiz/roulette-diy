@@ -193,6 +193,26 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
+  // Current snap target height (one of [0, midSnap, upperSnap]). Driven
+  // by SnappingSheet's `onSnapTargetChange` — the wheel divs read their
+  // CSS-transition target values from this. Stays at the most recent
+  // snap commit; the CSS transition handles the in-between frames on
+  // the browser's compositor timer.
+  const [sheetSnapTargetH, setSheetSnapTargetH] = useState(0);
+  // True while the user has the finger down on the sheet handle or
+  // scroll-drag handoff. During drag we disable the wheel's CSS
+  // transition and update its size imperatively per pointermove so it
+  // tracks the finger 1:1 instead of easing toward a snap target.
+  const [isSheetDragging, setIsSheetDragging] = useState(false);
+  // Ref mirror of isSheetDragging — read synchronously by
+  // handleSheetHeightChange (a useCallback) without needing it as a
+  // dependency. Lets us skip the per-rAF setSheetHeight calls during a
+  // snap CSS transition while still tracking the finger during a drag.
+  const isSheetDraggingRef = useRef(false);
+  // Refs to the wheel divs, used by the drag-time imperative path.
+  const wheelOuterRef = useRef<HTMLDivElement | null>(null);
+  const wheelInnerRef = useRef<HTMLDivElement | null>(null);
+  const wheelAreaRef = useRef<HTMLDivElement | null>(null);
   // For heavy wheels (45+ segments) the per-frame React re-render +
   // canvas repaint chain is too expensive to keep up with the sheet's
   // 60Hz height ticks. Skip the non-committed (continuous drag /
@@ -203,6 +223,17 @@ export default function RouletteScreen({
   const handleSheetHeightChange = useCallback((h: number, committed?: boolean) => {
     const segCount = block.wheelConfig?.items?.length ?? 0;
     if (segCount >= 45 && !committed) return;
+    // Per-rAF ticks during a snap animation are dropped now that the
+    // wheel/margin/padding/etc. all ride CSS transitions on the browser
+    // timer — re-rendering React 60×/sec during the animation only
+    // competes with the compositor and produces the visible "lag" the
+    // user reported. We still update on:
+    //   • snap commit (`committed=true`) — sets the React truth for
+    //     spacerProgress-driven props (header opacity etc.) at the
+    //     start of an open/close, so they're correct for the duration
+    //     of the CSS transition.
+    //   • drag (`isSheetDraggingRef.current`) — finger tracks 1:1.
+    if (!committed && !isSheetDraggingRef.current) return;
     setSheetHeight(h);
   }, [block.wheelConfig]);
   // [SHEET-DBG] refs for the chip bar + sheet so the debug effect can
@@ -995,57 +1026,81 @@ export default function RouletteScreen({
   const grabbingHeight = 30;
   const midSnap = 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
-  // Scales down with sheet progress to match the actual `paddingTop`
-  // on Stack 1 (which uses the same formula). Keeping them in sync
-  // means `availableForWheel` correctly reflects the reclaimed top
-  // space and the wheel can grow into it at midSnap.
-  const appBarPadCurrent = APP_BAR_PAD * (1 - 0.4 * spacerProgress);
-  // Spin button collapses (height + margin + opacity) as the sheet opens,
-  // and is removed entirely when the user disables it from Settings.
-  const spinHCurrent = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - spacerProgress);
   // Red box's actual DOM height — fixed at RED_BASE (not flexible).
   const redBoxHeight = isPlayMode ? 0 : RED_BASE;
-  // Effective bottom coverage used for wheel sizing — when the sheet is open
-  // taller than the red box, the wheel must shrink to stay above the sheet
-  // (the sheet visually covers both the red box and the bottom of the wheel
-  // area, since they're siblings under a fixed-position overlay).
-  const effectiveBottomCover = isPlayMode ? 0 : Math.max(RED_BASE, sheetHeight);
-  // SpinningWheel renders header + 16 spacer + canvas + 16 bottom spacer.
-  // The header is in flex flow so the (header + canvas) group is centered as
-  // a unit between the app bar and spin button. Subtract its overhead so the
-  // wheel is sized to leave room for it.
-  const headerSizeProg = (isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0);
-  // Wheel-bottom breathing room: 3% of wheel size (kept from previous fix).
-  // Header text padding: was a fixed 16px in the header box, now 1.5% of
-  // wheel size — gives the header text snugger vertical padding without
-  // affecting any other spacing. Both are size-dependent, so the wheel
-  // size has to be solved algebraically:
-  //   wheel + 0.03·wheel + 0.015·wheel·headerProg + constHeader + constSpacers = avail
-  //   wheel · (1.03 + 0.015·headerProg) = avail − constHeader − constSpacers
+  // Wheel sizing algebra: wheel + 0.03·wheel + 0.015·wheel·headerProg
+  // + constHeader + constSpacers = avail — solved inside `wheelStateAt`
+  // below for each snap target. The live per-frame chain that used to
+  // live here has been replaced with a snap-target precomputation +
+  // CSS transition matching the sheet's own height transition.
   const WHEEL_PADDING_RATIO = 0.03;
   const HEADER_TEXT_PAD_RATIO = 0.015;
-  // Constant (size-independent) header overhead: text height + the
-  // original top-spacer 16 (scaled by prog) + the original bottom-spacer
-  // 16 (fixed). The internal text padding moved to size-dependent.
-  const constHeader = (56 * activeConfig.headerTextSize) * headerSizeProg + 16 * headerSizeProg + 16;
-  const availableForWheel = isMobile
-    ? screenHeight - CHIP_H - appBarPadCurrent - spinHCurrent - effectiveBottomCover - constHeader
-    : screenHeight - 100 - constHeader;
-  const sizeFactor = 1 + WHEEL_PADDING_RATIO + HEADER_TEXT_PAD_RATIO * headerSizeProg;
-  const maxWheelSize = Math.min(availableForWheel / sizeFactor, effectiveWheelSize);
-  const clampedWheelSize = Math.max(80, Math.min(maxWheelSize, effectiveWheelSize));
   // Static scale: stays constant across sheet drags so the canvas never
-  // needs to re-paint for size changes. The wheel renders once at
-  // effectiveWheelSize (the max it would ever need at this screen
-  // width), and the per-frame visual shrinking happens via the
-  // wheelDisplayScale CSS transform below — GPU-composited, sub-frame.
+  // needs to re-paint for size changes.
   const staticScale = effectiveWheelSize / idealWheelSize;
-  const wheelDisplayScale = clampedWheelSize / effectiveWheelSize;
-  // Wheel fades out when sheet goes past mid snap toward full height
+  // Endpoint of the opacity fade-out — wheel fully transparent at this
+  // sheet height. Used inside `wheelStateAt` below.
   const upperSnap = screenHeight - 80;
-  const wheelOpacity = isMobile && sheetHeight > midSnap
-    ? Math.max(0, 1 - 2 * (sheetHeight - midSnap) / (upperSnap - midSnap))
-    : 1;
+
+  // ── Snap-target-driven wheel sizing (CSS transition path) ───────────
+  // The wheel is animated by the BROWSER, not React: it sits on a CSS
+  // transition whose timing curve matches the sheet's, so the two move
+  // in lockstep regardless of main-thread pressure. The wheel divs read
+  // their width/height/scale/margin from precomputed snap targets
+  // selected by `sheetSnapTargetH` — which the SnappingSheet pushes us
+  // via `onSnapTargetChange` at the exact moment its own snap state
+  // flips. During a finger drag we switch to imperative mode (no
+  // transition) so the wheel tracks the pointer 1:1.
+  const upperSnapH = screenHeight - 105; // matches SnappingSheet's snapPositions[2]
+  // Solve wheel-state at any sheetHeight `h` (closed/midSnap/upper) — same
+  // algebra as above but parameterised. Used to precompute the three
+  // CSS-transition targets.
+  const wheelStateAt = (h: number) => {
+    const sp = isMobile ? Math.min(h / midSnap, 1) : 0;
+    const appBarPad = APP_BAR_PAD * (1 - 0.4 * sp);
+    const spinH = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - sp);
+    const bottomCover = isPlayMode ? 0 : Math.max(RED_BASE, h);
+    const hProg = (isMobile ? Math.max(0, 1 - sp) : 1) * (showSegmentHeader ? 1 : 0);
+    const cHeader = (56 * activeConfig.headerTextSize) * hProg + 16 * hProg + 16;
+    const avail = isMobile
+      ? screenHeight - CHIP_H - appBarPad - spinH - bottomCover - cHeader
+      : screenHeight - 100 - cHeader;
+    const factor = 1 + WHEEL_PADDING_RATIO + HEADER_TEXT_PAD_RATIO * hProg;
+    const size = Math.max(80, Math.min(avail / factor, effectiveWheelSize));
+    const margin = isMobile
+      ? Math.min(Math.max(0, h - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE - APP_BAR_PAD))
+      : 0;
+    const opacity = isMobile && h > midSnap
+      ? Math.max(0, 1 - 2 * (h - midSnap) / (upperSnap - midSnap))
+      : 1;
+    const paddingTop = APP_BAR_PAD * (1 - 0.3 * sp);
+    const topSpacerFlex = (1.0 + 0.5 * sp) * (1 - hProg);
+    return { size, scale: size / effectiveWheelSize, margin, opacity, paddingTop, topSpacerFlex };
+  };
+  const closedWheelState = wheelStateAt(0);
+  const midWheelState = wheelStateAt(midSnap);
+  const upperWheelState = wheelStateAt(upperSnapH);
+  const wheelStateForSnap = (h: number) =>
+    h >= upperSnapH ? upperWheelState : h >= midSnap ? midWheelState : closedWheelState;
+  // Which wheel state drives the JSX style this render:
+  //   • during drag → live (derived from per-frame sheetHeight), zero
+  //     CSS transition so the wheel tracks the finger 1:1
+  //   • otherwise → the snap-target state (closed / mid / upper),
+  //     and the CSS transition below interpolates to it
+  const wheelStyleState = isSheetDragging
+    ? wheelStateAt(sheetHeight)
+    : wheelStateForSnap(sheetSnapTargetH);
+  // Match the sheet's own height transition exactly so wheel + sheet
+  // arrive at their targets on the same frame. `disableHeightTransition`
+  // / drag both kill the transition for the cases where the sheet does
+  // the same.
+  // 0.28s + cubic-bezier(0.32, 0.72, 0, 1) — tighter than the prior
+  // 0.45s + (0.16, 1, 0.3, 1) which had a long settling tail that read
+  // as lag. Must stay in sync with the sheet's own transition (see
+  // SnappingSheet.tsx) or wheel and sheet drift apart.
+  const wheelTransitionCss = (isSheetDragging || skipSheetOpenAnim)
+    ? 'none'
+    : 'width 0.28s cubic-bezier(0.32, 0.72, 0, 1), height 0.28s cubic-bezier(0.32, 0.72, 0, 1), transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), margin-bottom 0.28s cubic-bezier(0.32, 0.72, 0, 1), padding-top 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.28s cubic-bezier(0.32, 0.72, 0, 1), flex-grow 0.28s cubic-bezier(0.32, 0.72, 0, 1)';
 
   // [SHEET-DBG] On every sheetHeight commit, measure the chip bar and
   // sheet's live bounding rects and log them. Dedups against the
@@ -1219,7 +1274,7 @@ export default function RouletteScreen({
             The red container's height grows with sheetHeight, so the wheel
             (sandwiched between flex spacers) shrinks as the sheet rises.
             paddingTop reserves space for the absolute-positioned app bar. */}
-        <div style={{
+        <div ref={wheelAreaRef} style={{
           flex: 1,
           position: 'relative',
           minHeight: 0,
@@ -1228,26 +1283,30 @@ export default function RouletteScreen({
           // wheel area — when the sheet is open the wheel header is
           // hidden anyway, so the wheel canvas can sit closer to the
           // app bar and the top space stops being lopsided vs bottom.
-          paddingTop: APP_BAR_PAD * (1 - 0.3 * spacerProgress),
+          // Driven by snap-target like the wheel itself so the whole
+          // area moves in lockstep, not piecewise.
+          paddingTop: wheelStyleState.paddingTop,
           paddingBottom: isMobile ? 0 : bottomControlsHeight,
           // When the sheet rises past the red box, push the wheel area up so
           // the spin button stays above the sheet's top edge instead of being
-          // covered. Capped at 450px so over-drag past the upper snap can't
-          // shove the red+chip past the viewport bottom; the viewport-safety
-          // min handles tiny viewports where 450 itself would overflow.
-          marginBottom: isMobile
-            ? Math.min(Math.max(0, sheetHeight - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE - APP_BAR_PAD))
-            : 0,
+          // covered. Driven by the snap target (not live sheetHeight) so the
+          // browser CSS-transitions it in lockstep with the sheet's own
+          // height transition — see `wheelTransitionCss` below.
+          marginBottom: wheelStyleState.margin,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          opacity: wheelOpacity,
+          opacity: wheelStyleState.opacity,
           overflow: 'hidden',
+          transition: wheelTransitionCss,
         }}>
           {/* Top spacer — slightly less flex than the bottom spacer so the
               wheel+header group sits a hair above the geometric center
-              (which optically reads as centered). */}
-          <div style={{ flex: (1.0 + 0.5 * spacerProgress) * (1 - headerSizeProg) }} />
+              (which optically reads as centered). Snap-target driven +
+              CSS-transitioned (flex-grow animates) so the wheel's
+              in-area vertical centering moves in lockstep with the
+              sheet, not in React-commit jumps. */}
+          <div style={{ flexGrow: wheelStyleState.topSpacerFlex, transition: wheelTransitionCss }} />
           {/* Keyed wrapper forces a remount on block change so the CSS
               fade/scale animation re-fires each time the user switches
               wheel (or a new wheel is appended and navigated-to). */}
@@ -1269,19 +1328,31 @@ export default function RouletteScreen({
                   : 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >
-            <div style={{
-              width: clampedWheelSize,
-              height: clampedWheelSize,
+            {/* Outer is HORIZONTALLY constant (width = effectiveWheelSize)
+                so flex `alignItems: center` re-centering can't wobble as
+                the wheel shrinks — width never changes, so the centered
+                position is fixed. Outer HEIGHT still transitions so the
+                vertical spacers compensate smoothly. Inner scales with
+                `top center` origin so visible content shrinks toward the
+                outer's horizontal centerline (matching the constant flex
+                centering) and toward the outer's top (so the visible
+                bottom edge equals outer.height — keeping vertical in
+                sync with the height transition). */}
+            <div ref={wheelOuterRef} style={{
+              width: effectiveWheelSize,
+              height: wheelStyleState.size,
               position: 'relative',
+              transition: wheelTransitionCss,
             }}>
-            <div style={{
+            <div ref={wheelInnerRef} style={{
               position: 'absolute',
               top: 0,
               left: 0,
               width: effectiveWheelSize,
               height: effectiveWheelSize,
-              transform: `scale(${wheelDisplayScale})`,
-              transformOrigin: 'top left',
+              transform: `scale(${wheelStyleState.scale})`,
+              transformOrigin: 'top center',
+              transition: wheelTransitionCss,
             }}>
             <SpinningWheel
               ref={wheelRef}
@@ -1305,6 +1376,7 @@ export default function RouletteScreen({
               headerOpacity={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
               headerSizeProgress={(isMobile ? Math.max(0, 1 - spacerProgress) : 1) * (showSegmentHeader ? 1 : 0)}
               headerCanvasGap={showSpinButton && showSegmentHeader ? 28 : 16}
+              headerTransition={wheelTransitionCss}
               onSegmentLongPress={idx => {
                 // Open the segments sheet and queue a scroll to the
                 // tapped segment. WheelEditor's effect picks up the
@@ -1319,11 +1391,13 @@ export default function RouletteScreen({
           {/* Bottom spacer — slightly larger flex than the top spacer
               (optical centering when sheet is closed), scaled down by
               the same factor as paddingTop so the bottom space shrinks
-              in step with the top when the sheet compresses the area. */}
-          <div style={{ flex: 1.8 + 0.4 * spacerProgress }} />
-          {/* Spin button — pinned to bottom of wheel section, collapses
-              instantly with the sheet drag (no transition lag). Hidden
-              entirely when the user disables it from Settings. */}
+              in step with the top when the sheet compresses the area.
+              CSS-transitioned in lockstep with the rest of the wheel
+              area so it animates via the compositor (no React render). */}
+          <div style={{ flexGrow: 1.8 + 0.4 * spacerProgress, transition: wheelTransitionCss }} />
+          {/* Spin button — pinned to bottom of wheel section, animates
+              via CSS in lockstep with the sheet/wheel. Hidden entirely
+              when the user disables it from Settings. */}
           {showSpinButton && (
             <div style={{
               width: '100%',
@@ -1333,6 +1407,7 @@ export default function RouletteScreen({
               height: 64 * Math.max(0, 1 - spacerProgress),
               marginBottom: 12 * Math.max(0, 1 - spacerProgress),
               overflow: 'hidden',
+              transition: wheelTransitionCss,
             }}>
               <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
                 <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
@@ -1655,6 +1730,28 @@ export default function RouletteScreen({
             outerRef={sheetDbgRef}
             keepAlive
             disableHeightTransition={skipSheetOpenAnim}
+            onSnapTargetChange={(h, instant) => {
+              if (instant) {
+                // Match the sheet's instant snap (e.g. X-button close) by
+                // briefly disabling the wheel transition so it jumps in
+                // lockstep. Cleared on the next animation frame so later
+                // opens/drags animate normally again.
+                setSkipSheetOpenAnim(true);
+                requestAnimationFrame(() => setSkipSheetOpenAnim(false));
+              }
+              setSheetSnapTargetH(h);
+              // Also seed sheetHeight at the snap target — handle-
+              // SheetHeightChange skips per-rAF ticks now, so without
+              // this `spacerProgress`-driven things (SpinningWheel
+              // header opacity, bottom spacer, spin button) would stay
+              // pinned to the previous snap's value for the duration of
+              // the CSS transition. Setting it here lands them at the
+              // new snap's value in the same React commit as the
+              // transition kicks off.
+              setSheetHeight(h);
+            }}
+            onDragStart={() => { setIsSheetDragging(true); isSheetDraggingRef.current = true; }}
+            onDragEnd={() => { setIsSheetDragging(false); isSheetDraggingRef.current = false; }}
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
