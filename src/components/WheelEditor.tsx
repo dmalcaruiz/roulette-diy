@@ -33,10 +33,26 @@ export interface EditorState {
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   segmentsMode: 'list' | 'cards';
+  // Wheel id this state was initialized FROM (via buildInitialState). Used
+  // by the [state, onPreview, configId] useEffect to detect the brief
+  // mid-switch race where state still carries the previous wheel's data
+  // but configId has already updated — comparing this against configId
+  // lets us drop the stale preview before it overwrites previewConfig
+  // with mismatched items.
+  originWheelId?: string;
 }
 
 interface WheelEditorProps {
   initialConfig?: WheelConfig | null;
+  // Unique identifier of the wheel this editor instance is editing.
+  // Used by the mid-switch race guard in the [state, onPreview] useEffect:
+  // we compare state.originWheelId (stamped at buildInitialState time)
+  // against this prop to detect when state still belongs to the previous
+  // wheel mid-switch and skip the stale onPreview call. Use block.id
+  // here (which `useHistory` already uses as `resetKey`) rather than
+  // wheelConfig.id — in some data setups multiple blocks share a single
+  // wheelConfig.id, so it can't tell wheels apart.
+  wheelId?: string;
   history: HistoryControls<EditorState>;
   onPreview?: (config: WheelConfig) => void;
   onClose?: () => void;
@@ -75,7 +91,7 @@ function getNextColor(segments: SegmentData[]): string {
   return SEGMENT_COLORS[(lastIdx + 1) % SEGMENT_COLORS.length];
 }
 
-export function buildInitialState(config?: WheelConfig | null): EditorState {
+export function buildInitialState(config?: WheelConfig | null, wheelId?: string): EditorState {
   const segments: SegmentData[] = config
     ? config.items.map(item => ({
         id: `${segmentIdCounter++}`,
@@ -108,6 +124,12 @@ export function buildInitialState(config?: WheelConfig | null): EditorState {
     segmentsMode: ((config?.segmentsMode as unknown) === 'simple' ? 'list'
       : (config?.segmentsMode as unknown) === 'complex' ? 'cards'
       : config?.segmentsMode ?? 'cards'),
+    // Use the BLOCK id (which is unique per wheel-in-flow), NOT the
+    // wheelConfig.id — in some data setups multiple blocks reference
+    // the same wheelConfig id, so the wheelConfig id can't distinguish
+    // wheels. block.id IS the resetKey used by useHistory, so this is
+    // the same identifier the parent uses to decide when to reset.
+    originWheelId: wheelId ?? config?.id,
   };
 }
 
@@ -137,7 +159,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 }
 
 export default function WheelEditor({
-  initialConfig, history, onPreview, onClose,
+  initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed,
 }: WheelEditorProps) {
@@ -382,8 +404,24 @@ export default function WheelEditor({
   // save. handleWheelPreview in the parent already debounces 500ms.
   useEffect(() => {
     if (!onPreview || !state.name.trim()) return;
+    // Mid-switch race guard: state.originWheelId is stamped by
+    // buildInitialState with the BLOCK id at reset time. When this
+    // effect fires mid-switch the parent has already updated `wheelId`
+    // to the new block but `state` (via useHistory's pre-reset hist) may
+    // still carry the previous wheel's segments — comparing them lets
+    // us drop that stale preview before it lands in previewConfig and
+    // flashes the wrong content in active-tile thumbnails. The next
+    // render (after useHistory's reset propagates to state) re-fires
+    // this effect with matching ids and the preview lands then.
+    // eslint-disable-next-line no-console
+    console.log(`[WE-DBG] useEffect fires: originWheelId=${state.originWheelId ?? 'UNDEF'} wheelId=${wheelId ?? 'UNDEF'} segmentsLen=${state.segments.length}`);
+    if (wheelId && state.originWheelId && state.originWheelId !== wheelId) {
+      // eslint-disable-next-line no-console
+      console.log(`[WE-DBG] SKIPPED: origin=${state.originWheelId} vs wheelId=${wheelId}`);
+      return;
+    }
     onPreview(stateToConfig(state, configId));
-  }, [state, onPreview, configId]);
+  }, [state, onPreview, configId, wheelId]);
 
   // Lock the parent scroll container while a row is being dragged. Same
   // recipe as BlocksList — walks up to find every scrollable ancestor,

@@ -337,7 +337,7 @@ export default function RouletteScreen({
     if (!s.name.trim()) return;
     handleWheelPreview(stateToConfig(s, configId));
   }, [handleWheelPreview, configId]);
-  const editorHistory = useHistory(buildInitialState(block.wheelConfig), handleHistoryChange, block.id);
+  const editorHistory = useHistory(buildInitialState(block.wheelConfig, block.id), handleHistoryChange, block.id);
 
   // ── Flow history ───────────────────────────────────────────────────────
   // Mirrors the pattern used by the wheel-editor's useHistory: a single
@@ -1172,6 +1172,7 @@ export default function RouletteScreen({
             <WheelEditor
               key={baseConfig.id}
               initialConfig={baseConfig}
+              wheelId={block.id}
               history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
               selectedTab={sheetTab === 'style' ? 1 : 0}
@@ -1516,6 +1517,10 @@ export default function RouletteScreen({
                     : (isCurrent ? undefined : () => {
                         setOptimisticActiveId(step.id);
                         flushAutoSave();
+                        // See onClick handler above for why we clear
+                        // previewConfig synchronously on a wheel swap.
+                        setPreviewConfig(null);
+                        pendingConfigRef.current = null;
                         const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
                         setWheelTransition(idx > fromIdx ? 'right' : 'left');
                         // Local in-place swap — host swaps `block` directly,
@@ -1561,6 +1566,16 @@ export default function RouletteScreen({
                           // block.id catches up.
                           setOptimisticActiveId(step.id);
                           flushAutoSave();
+                          // Clear previewConfig synchronously with the block
+                          // swap. Without this, the previous wheel's preview
+                          // (set by WheelEditor's useEffect while editing
+                          // the old wheel) survives into the post-tap commit
+                          // — and because `wheelConfig.id` is stable across
+                          // wheels in this data, activeConfig's id-match
+                          // check still picks the stale previewConfig, so
+                          // the new tile briefly shows the OLD wheel's items.
+                          setPreviewConfig(null);
+                          pendingConfigRef.current = null;
                           const fromIdx = flowSteps?.findIndex(s => s.id === block.id) ?? -1;
                           setWheelTransition(idx > fromIdx ? 'right' : 'left');
                           // Local in-place swap — BlockScreen swaps `block`
@@ -1587,6 +1602,7 @@ export default function RouletteScreen({
                               centerInset: cfg.centerInset,
                             } : undefined;
                           })()}
+                          debugLabel={`tile#${idx}/${sid(step.id)}/curr=${isCurrent}`}
                         />
                       </PreviewTile>
                     </TileWithLabel>
@@ -1618,6 +1634,7 @@ export default function RouletteScreen({
                         innerCornerStyle: activeConfig.innerCornerStyle,
                         centerInset: activeConfig.centerInset,
                       }}
+                      debugLabel={`solo/${sid(block.id)}`}
                     />
                   </PreviewTile>
                 </TileWithLabel>
@@ -1774,6 +1791,7 @@ export default function RouletteScreen({
               <WheelEditor
                 key={baseConfig.id}
                 initialConfig={baseConfig}
+                wheelId={block.id}
                 history={wrappedEditorHistory}
                 onPreview={handleWheelPreview}
                 selectedTab={sheetTab === 'segments' ? 0 : 1}
