@@ -642,6 +642,13 @@ export default function WheelEditor({
       setIsSettling(false);
       dragSnapshotRef.current = null;
       onReorderActiveChange?.(false);
+      // Clear the drag-click-suppression flag at end-of-gesture instead
+      // of waiting for the post-drag synthetic click — that click often
+      // doesn't fire (pointer capture released mid-gesture, gesture
+      // ended far from start), leaving the flag stale and absorbing the
+      // user's next real tap. Defer one frame so any synthetic click
+      // that DOES fire still sees the flag and gets suppressed.
+      requestAnimationFrame(() => { didDragRef.current = false; });
     };
 
     const releaseToTarget = () => {
@@ -1707,7 +1714,12 @@ function SegmentRow({
   const handlePointerDownAlways = (e: React.PointerEvent) => {
     if (e.button === 2) return;
     didMoveRef.current = false;
-    if (!startPosRef.current) startPosRef.current = { x: e.clientX, y: e.clientY };
+    // Always overwrite (not just-when-null) — after a drag-reorder the
+    // long-press path releases pointer capture before pointerup fires,
+    // so onPointerUp/Cancel never runs and `startPosRef` stays stale.
+    // Without this, the next tap would compute dx/dy from the OLD drag
+    // start, flip didMoveRef true, and silently swallow the click.
+    startPosRef.current = { x: e.clientX, y: e.clientY };
   };
   const handlePointerMoveAlways = (e: React.PointerEvent) => {
     const start = startPosRef.current;
