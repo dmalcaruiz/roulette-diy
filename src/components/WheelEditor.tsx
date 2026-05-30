@@ -228,15 +228,16 @@ export default function WheelEditor({
   // the transform transition for one paint frame so the natural-position
   // shift doesn't re-animate on top of the now-zero translateY.
   const [grabbedIndex, setGrabbedIndex] = useState<number | null>(null);
-  const [dragOffsetY, setDragOffsetY] = useState(0);
   const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
   const [isSettling, setIsSettling] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
-  const dragSnapshotRef = useRef<{
-    rowTops: number[];
-    rowHeights: number[];
-    sourceSlotHeight: number; // measured row height + outer marginBottom (SEGMENT_ROW_GAP)
-  } | null>(null);
+  // Live translateY of the grabbed row. A ref (not state) so per-frame
+  // pointer tracking updates the row's transform IMPERATIVELY without a
+  // React re-render each frame — the Notion-style cheap drag. The render
+  // reads this ref for the grabbed row, so the occasional re-render (on a
+  // drop-target change) places it correctly; between those, onMove sets
+  // the transform directly on the element.
+  const dragOffsetRef = useRef(0);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const segmentElsRef = useRef<(HTMLDivElement | null)[]>([]);
   // Ref to the Add Segment button's wrapper — used as the scroll target so
@@ -257,6 +258,31 @@ export default function WheelEditor({
   const haloElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const segmentsRef = useRef(segments);
   segmentsRef.current = segments;
+
+  // ── Segment list windowing ──────────────────────────────────────────────
+  // Only the rows near the viewport render as full cards; the rest render
+  // as cheap fixed-height placeholder divs. This keeps the mount/scroll
+  // cost ~constant regardless of segment count, while preserving the
+  // drag-reorder logic — every index still has a real DOM element (the
+  // placeholder) with the correct height, so the grab-start snapshot and
+  // midpoint hit-testing work unchanged. Flip WINDOW_SEGMENTS to false to
+  // disable and render every row full (the pre-windowing behaviour).
+  const WINDOW_SEGMENTS = true;
+  const SEG_WINDOW_BUFFER = 6; // rows rendered beyond the viewport each side
+  // Container wrapping the rows — used to locate the scroll ancestor and
+  // measure the list's position for the window calc.
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollElRef = useRef<HTMLElement | null>(null);
+  // Measured uniform row height incl. the SEGMENT_ROW_GAP marginBottom.
+  // Seeded with an estimate; refined from a real row on first measure.
+  const rowHeightRef = useRef(82);
+  // Initial window is small — the sheet always opens scrolled to the top
+  // (closing collapses the list to a spacer, which clamps scrollTop to 0),
+  // so the first paint only needs to cover a viewport-ful from row 0. The
+  // scroll-driven recompute (one rAF later) widens/repositions it. Keeping
+  // this tight is what makes a 150-row open mount ~a dozen cards instead of
+  // ~25 on the first frame.
+  const [segWindow, setSegWindow] = useState<{ start: number; end: number }>({ start: 0, end: 12 });
 
   // Scroll the nearest scrollable ancestor of `anchorEl` to its bottom
   // over 110ms (easeOutCubic) — same curve and duration as the wheel's
@@ -369,9 +395,14 @@ export default function WheelEditor({
         }
         return;
       }
-      const el = segmentElsRef.current[idx];
-      if (!el) { onScrollToSegmentConsumed?.(); return; }
-      let scrollEl: HTMLElement | null = el.parentElement;
+      // Arithmetic target — the row may be virtualized out of the DOM, so we
+      // can't measure it. Its top within the list is idx * rowH (uniform).
+      // The spacers reserve the full scroll height, so scrollHeight is right
+      // and the scroll lands correctly; the recompute fired by this scroll
+      // then renders the row as it comes into view.
+      const listEl = listContainerRef.current;
+      if (!listEl) { onScrollToSegmentConsumed?.(); return; }
+      let scrollEl: HTMLElement | null = listEl.parentElement;
       while (scrollEl) {
         const cs = getComputedStyle(scrollEl);
         if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow)) {
@@ -380,11 +411,13 @@ export default function WheelEditor({
         scrollEl = scrollEl.parentElement;
       }
       if (!scrollEl) { onScrollToSegmentConsumed?.(); return; }
-      const elRect = el.getBoundingClientRect();
+      const rowH = rowHeightRef.current;
+      const listRect = listEl.getBoundingClientRect();
       const scRect = scrollEl.getBoundingClientRect();
+      const rowTopViewport = listRect.top + idx * rowH;
       // Centre the row in the scroll viewport (or as close as the
       // scrollable extent allows).
-      const targetCentre = elRect.top + elRect.height / 2 - scRect.top - scRect.height / 2;
+      const targetCentre = rowTopViewport + rowH / 2 - scRect.top - scRect.height / 2;
       const startScroll = scrollEl.scrollTop;
       const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
       const targetScroll = Math.max(0, Math.min(maxScroll, startScroll + targetCentre));
@@ -609,13 +642,29 @@ export default function WheelEditor({
   const computeSlotOffset = (i: number): number => {
     if (grabbedIndex === null || dropTargetIndex === null) return 0;
     if (i === grabbedIndex) return 0;
-    const slot = dragSnapshotRef.current?.sourceSlotHeight ?? 0;
+    // Uniform row height (incl. gap) — no per-row measurement needed.
+    const slot = rowHeightRef.current;
     if (dropTargetIndex > grabbedIndex) {
       if (i > grabbedIndex && i <= dropTargetIndex) return -slot;
     } else if (dropTargetIndex < grabbedIndex) {
       if (i >= dropTargetIndex && i < grabbedIndex) return slot;
     }
     return 0;
+  };
+
+  // Map a viewport Y coordinate to a segment index arithmetically (uniform
+  // row height). Used by the left-edge grip strip in place of iterating
+  // every row's getBoundingClientRect — works even when most rows are
+  // virtualized out of the DOM. Only called while collapsed (the strip is
+  // hidden when a card is expanded), so the height is uniform.
+  const indexFromClientY = (clientY: number): number | null => {
+    const listEl = listContainerRef.current;
+    if (!listEl) return null;
+    const listTop = listEl.getBoundingClientRect().top;
+    const rowH = rowHeightRef.current;
+    const idx = Math.floor((clientY - listTop) / rowH);
+    if (idx < 0 || idx >= segmentsRef.current.length) return null;
+    return idx;
   };
 
   const handleGrabStart = useCallback((sourceIndex: number, startX: number, startY: number) => {
@@ -633,47 +682,38 @@ export default function WheelEditor({
     // under the user's finger before the lock engaged.
     onReorderActiveChange?.(true);
 
-    const rowTops: number[] = [];
-    const rowHeights: number[] = [];
-    segmentElsRef.current.forEach(el => {
-      if (el) {
-        const r = el.getBoundingClientRect();
-        rowTops.push(r.top);
-        rowHeights.push(r.height);
-      } else {
-        rowTops.push(0);
-        rowHeights.push(0);
-      }
-    });
-    const sourceSlotHeight = (rowHeights[sourceIndex] ?? 0) + SEGMENT_ROW_GAP;
-    dragSnapshotRef.current = { rowTops, rowHeights, sourceSlotHeight };
+    // Arithmetic positioning — uniform row height means we never measure
+    // 150 rows (the old getBoundingClientRect loop was a forced reflow and
+    // the main reorder cost). We capture the list's top edge once and the
+    // measured row height; everything else is `index * rowH`.
+    const rowH = rowHeightRef.current;
+    const listTop = listContainerRef.current?.getBoundingClientRect().top ?? 0;
 
     let currentTarget = sourceIndex;
+    dragOffsetRef.current = 0;
     setGrabbedIndex(sourceIndex);
-    setDragOffsetY(0);
     setDropTargetIndex(sourceIndex);
     // Collapse the card on grab — its expanded controls would otherwise
-    // jitter the slot-shift math and aren't relevant during drag.
+    // jitter the slot-shift math and aren't relevant during drag. (Also
+    // keeps the list at a uniform row height so the windowing stays exact.)
     setExpandedIndex(null);
 
     const onMove = (me: PointerEvent) => {
       const dx = me.clientX - startX;
       const dy = me.clientY - startY;
-      setDragOffsetY(dy);
-      // 10px threshold before shifting neighbors — same as PreviewTile,
-      // avoids twitchy slot indicators on sub-pixel jitter at start.
+      dragOffsetRef.current = dy;
+      // Imperatively follow the pointer — no React state, no per-frame
+      // re-render. The render reads dragOffsetRef on its occasional
+      // (drop-target-change) re-renders, so the two stay consistent.
+      const gEl = segmentElsRef.current[sourceIndex];
+      if (gEl) gEl.style.transform = `translateY(${dy}px) scale(1.04)`;
+      // 10px threshold before shifting neighbors — avoids twitchy slot
+      // indicators on sub-pixel jitter at start.
       if (Math.hypot(dx, dy) < 10) return;
-
-      const snap = dragSnapshotRef.current!;
-      let target = snap.rowTops.length - 1;
-      for (let i = 0; i < snap.rowTops.length; i++) {
-        const mid = snap.rowTops[i] + snap.rowHeights[i] / 2;
-        if (me.clientY < mid) {
-          target = i;
-          break;
-        }
-      }
-      target = Math.max(0, Math.min(target, segmentsRef.current.length - 1));
+      // Drop target straight from the pointer position — O(1), no DOM reads.
+      const total = segmentsRef.current.length;
+      let target = Math.floor((me.clientY - listTop) / rowH);
+      target = Math.max(0, Math.min(target, total - 1));
       if (target === currentTarget) return;
       currentTarget = target;
       setDropTargetIndex(target);
@@ -694,10 +734,9 @@ export default function WheelEditor({
         set({ ...stateRef.current, segments: next });
       }
       setGrabbedIndex(null);
-      setDragOffsetY(0);
+      dragOffsetRef.current = 0;
       setDropTargetIndex(null);
       setIsSettling(false);
-      dragSnapshotRef.current = null;
       onReorderActiveChange?.(false);
       // Clear the drag-click-suppression flag at end-of-gesture instead
       // of waiting for the post-drag synthetic click — that click often
@@ -709,13 +748,13 @@ export default function WheelEditor({
     };
 
     const releaseToTarget = () => {
-      const snap = dragSnapshotRef.current!;
-      const sourceTop = snap.rowTops[sourceIndex];
-      const finalOffset = currentTarget > sourceIndex
-        ? snap.rowTops[currentTarget] + snap.rowHeights[currentTarget] - snap.rowHeights[sourceIndex] - sourceTop
-        : snap.rowTops[currentTarget] - sourceTop;
+      // Glide distance is purely (target − source) rows of uniform height.
+      const finalOffset = (currentTarget - sourceIndex) * rowH;
+      dragOffsetRef.current = finalOffset;
+      // setIsSettling re-renders; the grabbed row then renders at finalOffset
+      // with the 0.22s settle transition, animating from its current
+      // (imperative) transform to the drop slot.
       setIsSettling(true);
-      setDragOffsetY(finalOffset);
       settleTimeoutRef.current = setTimeout(() => {
         settleTimeoutRef.current = null;
         setIsCommitting(true);
@@ -779,6 +818,79 @@ export default function WheelEditor({
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
   }, [handleGrabStart]);
+
+  // Recompute which rows fall inside the render window from the scroll
+  // ancestor's live position. Uniform row height makes this exact; the
+  // generous buffer absorbs the small offset introduced by the single
+  // (taller) expanded card, so we don't need per-row height math. Reads
+  // everything from refs/DOM so it has no reactive deps and stays stable.
+  const recomputeSegWindow = useCallback(() => {
+    if (!WINDOW_SEGMENTS) return;
+    const listEl = listContainerRef.current;
+    const scrollEl = scrollElRef.current;
+    const total = segmentsRef.current.length;
+    // No scrollable ancestor (e.g. the desktop sidebar, overflow:hidden) —
+    // windowing can't track scroll there, so render every row full.
+    if (!listEl || !scrollEl) {
+      setSegWindow(prev => (prev.start === 0 && prev.end === total - 1
+        ? prev : { start: 0, end: Math.max(0, total - 1) }));
+      return;
+    }
+    // Refine the row height from any rendered collapsed row (placeholders
+    // share the same height, so either works; skip the tall expanded one).
+    const els = segmentElsRef.current;
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      if (el && el.offsetHeight > 20 && el.offsetHeight < 150) {
+        rowHeightRef.current = el.offsetHeight + SEGMENT_ROW_GAP;
+        break;
+      }
+    }
+    const rowH = rowHeightRef.current;
+    const listRect = listEl.getBoundingClientRect();
+    const scRect = scrollEl.getBoundingClientRect();
+    const above = scRect.top - listRect.top; // px of list scrolled above the viewport top
+    const start = Math.max(0, Math.floor(above / rowH) - SEG_WINDOW_BUFFER);
+    const end = Math.min(total - 1, Math.ceil((above + scRect.height) / rowH) + SEG_WINDOW_BUFFER);
+    setSegWindow(prev => (prev.start === start && prev.end === end ? prev : { start, end }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Attach the scroll listener (and do the initial window calc) whenever
+  // the list becomes visible. Finds the nearest scrollable ancestor of the
+  // list container — works for both the mobile sheet and desktop sidebar.
+  useEffect(() => {
+    if (!WINDOW_SEGMENTS || !renderRows) return;
+    const listEl = listContainerRef.current;
+    let scrollEl: HTMLElement | null = null;
+    let cur = listEl?.parentElement ?? null;
+    while (cur) {
+      const cs = getComputedStyle(cur);
+      if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow)) { scrollEl = cur; break; }
+      cur = cur.parentElement;
+    }
+    scrollElRef.current = scrollEl;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(recomputeSegWindow);
+    };
+    scrollEl?.addEventListener('scroll', onScroll, { passive: true });
+    raf = requestAnimationFrame(recomputeSegWindow);
+    return () => {
+      cancelAnimationFrame(raf);
+      scrollEl?.removeEventListener('scroll', onScroll);
+    };
+  }, [renderRows, recomputeSegWindow]);
+
+  // Recompute after layout-affecting changes: expand/collapse (shifts rows)
+  // and add/delete (changes total). Runs a frame later so the new layout
+  // has settled before we measure.
+  useEffect(() => {
+    if (!WINDOW_SEGMENTS || !renderRows) return;
+    const raf = requestAnimationFrame(recomputeSegWindow);
+    return () => cancelAnimationFrame(raf);
+  }, [expandedIndex, segments.length, renderRows, recomputeSegWindow]);
 
   // --- Keyboard shortcut ---
   useEffect(() => {
@@ -1593,7 +1705,7 @@ export default function WheelEditor({
           {!renderRows ? (
             <div style={{ height: 120 }} />
           ) : segmentsMode === 'list' ? renderSimpleMode() : (
-            <div style={{ marginLeft: -12, marginRight: -12, position: 'relative' }}>
+            <div ref={listContainerRef} style={{ marginLeft: -12, marginRight: -12, position: 'relative' }}>
               {/* Left-edge drag-proxy strip. Sits on top of the leftmost
                   ~56px of the segment cards stack and forwards drag
                   pointerdowns to the matching row's drag handler, so
@@ -1618,68 +1730,77 @@ export default function WheelEditor({
                     touchAction: 'none',
                   }}
                   onPointerDown={(e) => {
-                    const y = e.clientY;
-                    for (let i = 0; i < segmentElsRef.current.length; i++) {
-                      const el = segmentElsRef.current[i];
-                      if (!el) continue;
-                      const r = el.getBoundingClientRect();
-                      if (y >= r.top && y <= r.bottom) {
-                        handleGripPointerDown(i, e);
-                        break;
-                      }
-                    }
+                    const i = indexFromClientY(e.clientY);
+                    if (i != null) handleGripPointerDown(i, e);
                   }}
                   onClick={(e) => {
-                    const y = e.clientY;
-                    for (let i = 0; i < segmentElsRef.current.length; i++) {
-                      const el = segmentElsRef.current[i];
-                      if (!el) continue;
-                      const r = el.getBoundingClientRect();
-                      if (y >= r.top && y <= r.bottom) {
-                        setExpandedIndex(i);
-                        break;
-                      }
-                    }
+                    const i = indexFromClientY(e.clientY);
+                    if (i != null) setExpandedIndex(i);
                   }}
                 />
               )}
-              {segments.map((seg, i) => {
-                // Skip segments the user just deleted — they're still in
-                // state for the wheel's 360ms shrink animation but the
-                // card should disappear immediately (no card animation).
-                if (pendingDeleteIds.has(seg.id)) return null;
-                const isGrabbed = grabbedIndex === i;
-                const slotOffset = isGrabbed ? dragOffsetY : computeSlotOffset(i);
-                const grabbedNotSettling = isGrabbed && !isSettling;
-                // Keep `transform` in the transition list always — only
-                // duration toggles. While grabbed (mid-drag) the transform
-                // must follow the pointer with no easing; while settling
-                // it glides at 0.22s; on the commit frame it must be
-                // instant so the natural-position shift doesn't re-animate
-                // on top of a now-zero translateY.
-                const transition = (grabbedNotSettling || isCommitting)
-                  ? 'transform 0s, box-shadow 0.12s ease'
-                  : 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease';
-                const transform = isGrabbed
-                  ? `translateY(${slotOffset}px) scale(1.04)`
-                  : `translateY(${slotOffset}px) scale(1)`;
-                return (
-                  <SegmentRow
-                    key={seg.id}
-                    innerRef={el => { segmentElsRef.current[i] = el; }}
-                    index={i}
-                    isGrabbed={isGrabbed}
-                    transform={transform}
-                    transition={transition}
-                    // Long-press is gated to the collapsed state — when the
-                    // card is open, all the inner controls (color picker,
-                    // weight buttons, text input) need raw pointer access.
-                    onLongPressActivate={expandedIndex === i ? undefined : handleGrabStart}
-                  >
-                    {renderSegmentCard(seg, i)}
-                  </SegmentRow>
-                );
-              })}
+              {(() => {
+                // Spacer virtualization: render only the rows in the current
+                // window as full cards; replace the off-window rows above and
+                // below with a single sized spacer each. Drag positions are
+                // arithmetic (uniform rowH), so off-window rows don't need to
+                // exist in the DOM — that's what makes both open and reorder
+                // O(visible) instead of O(N).
+                //
+                // Virtualize only when the list is uniform-height: collapsed
+                // (no taller expanded card). When a card is expanded we render
+                // every row (flow handles the variable height correctly); the
+                // grab path collapses any expanded card first, so reorder
+                // always runs in the virtualized uniform mode.
+                const total = segments.length;
+                const rowH = rowHeightRef.current;
+                const virtualize = WINDOW_SEGMENTS && expandedIndex == null;
+                const start = virtualize ? Math.max(0, segWindow.start) : 0;
+                const end = virtualize ? Math.min(total - 1, segWindow.end) : total - 1;
+                const out: React.ReactNode[] = [];
+                if (virtualize && start > 0) {
+                  out.push(<div key="seg-spacer-top" style={{ height: start * rowH }} />);
+                }
+                for (let i = start; i <= end; i++) {
+                  const seg = segments[i];
+                  if (!seg) continue;
+                  // Just-deleted rows vanish immediately (the wheel plays the
+                  // shrink animation); their slot collapses.
+                  if (pendingDeleteIds.has(seg.id)) continue;
+                  const isGrabbed = grabbedIndex === i;
+                  // Grabbed row reads the live offset ref so an occasional
+                  // (drop-target-change) re-render places it where the
+                  // imperative per-frame updates have it.
+                  const slotOffset = isGrabbed ? dragOffsetRef.current : computeSlotOffset(i);
+                  const grabbedNotSettling = isGrabbed && !isSettling;
+                  const transition = (grabbedNotSettling || isCommitting)
+                    ? 'transform 0s, box-shadow 0.12s ease'
+                    : 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease';
+                  const transform = isGrabbed
+                    ? `translateY(${slotOffset}px) scale(1.04)`
+                    : `translateY(${slotOffset}px) scale(1)`;
+                  out.push(
+                    <SegmentRow
+                      key={seg.id}
+                      innerRef={el => { segmentElsRef.current[i] = el; }}
+                      index={i}
+                      isGrabbed={isGrabbed}
+                      transform={transform}
+                      transition={transition}
+                      // Long-press is gated to the collapsed state — when the
+                      // card is open, all the inner controls (color picker,
+                      // weight buttons, text input) need raw pointer access.
+                      onLongPressActivate={expandedIndex === i ? undefined : handleGrabStart}
+                    >
+                      {renderSegmentCard(seg, i)}
+                    </SegmentRow>
+                  );
+                }
+                if (virtualize && end < total - 1) {
+                  out.push(<div key="seg-spacer-bottom" style={{ height: (total - 1 - end) * rowH }} />);
+                }
+                return out;
+              })()}
               <div style={{ height: 10 }} />
               <div ref={addSegmentBtnRef} style={{ padding: '0 8px' }}>
                 <PushDownButton color={PRIMARY} onTap={addSegment} borderRadius={32} innerStrokeWidth={3} height={54} bottomBorderWidth={6}>
