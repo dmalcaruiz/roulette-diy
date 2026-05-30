@@ -1747,16 +1747,25 @@ export default function WheelEditor({
                 // exist in the DOM — that's what makes both open and reorder
                 // O(visible) instead of O(N).
                 //
-                // Virtualize only when the list is uniform-height: collapsed
-                // (no taller expanded card). When a card is expanded we render
-                // every row (flow handles the variable height correctly); the
-                // grab path collapses any expanded card first, so reorder
-                // always runs in the virtualized uniform mode.
+                // Virtualization stays ON even while a card is expanded —
+                // that's what keeps expand/collapse cheap (it just swaps the
+                // already-rendered window row to its tall content instead of
+                // mounting all N rows). The expanded card sits in the rendered
+                // window (you tapped a visible row), so flow handles its extra
+                // height; the SEG_WINDOW_BUFFER absorbs the resulting small
+                // offset in the uniform window math. We extend the window to
+                // always include the expanded index in case it gets scrolled
+                // toward the edge, so its tall content never falls into a
+                // (collapsed-height) spacer.
                 const total = segments.length;
                 const rowH = rowHeightRef.current;
-                const virtualize = WINDOW_SEGMENTS && expandedIndex == null;
-                const start = virtualize ? Math.max(0, segWindow.start) : 0;
-                const end = virtualize ? Math.min(total - 1, segWindow.end) : total - 1;
+                const virtualize = WINDOW_SEGMENTS;
+                let start = virtualize ? Math.max(0, segWindow.start) : 0;
+                let end = virtualize ? Math.min(total - 1, segWindow.end) : total - 1;
+                if (virtualize && expandedIndex != null) {
+                  start = Math.min(start, expandedIndex);
+                  end = Math.max(end, expandedIndex);
+                }
                 const out: React.ReactNode[] = [];
                 if (virtualize && start > 0) {
                   out.push(<div key="seg-spacer-top" style={{ height: start * rowH }} />);
