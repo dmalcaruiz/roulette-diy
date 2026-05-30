@@ -72,6 +72,15 @@ interface WheelEditorProps {
   // sheet → scroll-to-segment flow.
   scrollToSegmentIndex?: number | null;
   onScrollToSegmentConsumed?: () => void;
+  // When false, the heavy segment list is not rendered (a cheap spacer
+  // takes its place). The hosting screen sets this false while the sheet
+  // is closed so that switching wheels — which only happens with the
+  // sheet closed — doesn't pay the cost of reconciling the (invisible)
+  // segment rows. It flips true the moment the sheet opens, mounting the
+  // rows then. Defaults to true (e.g. the always-visible desktop editor).
+  // NOTE: this only gates RENDERING; the editor's history/state stay live
+  // and correct, so previews and the visible wheel are unaffected.
+  renderRows?: boolean;
 }
 
 let segmentIdCounter = 0;
@@ -161,7 +170,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
-  scrollToSegmentIndex, onScrollToSegmentConsumed,
+  scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -1575,7 +1584,15 @@ export default function WheelEditor({
       <div style={{ display: selectedTab === 0 ? 'block' : 'none' }}>
         <>
           <SegmentsModeToggle value={segmentsMode} onChange={setSegmentsMode} />
-          {segmentsMode === 'list' ? renderSimpleMode() : (
+          {/* Heavy segment list is gated on renderRows: while the sheet is
+              closed (renderRows=false) we render a cheap spacer instead of
+              the N segment rows, so switching wheels costs nothing. The
+              rows mount when the sheet opens. The spacer's height roughly
+              approximates the list so the closed (invisible) layout isn't
+              wildly off; exact value doesn't matter since it's not seen. */}
+          {!renderRows ? (
+            <div style={{ height: 120 }} />
+          ) : segmentsMode === 'list' ? renderSimpleMode() : (
             <div style={{ marginLeft: -12, marginRight: -12, position: 'relative' }}>
               {/* Left-edge drag-proxy strip. Sits on top of the leftmost
                   ~56px of the segment cards stack and forwards drag

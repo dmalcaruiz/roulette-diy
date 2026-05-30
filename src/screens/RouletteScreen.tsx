@@ -1808,6 +1808,13 @@ export default function RouletteScreen({
                 onReorderActiveChange={handleEditorReorderingChange}
                 scrollToSegmentIndex={pendingScrollSegment}
                 onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
+                // Only render the (heavy) segment rows when the sheet is
+                // actually showing the editor. While closed, switching
+                // wheels doesn't pay to reconcile the invisible list —
+                // the rows mount when the sheet opens. Kept true for both
+                // segments+style so tab-switching between them doesn't
+                // remount the list.
+                renderRows={sheetTab === 'segments' || sheetTab === 'style'}
               />
             </div>
             <div
