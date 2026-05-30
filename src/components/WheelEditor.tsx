@@ -81,6 +81,11 @@ interface WheelEditorProps {
   // NOTE: this only gates RENDERING; the editor's history/state stay live
   // and correct, so previews and the visible wheel are unaffected.
   renderRows?: boolean;
+  // Current height (px) of the hosting sheet, so List mode can size its
+  // textarea to fill the sheet (and grow when the sheet is dragged to a
+  // taller snap) instead of a fixed height that wastes space or overflows.
+  // Omitted on desktop (no sheet) — falls back to a fixed height there.
+  sheetHeight?: number;
 }
 
 let segmentIdCounter = 0;
@@ -170,7 +175,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
-  scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true,
+  scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -1565,6 +1570,17 @@ export default function WheelEditor({
     }
   };
 
+  // Fill the sheet: size the textarea from the sheet's current height
+  // (minus the chrome above/below it — handle, mode toggle, hint, paddings)
+  // so it GROWS when the sheet is dragged to a taller snap. Floored at the
+  // midSnap fill height so it never shrinks below its midSnap size as the
+  // sheet is dragged down toward/below midSnap — grow-only. Falls back to a
+  // fixed height when there's no sheet (desktop sidebar).
+  const LIST_CHROME = 166;
+  const MIDSNAP_FILL = 400 - LIST_CHROME; // sheet opens at the fixed 400px midSnap
+  const listTextareaHeight = sheetHeight && sheetHeight > 0
+    ? Math.max(MIDSNAP_FILL, Math.round(sheetHeight - LIST_CHROME))
+    : 244;
   const renderSimpleMode = () => (
     <div>
       <textarea
@@ -1576,9 +1592,9 @@ export default function WheelEditor({
         }}
         onBlur={() => commitSimpleDraft(simpleDraft)}
         placeholder="One segment per line..."
-        rows={9}
         style={{
           width: '100%',
+          height: listTextareaHeight,
           padding: '14px 16px',
           borderRadius: 14,
           border: `1.5px solid ${BORDER}`,
@@ -1588,13 +1604,11 @@ export default function WheelEditor({
           fontFamily: 'inherit',
           color: ON_SURFACE,
           outline: 'none',
-          // Bounded so the textarea stays within the sheet (which opens at
-          // the fixed 400px midSnap) and scrolls internally for long lists
-          // instead of pushing the content — and itself — past the sheet's
-          // bottom edge. `resize:none` also stops the user dragging the
+          // Sized to the sheet (see listTextareaHeight) and scrolls
+          // internally for long lists instead of pushing itself past the
+          // sheet's bottom edge. `resize:none` stops the user dragging the
           // grip handle to extend it past the sheet.
           resize: 'none',
-          maxHeight: 244,
           overflowY: 'auto',
           boxSizing: 'border-box',
           lineHeight: 1.5,

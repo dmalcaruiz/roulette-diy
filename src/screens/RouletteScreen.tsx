@@ -1793,6 +1793,7 @@ export default function RouletteScreen({
                 scrollToSegmentIndex={pendingScrollSegment}
                 onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
                 renderRows={sheetTab === 'segments' || sheetTab === 'style'}
+                sheetHeight={sheetHeight}
               />
             </div>
             <div
