@@ -1576,7 +1576,7 @@ export default function WheelEditor({
         }}
         onBlur={() => commitSimpleDraft(simpleDraft)}
         placeholder="One segment per line..."
-        rows={12}
+        rows={9}
         style={{
           width: '100%',
           padding: '14px 16px',
@@ -1588,7 +1588,14 @@ export default function WheelEditor({
           fontFamily: 'inherit',
           color: ON_SURFACE,
           outline: 'none',
-          resize: 'vertical',
+          // Bounded so the textarea stays within the sheet (which opens at
+          // the fixed 400px midSnap) and scrolls internally for long lists
+          // instead of pushing the content — and itself — past the sheet's
+          // bottom edge. `resize:none` also stops the user dragging the
+          // grip handle to extend it past the sheet.
+          resize: 'none',
+          maxHeight: 244,
+          overflowY: 'auto',
           boxSizing: 'border-box',
           lineHeight: 1.5,
         }}
@@ -2043,6 +2050,11 @@ function SegmentRow({
 
 // ── Setting Slider ────────────────────────────────────────────────────────
 
+// Styled like the expanded segment card's Weight control: a label + value
+// header row above a [−] · slider · [+] row, with a custom 3D thumb on a
+// gradient track (no native <input type="range">). Themed for the dark
+// style sheet using PRIMARY as the accent; the mapping is linear (the
+// weight control's piecewise curve is specific to weights).
 function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: {
   label: string;
   value: number;
@@ -2052,27 +2064,131 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: 
   onChange: (v: number) => void;
   onChangeEnd?: () => void;
 }) {
+  const surfaces = deriveCardSurfaces(PRIMARY);
+  const top = PRIMARY;
+  const bot = surfaces.bottom;
+  const stroke = surfaces.innerStroke;
+  const pillColor = oklchShadow(PRIMARY, 0.05, 1.2);
+  const span = max - min || 1;
+  const frac = Math.max(0, Math.min(1, (value - min) / span));
+  const percent = frac * 100;
+  const display = max > 10 ? value.toFixed(0) : value.toFixed(1);
+
+  const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    onChange(min + f * span);
+  };
+
+  // Shared button styling for [−] / [+] — dark face lifted from the sheet.
+  const stepBtnProps = {
+    color: SURFACE_ELEVATED,
+    innerStrokeColor: BORDER,
+    innerStrokeWidth: 4,
+    bottomBorderColor: BG,
+    borderRadius: 10,
+    height: 44,
+    bottomBorderWidth: 5,
+    repeatHold: { delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 },
+    style: { width: 39 },
+  } as const;
+  const stepIcon = (pressed: boolean, kind: 'minus' | 'plus') => (
+    kind === 'minus'
+      ? <Minus size={22} color={withAlpha(ON_SURFACE, pressed ? 0.95 : 0.65)} strokeWidth={3} />
+      : <Plus size={22} color={withAlpha(ON_SURFACE, pressed ? 0.95 : 0.65)} strokeWidth={3} />
+  );
+
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      marginBottom: 12,
-    }}>
-      <span style={{ width: 100, fontWeight: 600, fontSize: 14 }}>{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        onPointerUp={onChangeEnd}
-        onTouchEnd={onChangeEnd}
-        style={{ flex: 1, accentColor: ON_SURFACE }}
-      />
-      <span style={{ width: 44, textAlign: 'right', fontWeight: 700, fontSize: 13 }}>
-        {max > 10 ? value.toFixed(0) : value.toFixed(1)}
-      </span>
+    <div style={{ marginBottom: 12 }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 8,
+      }}>
+        <span style={{ fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>{label}</span>
+        <span style={{ fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>{display}</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <PushDownButton
+          {...stepBtnProps}
+          onTap={() => { onChange(Math.max(min, value - step)); onChangeEnd?.(); }}
+        >
+          {(pressed: boolean) => stepIcon(pressed, 'minus')}
+        </PushDownButton>
+
+        <div
+          style={{ flex: 1, position: 'relative', height: 44, touchAction: 'none', userSelect: 'none' }}
+          onPointerDown={e => {
+            e.stopPropagation();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            updateFromPointer(e);
+          }}
+          onPointerMove={e => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            updateFromPointer(e);
+          }}
+          onPointerUp={e => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              e.currentTarget.releasePointerCapture(e.pointerId);
+            }
+            onChangeEnd?.();
+          }}
+        >
+          {/* Track — PRIMARY fill up to percent, muted grey beyond. */}
+          <div style={{
+            position: 'absolute',
+            left: 8,
+            right: 8,
+            top: '50%',
+            transform: 'translateY(calc(-50% + 3px))',
+            height: 6,
+            borderRadius: 4,
+            background: `linear-gradient(to right, ${top} 0%, ${top} ${percent}%, ${withAlpha(ON_SURFACE, 0.16)} ${percent}%, ${withAlpha(ON_SURFACE, 0.16)} 100%)`,
+            pointerEvents: 'none',
+          }} />
+          {/* 3D thumb — bottom peek + colored top face with two grip pills. */}
+          <div style={{
+            position: 'absolute',
+            left: `calc(${frac} * (100% - 28px) + 4px)`,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: 20,
+            height: 44,
+            pointerEvents: 'none',
+          }}>
+            <div style={{
+              position: 'absolute',
+              top: 5, left: 0, right: 0, bottom: 0,
+              borderRadius: 5,
+              backgroundColor: bot,
+            }} />
+            <div style={{
+              position: 'absolute',
+              top: 0, left: 0,
+              width: 20, height: 39,
+              borderRadius: 5,
+              backgroundColor: top,
+              border: `3px solid ${stroke}`,
+              boxSizing: 'border-box',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: 2,
+            }}>
+              <div style={{ width: 3, height: 26, borderRadius: 1.5, backgroundColor: pillColor }} />
+              <div style={{ width: 3, height: 26, borderRadius: 1.5, backgroundColor: pillColor }} />
+            </div>
+          </div>
+        </div>
+
+        <PushDownButton
+          {...stepBtnProps}
+          onTap={() => { onChange(Math.min(max, value + step)); onChangeEnd?.(); }}
+        >
+          {(pressed: boolean) => stepIcon(pressed, 'plus')}
+        </PushDownButton>
+      </div>
     </div>
   );
 }
