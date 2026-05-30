@@ -222,6 +222,10 @@ export default function WheelEditor({
     }
   };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
+  // Weight slider thumb grows only while directly touched/dragged (only one
+  // card is expanded at a time, so a single flag covers it). No grow/glide
+  // tied to the +/- buttons.
+  const [weightThumbDrag, setWeightThumbDrag] = useState(false);
 
   // ── Reorder state — same two-phase release pattern as RouletteScreen's
   // preview row and BlocksList card list. The grabbed row sits in its
@@ -1265,6 +1269,7 @@ export default function WheelEditor({
                           onPointerDown={e => {
                             e.stopPropagation();
                             e.currentTarget.setPointerCapture(e.pointerId);
+                            setWeightThumbDrag(true);
                             updateFromPointer(e);
                           }}
                           onPointerMove={e => {
@@ -1275,8 +1280,10 @@ export default function WheelEditor({
                             if (e.currentTarget.hasPointerCapture(e.pointerId)) {
                               e.currentTarget.releasePointerCapture(e.pointerId);
                             }
+                            setWeightThumbDrag(false);
                             commit();
                           }}
+                          onPointerCancel={() => setWeightThumbDrag(false)}
                         >
                           {/* Track — filled with segment color up to the
                               current percent, grey beyond, same halo
@@ -1316,7 +1323,9 @@ export default function WheelEditor({
                             position: 'absolute',
                             left: `calc(${percentFrac} * (100% - 28px) + 4px)`,
                             top: '50%',
-                            transform: 'translateY(-50%)',
+                            transform: `translateY(-50%) scale(${weightThumbDrag ? 1.18 : 1})`,
+                            transformOrigin: 'center',
+                            transition: 'transform 0.15s ease',
                             width: 20,
                             height: 44,
                             pointerEvents: 'none',
@@ -2129,6 +2138,9 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
     ? Math.max(0, Math.min(1, (snapPoint - min) / span))
     : null;
   const SNAP_THRESHOLD = 0.035; // ~3.5% of the track width
+  // Thumb grows only while being directly touched/dragged, eases back on
+  // release. (No grow/glide tied to the +/- buttons.)
+  const [thumbDrag, setThumbDrag] = useState(false);
 
   const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -2187,6 +2199,7 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
           onPointerDown={e => {
             e.stopPropagation();
             e.currentTarget.setPointerCapture(e.pointerId);
+            setThumbDrag(true);
             updateFromPointer(e);
           }}
           onPointerMove={e => {
@@ -2197,8 +2210,10 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
             if (e.currentTarget.hasPointerCapture(e.pointerId)) {
               e.currentTarget.releasePointerCapture(e.pointerId);
             }
+            setThumbDrag(false);
             onChangeEnd?.();
           }}
+          onPointerCancel={() => setThumbDrag(false)}
         >
           {/* Track — PRIMARY fill up to percent, muted grey beyond. */}
           <div style={{
@@ -2230,12 +2245,15 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
               pointerEvents: 'none',
             }} />
           ))}
-          {/* 3D thumb — bottom peek + colored top face with two grip pills. */}
+          {/* 3D thumb — bottom peek + colored top face with two grip pills.
+              Grows while directly touched/dragged. */}
           <div style={{
             position: 'absolute',
             left: `calc(${frac} * (100% - 28px) + 4px)`,
             top: '50%',
-            transform: 'translateY(-50%)',
+            transform: `translateY(-50%) scale(${thumbDrag ? 1.18 : 1})`,
+            transformOrigin: 'center',
+            transition: 'transform 0.15s ease',
             width: 20,
             height: 44,
             pointerEvents: 'none',
