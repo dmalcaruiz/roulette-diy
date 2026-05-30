@@ -1241,10 +1241,17 @@ export default function WheelEditor({
                       };
                       const percentFrac = Math.max(0, Math.min(1, weightToFrac(segment.weight)));
                       const percent = percentFrac * 100;
+                      // Snap detent at the balanced weight (1), which the
+                      // piecewise mapping places at the 1/4 mark.
+                      const SNAP_FRAC = 0.25;
+                      const SNAP_THRESHOLD = 0.035;
                       const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
                         const rect = e.currentTarget.getBoundingClientRect();
                         const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                        patchSegment(index, { weight: fracToWeight(fraction) });
+                        const weight = Math.abs(fraction - SNAP_FRAC) < SNAP_THRESHOLD
+                          ? 1
+                          : fracToWeight(fraction);
+                        patchSegment(index, { weight });
                       };
                       return (
                         <div
@@ -1286,6 +1293,21 @@ export default function WheelEditor({
                             boxShadow: '0 0 0 3.5px #00000012',
                             pointerEvents: 'none',
                           }} />
+                          {/* Snap detent — two dots above/below the track at
+                              the balanced-weight (1) position. */}
+                          {[-1, 1].map(dir => (
+                            <div key={dir} style={{
+                              position: 'absolute',
+                              left: `calc(${SNAP_FRAC} * (100% - 28px) + 14px)`,
+                              top: `calc(50% + 3px + ${dir * 11}px)`,
+                              transform: 'translate(-50%, -50%)',
+                              width: 5,
+                              height: 5,
+                              borderRadius: '50%',
+                              backgroundColor: withAlpha('#1E1E2C', 0.35),
+                              pointerEvents: 'none',
+                            }} />
+                          ))}
                           {/* Thumb — `left` formula maps percent ∈ [0,1]
                               into [4, slot-26] so the thumb stays
                               4px inside the slot at min/max (slight
@@ -1625,12 +1647,16 @@ export default function WheelEditor({
   const renderStyleTab = () => (
     <div style={{ paddingTop: 16 }}>
       <SettingSlider label="Segment Text" value={state.textSize} min={0.05} max={1.5} step={0.05}
+        snapPoint={1}
         onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
       <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
+        snapPoint={1}
         onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
       <SettingSlider label="Image Size" value={state.imageSize} min={20} max={150} step={1}
+        snapPoint={60}
         onChange={v => patch({ imageSize: v })} onChangeEnd={commit} />
       <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
+        snapPoint={30}
         onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
 
       {/* Inner corners dropdown */}
@@ -1662,12 +1688,15 @@ export default function WheelEditor({
 
       {state.innerCornerStyle !== 'none' && (
         <SettingSlider label="Center Inset" value={state.centerInset} min={0} max={150} step={1.5}
+          snapPoint={50}
           onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
       )}
 
       <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
+        snapPoint={7.7}
         onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
       <SettingSlider label="Center Marker" value={state.centerMarkerSize} min={100} max={200} step={1}
+        snapPoint={200}
         onChange={v => patch({ centerMarkerSize: v })} onChangeEnd={commit} />
 
       {/* Background circle toggle */}
@@ -2069,7 +2098,7 @@ function SegmentRow({
 // gradient track (no native <input type="range">). Themed for the dark
 // style sheet using PRIMARY as the accent; the mapping is linear (the
 // weight control's piecewise curve is specific to weights).
-function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: {
+function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, snapPoint }: {
   label: string;
   value: number;
   min: number;
@@ -2077,20 +2106,38 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: 
   step: number;
   onChange: (v: number) => void;
   onChangeEnd?: () => void;
+  // Default ("home") value. When the dragged thumb gets within
+  // SNAP_THRESHOLD of it, the value snaps exactly to it (a detent), and
+  // two dots are drawn above/below the track at its position so the user
+  // can see and return to the default.
+  snapPoint?: number;
 }) {
   const surfaces = deriveCardSurfaces(PRIMARY);
   const top = PRIMARY;
   const bot = surfaces.bottom;
   const stroke = surfaces.innerStroke;
   const pillColor = oklchShadow(PRIMARY, 0.05, 1.2);
+  // Shared depth tones so the track, thumb halo, and step buttons match.
+  const HALO = 'rgba(0,0,0,0.22)';        // recessed-ring shadow (track + thumb + buttons)
+  const DARK_FACE = oklchShadow(BG, 0.03); // unfilled track + button bottom (shadow) face
   const span = max - min || 1;
   const frac = Math.max(0, Math.min(1, (value - min) / span));
   const percent = frac * 100;
   const display = max > 10 ? value.toFixed(0) : value.toFixed(1);
+  // Fraction along the track where the snap detent sits (clamped on-track).
+  const snapFrac = snapPoint != null
+    ? Math.max(0, Math.min(1, (snapPoint - min) / span))
+    : null;
+  const SNAP_THRESHOLD = 0.035; // ~3.5% of the track width
 
   const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    // Snap to the default when the thumb is dragged close to it.
+    if (snapFrac != null && Math.abs(f - snapFrac) < SNAP_THRESHOLD && snapPoint != null) {
+      onChange(snapPoint);
+      return;
+    }
     onChange(min + f * span);
   };
 
@@ -2099,7 +2146,11 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: 
     color: SURFACE_ELEVATED,
     innerStrokeColor: BORDER,
     innerStrokeWidth: 4,
-    bottomBorderColor: BG,
+    // Bottom (shadow) face — a touch darker than BG for a deeper 3D edge.
+    bottomBorderColor: DARK_FACE,
+    // Match the track's halo so the buttons read as the same depth instead
+    // of the faint derived ring.
+    haloColor: HALO,
     borderRadius: 10,
     height: 44,
     bottomBorderWidth: 5,
@@ -2158,9 +2209,27 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: 
             transform: 'translateY(calc(-50% + 3px))',
             height: 6,
             borderRadius: 4,
-            background: `linear-gradient(to right, ${top} 0%, ${top} ${percent}%, ${withAlpha(ON_SURFACE, 0.16)} ${percent}%, ${withAlpha(ON_SURFACE, 0.16)} 100%)`,
+            background: `linear-gradient(to right, ${top} 0%, ${top} ${percent}%, ${DARK_FACE} ${percent}%, ${DARK_FACE} 100%)`,
+            // Recessed-track halo, matching the thumb + step buttons.
+            boxShadow: `0 0 0 3.5px ${HALO}`,
             pointerEvents: 'none',
           }} />
+          {/* Snap detent — two dots above and below the track at the
+              default value's position, marking the "home" the thumb
+              snaps to. Hidden behind the thumb when it's parked there. */}
+          {snapFrac != null && [-1, 1].map(dir => (
+            <div key={dir} style={{
+              position: 'absolute',
+              left: `calc(${snapFrac} * (100% - 28px) + 14px)`,
+              top: `calc(50% + 3px + ${dir * 11}px)`,
+              transform: 'translate(-50%, -50%)',
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              backgroundColor: withAlpha(ON_SURFACE, 0.4),
+              pointerEvents: 'none',
+            }} />
+          ))}
           {/* 3D thumb — bottom peek + colored top face with two grip pills. */}
           <div style={{
             position: 'absolute',
@@ -2176,6 +2245,8 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd }: 
               top: 5, left: 0, right: 0, bottom: 0,
               borderRadius: 5,
               backgroundColor: bot,
+              // Same halo as the track + step buttons.
+              boxShadow: `0 0 0 3.5px ${HALO}`,
             }} />
             <div style={{
               position: 'absolute',

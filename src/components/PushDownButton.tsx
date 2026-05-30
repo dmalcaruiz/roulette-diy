@@ -19,6 +19,11 @@ interface PushDownButtonProps {
   // where a visible dark border is wanted around a light fill.
   innerStrokeColor?: string;
   innerStrokeWidth?: number;
+  // Override the outer halo ring colour. Default = the OKLCh-derived halo
+  // (or a 25% tint of `bottomBorderColor` when that's set). Pass an
+  // explicit colour to match a sibling element's halo (e.g. a slider
+  // track) when the derived one reads too faint.
+  haloColor?: string;
   // When set, holding the button for `delayMs` starts firing `onTap`
   // every `intervalMs`. If `maxIntervalMs` + `rampMs` are also set, the
   // interval interpolates linearly from `intervalMs` down to
@@ -39,6 +44,7 @@ export function PushDownButton({
   bottomBorderColor,
   innerStrokeColor,
   innerStrokeWidth = 2.5,
+  haloColor: haloColorProp,
   repeatHold,
   style,
 }: PushDownButtonProps) {
@@ -49,7 +55,7 @@ export function PushDownButton({
   // the lower-layer or stroke colour.
   const surfaces = deriveCardSurfaces(color);
   const bottomColor = bottomBorderColor ?? surfaces.bottom;
-  const haloColor = bottomBorderColor ? `${bottomColor}40` : surfaces.halo;
+  const haloColor = haloColorProp ?? (bottomBorderColor ? `${bottomColor}40` : surfaces.halo);
   const strokeColor = innerStrokeColor ?? surfaces.innerStroke;
   const faceHeight = height - bottomBorderWidth;
 
