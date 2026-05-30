@@ -1293,18 +1293,18 @@ export default function WheelEditor({
                             boxShadow: '0 0 0 3.5px #00000012',
                             pointerEvents: 'none',
                           }} />
-                          {/* Snap detent — two dots above/below the track at
-                              the balanced-weight (1) position. */}
+                          {/* Snap detent — two vertical pills above/below the
+                              track at the balanced-weight (1) position. */}
                           {[-1, 1].map(dir => (
                             <div key={dir} style={{
                               position: 'absolute',
                               left: `calc(${SNAP_FRAC} * (100% - 28px) + 14px)`,
-                              top: `calc(50% + 3px + ${dir * 11}px)`,
+                              top: `calc(50% + 3px + ${dir * 13}px)`,
                               transform: 'translate(-50%, -50%)',
-                              width: 5,
-                              height: 5,
-                              borderRadius: '50%',
-                              backgroundColor: withAlpha('#1E1E2C', 0.35),
+                              width: 4,
+                              height: 9,
+                              borderRadius: 2,
+                              backgroundColor: 'rgba(0,0,0,0.15)',
                               pointerEvents: 'none',
                             }} />
                           ))}
@@ -1598,7 +1598,7 @@ export default function WheelEditor({
   // midSnap fill height so it never shrinks below its midSnap size as the
   // sheet is dragged down toward/below midSnap — grow-only. Falls back to a
   // fixed height when there's no sheet (desktop sidebar).
-  const LIST_CHROME = 166;
+  const LIST_CHROME = 146;
   const MIDSNAP_FILL = 400 - LIST_CHROME; // sheet opens at the fixed 400px midSnap
   const listTextareaHeight = sheetHeight && sheetHeight > 0
     ? Math.max(MIDSNAP_FILL, Math.round(sheetHeight - LIST_CHROME))
@@ -2221,12 +2221,12 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
             <div key={dir} style={{
               position: 'absolute',
               left: `calc(${snapFrac} * (100% - 28px) + 14px)`,
-              top: `calc(50% + 3px + ${dir * 11}px)`,
+              top: `calc(50% + 3px + ${dir * 13}px)`,
               transform: 'translate(-50%, -50%)',
-              width: 5,
-              height: 5,
-              borderRadius: '50%',
-              backgroundColor: withAlpha(ON_SURFACE, 0.4),
+              width: 4,
+              height: 9,
+              borderRadius: 2,
+              backgroundColor: 'rgba(0,0,0,0.15)',
               pointerEvents: 'none',
             }} />
           ))}
