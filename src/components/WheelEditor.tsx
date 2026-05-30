@@ -1174,7 +1174,7 @@ export default function WheelEditor({
                     <PushDownButton
                       color={'#F8F8F9'}
                       innerStrokeColor={'#E5E5E5'}
-                      innerStrokeWidth={4}
+                      innerStrokeWidth={3}
                       bottomBorderColor={'#B5B5B5'}
                       borderRadius={10}
                       height={44}
@@ -1304,7 +1304,7 @@ export default function WheelEditor({
                               width: 4,
                               height: 9,
                               borderRadius: 2,
-                              backgroundColor: 'rgba(0,0,0,0.15)',
+                              backgroundColor: 'rgba(0,0,0,0.18)',
                               pointerEvents: 'none',
                             }} />
                           ))}
@@ -1362,7 +1362,7 @@ export default function WheelEditor({
                     <PushDownButton
                       color={'#F8F8F9'}
                       innerStrokeColor={'#E5E5E5'}
-                      innerStrokeWidth={4}
+                      innerStrokeWidth={3}
                       bottomBorderColor={'#B5B5B5'}
                       borderRadius={10}
                       height={44}
@@ -2145,7 +2145,7 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
   const stepBtnProps = {
     color: SURFACE_ELEVATED,
     innerStrokeColor: BORDER,
-    innerStrokeWidth: 4,
+    innerStrokeWidth: 3,
     // Bottom (shadow) face — a touch darker than BG for a deeper 3D edge.
     bottomBorderColor: DARK_FACE,
     // Match the track's halo so the buttons read as the same depth instead
@@ -2226,7 +2226,7 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
               width: 4,
               height: 9,
               borderRadius: 2,
-              backgroundColor: 'rgba(0,0,0,0.15)',
+              backgroundColor: 'rgba(0,0,0,0.18)',
               pointerEvents: 'none',
             }} />
           ))}
