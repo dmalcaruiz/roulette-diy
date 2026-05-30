@@ -358,10 +358,25 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // browser paints the frame. With useEffect there's a one-frame gap where
   // the canvas exists but is unpainted, which on a remount (e.g. tapping +
   // to add a new wheel) shows up as a white flash.
+  // Paint is deferred via useEffect + rAF instead of useLayoutEffect so
+  // the canvas draw (which can take 30-50ms for wheels with 100+ segments)
+  // doesn't block the React commit / browser-paint cycle that triggers
+  // the CSS slide-in animation on a wheel switch. With useLayoutEffect
+  // the paint ran synchronously BEFORE the browser composited the first
+  // frame, so the slide-in literally couldn't start until paint finished.
+  // With this rAF defer:
+  //   • frame 0: React commit → DOM updated → browser composites first
+  //     slide frame (canvas blank, but at translateX(100%) it's fully
+  //     off-screen so nobody sees the blank).
+  //   • frame 1: rAF fires → paintWheel runs synchronously → next
+  //     browser composite shows the painted canvas.
+  // Net: the slide starts ~30-50ms sooner and the brief unpainted frame
+  // is hidden behind the slide's off-screen start position.
   // Depends on paintImpl (the actual implementation) so it re-fires on
   // size/items/etc changes; the public `paint` is intentionally stable.
-  useLayoutEffect(() => {
-    paint();
+  useEffect(() => {
+    const id = requestAnimationFrame(() => paint());
+    return () => cancelAnimationFrame(id);
   }, [paint, paintImpl]);
 
   // Update segment on mount
