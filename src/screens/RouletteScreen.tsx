@@ -497,7 +497,17 @@ export default function RouletteScreen({
   // When the block prop changes (flow switch), clear any stale preview state.
   // activeConfig immediately falls back to the new block.wheelConfig (by id
   // mismatch), but this cleanup keeps state tidy and breaks reference chains.
-  useEffect(() => {
+  // Block-change cleanup runs as a LAYOUT effect, not a plain useEffect:
+  // it fires after the post-block-change commit but BEFORE the browser
+  // paints. Since `wheelConfig.id` is stable across wheels in this data,
+  // a stale `previewConfig` left over from the previous wheel still
+  // satisfies activeConfig's id-match check and would flash the OLD
+  // wheel's items in active-tile thumbnails for one paint. Clearing here
+  // forces a follow-up render with previewConfig=null that React commits
+  // before the browser paints, so the user never sees the stale frame.
+  // This catches all block.id change paths (tile tap, URL navigation,
+  // route sync) without requiring each click-handler to call it manually.
+  useLayoutEffect(() => {
     dbg('RouletteScreen', 'block-change', {
       block: sid(block.id),
       items: block.wheelConfig?.items.length ?? 0,
@@ -1332,9 +1342,9 @@ export default function RouletteScreen({
             }}
             style={{
               animation: wheelTransition === 'right'
-                ? 'slide-in-from-right 0.5s cubic-bezier(0.32, 0.72, 0, 1) both'
+                ? 'slide-in-from-right 0.28s cubic-bezier(0.32, 0.72, 0, 1) both'
                 : wheelTransition === 'left'
-                  ? 'slide-in-from-left 0.5s cubic-bezier(0.32, 0.72, 0, 1) both'
+                  ? 'slide-in-from-left 0.28s cubic-bezier(0.32, 0.72, 0, 1) both'
                   : 'wheel-fade-in 0.28s cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >
