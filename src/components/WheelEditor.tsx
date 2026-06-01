@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight } from '../utils/colorUtils';
@@ -6,9 +6,10 @@ import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
-  Copy, CheckCircle, Circle, Settings,
+  Copy, CopyPlus, ClipboardPaste, MoreHorizontal, CheckCircle, Circle, Settings,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
+import DraggableSheet from './DraggableSheet';
 import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
@@ -86,9 +87,58 @@ interface WheelEditorProps {
   // taller snap) instead of a fixed height that wastes space or overflows.
   // Omitted on desktop (no sheet) — falls back to a fixed height there.
   sheetHeight?: number;
+  // True when hosted in the phone sheet. Widens the offscreen-card render
+  // window once the sheet has settled open, so fast flings don't outrun it
+  // and show cards popping in — see SEG_WINDOW_BUFFER_PHONE / widenPhoneWindow.
+  // Defaults false so the desktop sidebar keeps the narrow window.
+  isMobile?: boolean;
 }
 
 let segmentIdCounter = 0;
+
+// ── Segment clipboard ──────────────────────────────────────────────────────
+// Copy/Paste of a single segment, persisted to localStorage so it survives
+// navigating between wheels and reloads (mirrors the wheel clipboard in
+// RouletteScreen). JSON round-trip also deep-clones. A payload only counts as
+// pasteable if it's structurally a segment, so stale/garbage data stays hidden.
+const SEGMENT_CLIPBOARD_KEY = 'roulette:segmentClipboard';
+function isValidSegmentData(v: unknown): v is SegmentData {
+  return !!v && typeof v === 'object'
+    && typeof (v as SegmentData).text === 'string'
+    && typeof (v as SegmentData).color === 'string'
+    && typeof (v as SegmentData).weight === 'number';
+}
+function readSegmentClipboard(): SegmentData | null {
+  try {
+    const raw = localStorage.getItem(SEGMENT_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (isValidSegmentData(parsed)) return parsed;
+    localStorage.removeItem(SEGMENT_CLIPBOARD_KEY);
+    return null;
+  } catch {
+    return null;
+  }
+}
+function writeSegmentClipboard(seg: SegmentData): void {
+  try {
+    localStorage.setItem(SEGMENT_CLIPBOARD_KEY, JSON.stringify(seg));
+  } catch {
+    /* storage unavailable / quota — copy silently no-ops */
+  }
+}
+
+// Measure rendered text width (cached canvas) so a collapsed-card tap can tell
+// whether it landed on the written text vs the empty space after it. Returns
+// Infinity if measuring isn't possible, so callers default to "on text".
+let _measureCanvas: HTMLCanvasElement | null = null;
+function measureTextWidth(text: string, font: string): number {
+  if (!_measureCanvas) _measureCanvas = document.createElement('canvas');
+  const ctx = _measureCanvas.getContext('2d');
+  if (!ctx) return Infinity;
+  ctx.font = font;
+  return ctx.measureText(text).width;
+}
 
 // Pick the palette colour that comes *next after* the last segment's
 // colour in SEGMENT_COLORS, so successive add-segment clicks walk through
@@ -176,6 +226,7 @@ export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
+  isMobile = false,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -183,6 +234,12 @@ export default function WheelEditor({
 
   // UI-only state
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // Segment actions sheet — holds the index whose sheet is open (null =
+  // closed). Opened by a long-press that releases without any drag movement.
+  const [segmentActionsIndex, setSegmentActionsIndex] = useState<number | null>(null);
+  // Segment clipboard for the sheet's Copy / Paste. Seeded from localStorage
+  // so a segment copied in another wheel (or before a reload) can be pasted.
+  const [copiedSegment, setCopiedSegment] = useState<SegmentData | null>(() => readSegmentClipboard());
   // On collapse, blur whatever input was focused inside the card and
   // clear any text selection so the closing card doesn't leave a
   // highlighted-but-unfocused-and-unreadable trail in the DOM.
@@ -277,7 +334,27 @@ export default function WheelEditor({
   // midpoint hit-testing work unchanged. Flip WINDOW_SEGMENTS to false to
   // disable and render every row full (the pre-windowing behaviour).
   const WINDOW_SEGMENTS = true;
-  const SEG_WINDOW_BUFFER = 6; // rows rendered beyond the viewport each side
+  // Rows rendered beyond the viewport on each side. The window starts NARROW
+  // (SEG_WINDOW_BUFFER) so the sheet-open animation mounts as few cards as
+  // possible during that perf-sensitive frame window. Once the sheet has
+  // settled open, phones WIDEN to SEG_WINDOW_BUFFER_PHONE — pre-rendering
+  // more offscreen cards so a fast fling doesn't outrun the window and show
+  // cards popping in live. Desktop keeps the narrow buffer (mouse-wheel /
+  // scrollbar scrolling stays slow enough that the window always keeps up).
+  const SEG_WINDOW_BUFFER = 6;
+  const SEG_WINDOW_BUFFER_PHONE = 12;
+  // Flips true ~100ms after the sheet has finished opening (mobile only),
+  // widening the window buffer. Reset to false whenever the list is hidden
+  // so the next open again starts narrow (cheap to mount).
+  const [widenPhoneWindow, setWidenPhoneWindow] = useState(false);
+  // Live buffer the scroll-driven recompute reads. Kept in a ref (mutated
+  // during render, same pattern as the callback refs above) so
+  // recomputeSegWindow can stay dependency-free and still see the latest
+  // value the instant `widenPhoneWindow` flips.
+  const segWindowBufferRef = useRef(SEG_WINDOW_BUFFER);
+  segWindowBufferRef.current = (isMobile && widenPhoneWindow)
+    ? SEG_WINDOW_BUFFER_PHONE
+    : SEG_WINDOW_BUFFER;
   // Container wrapping the rows — used to locate the scroll ancestor and
   // measure the list's position for the window calc.
   const listContainerRef = useRef<HTMLDivElement | null>(null);
@@ -625,6 +702,26 @@ export default function WheelEditor({
     commitWithAnim(newSegs);
   };
 
+  // Copy the segment's data onto the clipboard (deep-cloned via localStorage
+  // JSON). Paste reassigns a fresh id, so the original is untouched.
+  const copySegment = (index: number) => {
+    const seg = stateRef.current.segments[index];
+    if (!seg) return;
+    writeSegmentClipboard(seg);
+    setCopiedSegment(readSegmentClipboard());
+  };
+
+  // Insert the clipboard segment right after `index` (same shape as duplicate,
+  // but the data comes from the clipboard rather than the source row).
+  const pasteSegment = (index: number) => {
+    if (!copiedSegment) return;
+    const id = `${segmentIdCounter++}`;
+    const newSegs = [...stateRef.current.segments];
+    newSegs.splice(index + 1, 0, { ...copiedSegment, id });
+    setExpandedIndex(null);
+    commitWithAnim(newSegs);
+  };
+
   // --- Continuous actions (patch, commit on end) ---
 
   const patchSegment = (index: number, updates: Partial<SegmentData>) => {
@@ -699,6 +796,10 @@ export default function WheelEditor({
     const listTop = listContainerRef.current?.getBoundingClientRect().top ?? 0;
 
     let currentTarget = sourceIndex;
+    // Tracks whether the pointer ever moved past the drag threshold. A
+    // long-press that releases with NO movement isn't a reorder — it
+    // dismisses the grab and opens the segment actions sheet instead.
+    let didMove = false;
     dragOffsetRef.current = 0;
     setGrabbedIndex(sourceIndex);
     setDropTargetIndex(sourceIndex);
@@ -719,6 +820,7 @@ export default function WheelEditor({
       // 10px threshold before shifting neighbors — avoids twitchy slot
       // indicators on sub-pixel jitter at start.
       if (Math.hypot(dx, dy) < 10) return;
+      didMove = true;
       // Drop target straight from the pointer position — O(1), no DOM reads.
       const total = segmentsRef.current.length;
       let target = Math.floor((me.clientY - listTop) / rowH);
@@ -774,8 +876,16 @@ export default function WheelEditor({
 
     const onUp = () => {
       cleanup();
-      if (currentTarget !== sourceIndex) releaseToTarget();
-      else finishRelease(false);
+      if (!didMove) {
+        // Long-press with no drag → not a reorder. Drop the grab and open
+        // the segment actions sheet for this row.
+        finishRelease(false);
+        setSegmentActionsIndex(sourceIndex);
+      } else if (currentTarget !== sourceIndex) {
+        releaseToTarget();
+      } else {
+        finishRelease(false);
+      }
     };
     const onCancel = () => {
       cleanup();
@@ -859,8 +969,9 @@ export default function WheelEditor({
     const listRect = listEl.getBoundingClientRect();
     const scRect = scrollEl.getBoundingClientRect();
     const above = scRect.top - listRect.top; // px of list scrolled above the viewport top
-    const start = Math.max(0, Math.floor(above / rowH) - SEG_WINDOW_BUFFER);
-    const end = Math.min(total - 1, Math.ceil((above + scRect.height) / rowH) + SEG_WINDOW_BUFFER);
+    const buffer = segWindowBufferRef.current;
+    const start = Math.max(0, Math.floor(above / rowH) - buffer);
+    const end = Math.min(total - 1, Math.ceil((above + scRect.height) / rowH) + buffer);
     setSegWindow(prev => (prev.start === start && prev.end === end ? prev : { start, end }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -900,6 +1011,27 @@ export default function WheelEditor({
     const raf = requestAnimationFrame(recomputeSegWindow);
     return () => cancelAnimationFrame(raf);
   }, [expandedIndex, segments.length, renderRows, recomputeSegWindow]);
+
+  // Widen the render window only AFTER the sheet has settled open (phones
+  // only). renderRows flips true as the open animation starts; we wait out
+  // that ~280ms SnappingSheet height transition + a 100ms buffer before
+  // pre-rendering the extra offscreen cards, so that mounting them happens
+  // while the sheet is at rest rather than competing with the open frame
+  // budget. Resets the instant the list hides, so the next open starts
+  // narrow (and therefore cheap to mount).
+  useEffect(() => {
+    if (!WINDOW_SEGMENTS || !isMobile || !renderRows) {
+      setWidenPhoneWindow(false);
+      return;
+    }
+    const SHEET_OPEN_MS = 280;        // SnappingSheet height transition
+    const SETTLE_AFTER_OPEN_MS = 100; // grace once it's actually open
+    const id = setTimeout(() => {
+      setWidenPhoneWindow(true);
+      requestAnimationFrame(recomputeSegWindow);
+    }, SHEET_OPEN_MS + SETTLE_AFTER_OPEN_MS);
+    return () => clearTimeout(id);
+  }, [isMobile, renderRows, recomputeSegWindow]);
 
   // --- Keyboard shortcut ---
   useEffect(() => {
@@ -943,7 +1075,17 @@ export default function WheelEditor({
       // and drop shadow live on the outer SegmentRow (mirroring BlockRow
       // in BlocksList), so no horizontal padding is needed here — the
       // halo extends past the SwipeableActionCell entirely.
-      <div key={segment.id} style={{ paddingBottom: 6.5 }}>
+      <div
+        key={segment.id}
+        style={{ paddingBottom: 6.5 }}
+        // Desktop right-click → segment actions sheet (mirrors the preview
+        // tiles). Only while collapsed, so right-clicking an expanded card's
+        // text field still gives the native copy/paste menu during editing.
+        onContextMenu={isExpanded ? undefined : (e) => {
+          e.preventDefault();
+          setSegmentActionsIndex(index);
+        }}
+      >
         {/* 3D Card */}
         <div style={{ position: 'relative' }}>
           {/* Bottom face — solid color only; the halo ring lives on the
@@ -1021,19 +1163,32 @@ export default function WheelEditor({
               <div
                 style={{ flex: 1 }}
                 onClick={isExpanded ? (e) => e.stopPropagation() : (e) => {
-                  // Tap-on-text while collapsed: let the click bubble to
-                  // the parent (which expands the card), then focus the
-                  // input and select its existing text so the user can
-                  // immediately overwrite. rAF defers until React has
-                  // committed the expand-driven readOnly=false flip.
-                  const wrapper = e.currentTarget as HTMLDivElement;
-                  requestAnimationFrame(() => {
-                    const input = wrapper.querySelector('input');
-                    if (input) {
-                      input.focus();
-                      input.select();
-                    }
-                  });
+                  // Tap-on-text while collapsed: the click bubbles to the
+                  // parent (which expands the card), and we focus the input
+                  // HERE, synchronously, inside the click handler — so it
+                  // lands within the tap's user-activation window. A deferred
+                  // (rAF) focus runs outside that window, so the mobile
+                  // keyboard never opens and it reads as "not focused". The
+                  // field is readOnly while collapsed, so clear that
+                  // imperatively first (else focus won't summon the keyboard);
+                  // React keeps readOnly=false once the expand commits.
+                  const input = (e.currentTarget as HTMLDivElement).querySelector('input');
+                  if (!input) return;
+                  // Only focus+select when the tap lands on the written text,
+                  // not the blank space after it. (Empty/placeholder text →
+                  // always focus, since there's no text to aim at.) Either
+                  // way the card still expands via the bubbled parent click.
+                  const text = segment.text;
+                  if (text.trim() !== '') {
+                    const rect = input.getBoundingClientRect();
+                    // 12 = input's left padding (see style below).
+                    const textEndX = rect.left + 12
+                      + measureTextWidth(text, '600 17px Inter, -apple-system, sans-serif');
+                    if (e.clientX > textEndX + 4) return; // tapped blank space
+                  }
+                  input.readOnly = false;
+                  input.focus();
+                  input.select();
                 }}
                 onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
               >
@@ -1544,6 +1699,13 @@ export default function WheelEditor({
         openTrailingTrigger={autoOpenSpec.id === segment.id ? autoOpenSpec.tick : 0}
         trailingActions={[
           {
+            // Grey "more" button — opens the full segment actions sheet
+            // (same one the long-press-without-drag opens).
+            color: '#38383E',
+            icon: <MoreHorizontal size={26} />,
+            onTap: () => setSegmentActionsIndex(index),
+          },
+          {
             color: PRIMARY,
             icon: <Copy size={26} />,
             onTap: () => duplicateSegment(index),
@@ -1901,7 +2063,69 @@ export default function WheelEditor({
           )}
         </>
       </div>
+      {/* Segment actions — opened by a long-press that releases without any
+          drag. Same DraggableSheet shell + row styling as the wheel actions
+          sheet so the two read as a set. */}
+      {segmentActionsIndex !== null && (
+        <DraggableSheet maxWidth={9999} onClose={() => setSegmentActionsIndex(null)}>
+          <div style={{ padding: '0 20px 28px' }}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
+              Segment actions
+            </h3>
+            <SegActionRow
+              icon={<Copy size={20} />}
+              label="Copy segment"
+              onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); copySegment(i); }}
+            />
+            {copiedSegment && (
+              <SegActionRow
+                icon={<ClipboardPaste size={20} />}
+                label="Paste segment"
+                onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); pasteSegment(i); }}
+              />
+            )}
+            <SegActionRow
+              icon={<CopyPlus size={20} />}
+              label="Duplicate segment"
+              onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); duplicateSegment(i); }}
+            />
+            <SegActionRow
+              icon={<Trash2 size={20} />}
+              label="Delete segment"
+              danger
+              onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); removeSegment(i); }}
+            />
+          </div>
+        </DraggableSheet>
+      )}
     </div>
+  );
+}
+
+// Row in the segment actions sheet — mirrors RouletteScreen's CtxRow so the
+// segment sheet looks identical to the wheel actions sheet.
+function SegActionRow({ icon, label, onTap, danger }: {
+  icon: ReactNode;
+  label: string;
+  onTap: () => void;
+  danger?: boolean;
+}) {
+  const contentColor = danger ? '#EF4444' : ON_SURFACE;
+  return (
+    <PushDownButton
+      onTap={onTap}
+      color={SURFACE_ELEVATED}
+      borderRadius={16}
+      height={54}
+      bottomBorderWidth={4}
+      innerStrokeWidth={3}
+      style={{ marginBottom: 5 }}
+    >
+      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, paddingLeft: 16, color: contentColor }}>
+        {icon}
+        <span style={{ fontWeight: 700, fontSize: 15 }}>{label}</span>
+      </div>
+    </PushDownButton>
   );
 }
 

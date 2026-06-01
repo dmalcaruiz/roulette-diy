@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
-import { SURFACE, BORDER } from '../utils/constants';
+import { SURFACE } from '../utils/constants';
 import { oklchShadow, oklchHighlight } from '../utils/colorUtils';
 
 interface SnappingSheetProps {
@@ -98,6 +98,9 @@ export default function SnappingSheet({
   const [dragging, setDragging] = useState(false);
   const startYRef = useRef(0);
   const startHeightRef = useRef(0);
+  // Set true once a handle/X drag moves past a few px, so the X's onClick can
+  // tell a real drag from a clean tap and skip the close on a drag-release.
+  const didDragRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
@@ -253,6 +256,7 @@ export default function SnappingSheet({
     if (isDragLocked?.()) return;
     startYRef.current = e.clientY;
     startHeightRef.current = targetHeight;
+    didDragRef.current = false;
     setDragging(true);
     onDragStartRef.current?.();
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -262,6 +266,7 @@ export default function SnappingSheet({
     if (isDragLocked?.()) { releaseInFlightDrag(); return; }
     if (!dragging) return;
     const dy = e.clientY - startYRef.current;
+    if (Math.abs(dy) > 4) didDragRef.current = true;
     setDragOffset(dy);
     // Report synchronously so the parent's game container re-renders in the
     // same React commit as the sheet itself — otherwise the red footer lags
@@ -399,7 +404,15 @@ export default function SnappingSheet({
           above the sheet's rounded top edge, on the right side. Tapping
           snaps to 0 (fires onCollapsed). */}
       <button
+        // The X doubles as a grab point: the handle's drag handlers move the
+        // sheet when you drag from it, and onClick only closes on a clean tap
+        // (didDragRef guards against a drag-release also firing close).
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onClick={() => {
+          if (didDragRef.current) { didDragRef.current = false; return; }
           // X-press = instant close, no animation. Flip the instantClose
           // flag and the solapa state in the same batch as snapToNearest,
           // then rAF-reset instantClose so subsequent opens/drags animate
@@ -429,6 +442,9 @@ export default function SnappingSheet({
           right: 20,
           width: 40,
           height: 36,
+          // Drag from the X must not get hijacked by the browser as a scroll/
+          // gesture — same as the grab handle.
+          touchAction: 'none',
           borderRadius: '999px 999px 0 0',
           backgroundColor: oklchShadow(SURFACE, 0.02),
           // 3px inner stroke, lighter than the sheet bg (OKLCh-highlight
@@ -516,16 +532,18 @@ export default function SnappingSheet({
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
           style={{
-            padding: '12px 0 8px',
+            // 9 top / 11 bottom nudges the bar 1px up from dead-center in the
+            // handle's tap area (centered was 10/10, which read a touch low).
+            padding: '9px 0 11px',
             cursor: 'grab',
             touchAction: 'none',
             flexShrink: 0,
           }}
         >
           <div style={{
-            width: 40, height: 4,
-            backgroundColor: BORDER,
-            borderRadius: 2,
+            width: 44, height: 5,
+            backgroundColor: 'rgba(255, 255, 255, 0.2)',
+            borderRadius: 2.5,
             margin: '0 auto',
           }} />
         </div>

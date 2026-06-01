@@ -130,9 +130,17 @@ export function buildInsertWheelChange(args: {
   experience?: CloudBlock;
   steps?: CloudBlock[];
   index: number;
+  // When provided, the inserted wheel is built from this config (a paste)
+  // rather than a fresh empty wheel. The new block always gets its own id;
+  // the config is re-stamped with that id so it doesn't collide with the
+  // source it was copied from.
+  wheelConfig?: WheelConfig;
 }): FlowChange {
-  const { currentBlock, experience, steps, index } = args;
-  const newBlock = newRoulette();
+  const { currentBlock, experience, steps, index, wheelConfig } = args;
+  const base = newRoulette();
+  const newBlock: CloudBlock = wheelConfig
+    ? { ...base, wheelConfig: { ...wheelConfig, id: base.id } }
+    : base;
 
   // Standalone wheel — wrap it (similar to append) but allow positional insert.
   if (!currentBlock.parentExperienceId || !experience) {

@@ -6,7 +6,7 @@ import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../c
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, LayoutList, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, Pencil, Share2 } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2 } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
@@ -48,6 +48,41 @@ interface RouletteScreenProps {
   // round-trip vs `navigate()`. The URL stays at the entry block; tile
   // switching is treated as session-local UI state, not a navigation.
   onSwitchActive?: (block: CloudBlock) => void;
+}
+
+// ── Wheel clipboard ───────────────────────────────────────────────────────
+// Copy/Paste of a whole wheel persists through localStorage so it survives
+// navigating between wheels/flows (each navigation remounts RouletteScreen)
+// and page reloads. JSON round-tripping doubles as a deep clone, so later
+// edits to the copied wheel never mutate what's on the clipboard.
+const WHEEL_CLIPBOARD_KEY = 'roulette:wheelClipboard';
+// A clipboard payload only counts as pasteable if it's structurally a wheel
+// (an object with a non-empty `items` array). Guards against stale/garbage
+// localStorage — without it, Paste could be offered for unpasteable data.
+function isValidWheelConfig(v: unknown): v is WheelConfig {
+  return !!v && typeof v === 'object'
+    && Array.isArray((v as { items?: unknown }).items)
+    && (v as { items: unknown[] }).items.length > 0;
+}
+function readWheelClipboard(): WheelConfig | null {
+  try {
+    const raw = localStorage.getItem(WHEEL_CLIPBOARD_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (isValidWheelConfig(parsed)) return parsed;
+    // Stale / malformed payload — drop it so Paste stays hidden.
+    localStorage.removeItem(WHEEL_CLIPBOARD_KEY);
+    return null;
+  } catch {
+    return null;
+  }
+}
+function writeWheelClipboard(cfg: WheelConfig): void {
+  try {
+    localStorage.setItem(WHEEL_CLIPBOARD_KEY, JSON.stringify(cfg));
+  } catch {
+    /* storage unavailable / quota — copy silently no-ops */
+  }
 }
 
 export default function RouletteScreen({
@@ -149,10 +184,23 @@ export default function RouletteScreen({
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
+  // Wheel clipboard for the Copy / Paste context-menu actions. Seeded from
+  // localStorage so a wheel copied in another flow (or before a reload) is
+  // available to paste here. Paste is only offered when this is non-null.
+  const [copiedWheel, setCopiedWheel] = useState<WheelConfig | null>(() => readWheelClipboard());
   // Mobile rename sheet — replaces inline label-editing on touch devices.
   // Holds the preview-tile index being renamed. null = closed.
   const [renameIndex, setRenameIndex] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  // Focus the rename field WITHOUT the browser scrolling the page to reveal
+  // it — the sheet (and its keyboard-aware lift) handle visibility. Plain
+  // `autoFocus` scroll-into-view yanked the whole screen upward on open.
+  useEffect(() => {
+    if (renameIndex === null) return;
+    const id = requestAnimationFrame(() => renameInputRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(id);
+  }, [renameIndex]);
   const openRenameSheet = (idx: number) => {
     const target = flowSteps?.[idx];
     const current = target
@@ -924,12 +972,23 @@ export default function RouletteScreen({
   // always 0 and refers to the current block. For flows, it refers to
   // flowSteps[index]. All actions update local state optimistically and
   // persist in the background, rolling back on failure.
-  type CtxAction = 'delete' | 'duplicate' | 'insertBefore' | 'insertAfter';
+  type CtxAction = 'delete' | 'duplicate' | 'insertBefore' | 'insertAfter' | 'copy' | 'paste';
   const runCtxAction = useCallback(async (action: CtxAction, index: number) => {
     if (!user) return;
     flushAutoSave();
     const currentBlock = { ...block, wheelConfig: activeConfig } as CloudBlock;
     const inFlow = !!(flowExperience && flowSteps && flowSteps.length > 0);
+
+    // Copy is a pure read — stash the target tile's config (deep-cloned via
+    // localStorage JSON) on the wheel clipboard. No flow mutation.
+    if (action === 'copy') {
+      const cfg = inFlow ? flowSteps![index]?.wheelConfig : activeConfig;
+      if (cfg) {
+        writeWheelClipboard(cfg);
+        setCopiedWheel(readWheelClipboard());
+      }
+      return;
+    }
 
     try {
       if (inFlow) {
@@ -958,6 +1017,15 @@ export default function RouletteScreen({
         }
         if (action === 'duplicate') {
           const change = buildDuplicateWheelChange({ experience: exp, steps, index });
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
+          return;
+        }
+        if (action === 'paste') {
+          if (!copiedWheel) return;
+          // Insert the clipboard wheel right after the tapped tile.
+          const change = buildInsertWheelChange({
+            currentBlock, experience: exp, steps, index: index + 1, wheelConfig: copiedWheel,
+          });
           commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           return;
         }
@@ -1000,6 +1068,16 @@ export default function RouletteScreen({
           await saveDraft(user.uid, clone);
           return;
         }
+        if (action === 'paste') {
+          if (!copiedWheel) return;
+          // Wrap the standalone wheel + the pasted clipboard wheel into a
+          // fresh flow, the pasted one landing second (after the current).
+          const change = buildInsertWheelChange({ currentBlock, index: 1, wheelConfig: copiedWheel });
+          commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
+          const stampedCurrent = change.writes.find(w => w.id === block.id);
+          if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
+          return;
+        }
         if (action === 'insertBefore' || action === 'insertAfter') {
           const targetIndex = action === 'insertBefore' ? 0 : 1;
           const change = buildInsertWheelChange({ currentBlock, index: targetIndex });
@@ -1015,7 +1093,7 @@ export default function RouletteScreen({
       dbg('RouletteScreen', 'ctx:build-fail', { action, err: e instanceof Error ? e.message : String(e) });
       alert(e instanceof Error ? e.message : 'Action failed.');
     }
-  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, onBlockDelete, flushAutoSave]);
+  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, onBlockDelete, flushAutoSave, copiedWheel]);
 
   // Dynamic wheel sizing — the wheel + sheet area is a flex column:
   //   child1 (flex:1): app bar + wheel + red container (red grows with sheet)
@@ -1634,10 +1712,21 @@ export default function RouletteScreen({
                 </TileWithLabel>
               )}
               <TileWithLabel label="">
-              <PreviewTile
-                skipPopIn={seenTileIds.has('__plus__')}
-                debugId="+"
-                onClick={() => {
+              {/* The add tile is the one tile that's a real PushDownButton —
+                  it presses down on tap. The wheel tiles above stay the
+                  static 3D PreviewTiles (they grab/scale for reorder instead
+                  of pressing). Sized to match a tile exactly: 88×88 face,
+                  92 total (4px bottom-face peek), 13 radius, 3px stroke,
+                  SURFACE_ELEVATED — same deriveCardSurfaces recipe a tile
+                  uses, so at rest it's pixel-identical. */}
+              <PushDownButton
+                color={SURFACE_ELEVATED}
+                borderRadius={13}
+                height={92}
+                bottomBorderWidth={4}
+                innerStrokeWidth={3}
+                style={{ width: 88, flexShrink: 0 }}
+                onTap={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
                   dbg('RouletteScreen', 'plus:click', {
                     currentBlock: sid(block.id),
@@ -1705,7 +1794,7 @@ export default function RouletteScreen({
                     maskPosition: 'center',
                   }}
                 />
-              </PreviewTile>
+              </PushDownButton>
               </TileWithLabel>
             </div>
 
@@ -1794,6 +1883,7 @@ export default function RouletteScreen({
                 onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
                 renderRows={sheetTab === 'segments' || sheetTab === 'style'}
                 sheetHeight={sheetHeight}
+                isMobile={isMobile}
               />
             </div>
             <div
@@ -1875,7 +1965,7 @@ export default function RouletteScreen({
               Wheel actions
             </h3>
             <CtxRow
-              icon={<LayoutList size={20} />}
+              icon={<Pencil size={20} />}
               label="Edit wheel"
               onTap={() => {
                 setCtxMenuIndex(null);
@@ -1883,12 +1973,24 @@ export default function RouletteScreen({
               }}
             />
             <CtxRow
-              icon={<Pencil size={20} />}
+              icon={<Type size={20} />}
               label="Rename wheel"
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); openRenameSheet(i); }}
             />
             <CtxRow
               icon={<Copy size={20} />}
+              label="Copy wheel"
+              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('copy', i); }}
+            />
+            {copiedWheel && (
+              <CtxRow
+                icon={<ClipboardPaste size={20} />}
+                label="Paste wheel"
+                onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('paste', i); }}
+              />
+            )}
+            <CtxRow
+              icon={<CopyPlus size={20} />}
               label="Duplicate wheel"
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('duplicate', i); }}
             />
@@ -1908,15 +2010,15 @@ export default function RouletteScreen({
           close and seal the undo entry. */}
       {renameIndex !== null && (
         <DraggableSheet maxWidth={9999} onClose={closeRenameSheet}>
-          <div style={{ padding: '0 24px 32px' }}>
-            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 14px' }}>
+          <div style={{ padding: '0 20px 28px' }}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, textAlign: 'center', margin: '0 0 16px' }}>
               Rename wheel
             </h3>
             <input
+              ref={renameInputRef}
               type="text"
               value={renameDraft}
               onChange={e => onRenameDraftChange(e.target.value)}
-              autoFocus
               onKeyDown={e => { if (e.key === 'Enter') closeRenameSheet(); }}
               placeholder="Wheel name"
               style={{
@@ -1924,7 +2026,10 @@ export default function RouletteScreen({
                 padding: '12px 14px',
                 borderRadius: 14,
                 border: `1.5px solid ${BORDER}`,
-                backgroundColor: '#F8F8F9',
+                // Dark-theme field (matches the WheelEditor inputs). Was a
+                // stray light #F8F8F9 bg, which made the light ON_SURFACE text
+                // nearly invisible and clashed with the rest of the sheet.
+                backgroundColor: SURFACE_ELEVATED,
                 fontSize: 16,
                 fontWeight: 600,
                 fontFamily: 'inherit',
@@ -2101,10 +2206,10 @@ function PinnedChipBar({
   // as CSS masks (via the SvgMaskIcon helper below) so a single asset
   // can be tinted any colour — supports the active/inactive chip colours.
   const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; iconSrc: string }[] = [
+    { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
     { key: 'segments', label: 'Segments', iconSrc: '/images/segments.svg' },
     { key: 'style', label: 'Style', iconSrc: '/images/style.svg' },
     { key: 'settings', label: 'Settings', iconSrc: '/images/settings.svg' },
-    { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
   ];
   // ── Bar spacing recipe ────────────────────────────────────────────────
   // Bar height: 56px. alignItems: 'flex-end' bottom-aligns every child so
@@ -2198,6 +2303,8 @@ function PinnedChipBar({
       >
         {items.map(({ key, label, iconSrc }) => {
           const isActive = activeTab === key;
+          // Templates renders icon-only (no label) — a compact square chip.
+          const iconOnly = key === 'templates';
           // Active chip = light surface (ON_SURFACE) → dark text (BG).
           // Inactive chip = dark surface (SURFACE_ELEVATED) → light text.
           const iconColor = isActive ? BG : withAlpha(ON_SURFACE, 0.85);
@@ -2226,8 +2333,10 @@ function PinnedChipBar({
                   // Padding lives on the ICON, not the button's content
                   // box — keeps the button's own bounds tight and gives
                   // the icon its own left breathing room. Icon flush
-                  // against the label (no right margin).
-                  marginLeft: 7,
+                  // against the label (no right margin). Icon-only chips
+                  // get symmetric horizontal margin so they read square.
+                  marginLeft: iconOnly ? 5 : 7,
+                  marginRight: iconOnly ? 5 : 0,
                   backgroundColor: iconColor,
                   WebkitMaskImage: `url(${iconSrc})`,
                   WebkitMaskRepeat: 'no-repeat',
@@ -2239,7 +2348,7 @@ function PinnedChipBar({
                   maskPosition: 'center',
                   flexShrink: 0,
                 }} />
-                <span style={{ marginRight: 12 }}>{label}</span>
+                {!iconOnly && <span style={{ marginRight: 12 }}>{label}</span>}
               </div>
             </PushDownButton>
           );
@@ -2336,26 +2445,34 @@ function CtxRow({ icon, label, onTap, danger }: {
   onTap: () => void;
   danger?: boolean;
 }) {
-  const color = danger ? '#EF4444' : ON_SURFACE;
+  // Content (icon + label) inherits this colour via currentColor; the
+  // surface stays SURFACE_ELEVATED so Delete reads as red text on the same
+  // neutral button rather than a red fill (matches the prior row look).
+  const contentColor = danger ? '#EF4444' : ON_SURFACE;
   return (
-    <div
-      onClick={onTap}
-      style={{
+    <PushDownButton
+      onTap={onTap}
+      color={SURFACE_ELEVATED}
+      borderRadius={16}
+      height={54}
+      bottomBorderWidth={4}
+      innerStrokeWidth={3}
+      style={{ marginBottom: 5 }}
+    >
+      {/* Full-width child so the centred top face still lays the icon +
+          label out left-aligned, like the menu rows these replaced. */}
+      <div style={{
+        width: '100%',
         display: 'flex',
         alignItems: 'center',
         gap: 14,
-        padding: '14px 16px',
-        borderRadius: 14,
-        backgroundColor: SURFACE_ELEVATED,
-        border: `1.5px solid ${BORDER}`,
-        marginBottom: 8,
-        cursor: 'pointer',
-        color,
-      }}
-    >
-      {icon}
-      <span style={{ fontWeight: 700, fontSize: 15 }}>{label}</span>
-    </div>
+        paddingLeft: 16,
+        color: contentColor,
+      }}>
+        {icon}
+        <span style={{ fontWeight: 700, fontSize: 15 }}>{label}</span>
+      </div>
+    </PushDownButton>
   );
 }
 

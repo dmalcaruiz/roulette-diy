@@ -135,9 +135,10 @@ export function paintWheel(
     }
 
     // Text — always drawn, regardless of how thin the slice is. The
-    // segment-rect clip below trims anything that would overflow the
-    // wedge, so a too-thin slice shows just the rightmost part of the
-    // label rather than vanishing entirely.
+    // wedge clip below crops anything that would overflow the slice (both
+    // radially AND across the slice's angular thickness), so a label that's
+    // taller/longer than a thin wedge is trimmed at the segment boundary
+    // instead of spilling into the neighbouring segments.
     {
       // Fade text in / out for segments mid-add or mid-remove (one side
       // of the transition has near-zero weight). The interpolated wedge
@@ -157,13 +158,16 @@ export function paintWheel(
 
       ctx.save();
       ctx.globalAlpha = contentOpacity;
+
+      // Clip to the segment's exact wedge. Done here — still in the wheel's
+      // rotated frame, the same one the fill above used — so the path lines
+      // up with the slice and rounded corners / inner style are respected.
+      // The clip locks to device space, so the per-segment rotate below only
+      // positions the text; it can't drag the clip region off the wedge.
+      ctx.clip(path);
+
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
-
-      // Clip to segment area
-      ctx.beginPath();
-      ctx.rect(centerInset, -radius, radius - centerInset, radius * 2);
-      ctx.clip();
 
       // Draw text
       ctx.fillStyle = '#FFFFFF';
@@ -209,16 +213,15 @@ export function paintWheel(
     ctx.fillStyle = winItem.color;
     ctx.fill(layout.paths[winningIndex]);
 
-    // Winning segment text — always drawn (segment-rect clip below trims
-    // anything that would overflow a too-thin wedge).
+    // Winning segment text — always drawn (the wedge clip below crops
+    // anything that would overflow a too-thin slice into its neighbours).
     {
       ctx.save();
+      // Clip to the winning slice's exact wedge (same rotated frame the fill
+      // above used), then rotate to lay the text along the slice centreline.
+      ctx.clip(layout.paths[winningIndex]);
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);
-
-      ctx.beginPath();
-      ctx.rect(centerInset, -radius, radius - centerInset, radius * 2);
-      ctx.clip();
 
       ctx.fillStyle = '#FFFFFF';
       ctx.font = `600 ${fontSize}px Inter, sans-serif`;
