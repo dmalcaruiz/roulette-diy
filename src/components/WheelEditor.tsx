@@ -31,7 +31,6 @@ export interface EditorState {
   strokeWidth: number;
   showBackgroundCircle: boolean;
   wheelBaseColor: string;
-  wheelPeek: number;
   markerDiameter: number;
   markerPeek: number;
   markerBaseColor: string;
@@ -193,7 +192,6 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     strokeWidth: config?.strokeWidth ?? 7.7,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
-    wheelPeek: config?.wheelPeek ?? 1.5,
     markerDiameter: config?.markerDiameter ?? 62,
     markerPeek: config?.markerPeek ?? 5,
     markerBaseColor: config?.markerBaseColor ?? '#FFFFFF',
@@ -233,7 +231,6 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     strokeWidth: state.strokeWidth,
     showBackgroundCircle: state.showBackgroundCircle,
     wheelBaseColor: state.wheelBaseColor,
-    wheelPeek: state.wheelPeek,
     markerDiameter: state.markerDiameter,
     markerPeek: state.markerPeek,
     markerBaseColor: state.markerBaseColor,
@@ -1923,11 +1920,8 @@ export default function WheelEditor({
         </span>
       </div>
 
-      {/* Wheel 3D base — peek + base colour (darkened for the bottom disc). */}
+      {/* Wheel Base Color — recolours the dividers/ring + background circle. */}
       <div style={{ height: 8 }} />
-      <SettingSlider label="Wheel Peek" value={state.wheelPeek} min={0} max={3} step={0.1}
-        snapPoint={2.5}
-        onChange={v => patch({ wheelPeek: v })} onChangeEnd={commit} />
       <div
         style={{ marginTop: 8 }}
         onPointerDown={e => e.stopPropagation()}

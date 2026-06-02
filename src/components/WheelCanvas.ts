@@ -242,64 +242,6 @@ export function paintWheel(
   }
 }
 
-// Paint a flat silhouette of the wheel in a single `color` — a disc when the
-// background circle is on, otherwise the union of the (rotated) segment
-// shapes. Used for the 3D base: a darkened copy drawn behind + below the real
-// wheel, so it mimics the wheel's actual outline (including the notched edge
-// of background-circle-off wheels) instead of always being a plain circle.
-export function paintWheelSilhouette(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  config: WheelPainterConfig,
-  color: string,
-): void {
-  const { items, rotation, cornerRadius, strokeWidth, showBackgroundCircle,
-          innerCornerStyle, centerInset, fromItems, transition } = config;
-  const center = { x: width / 2, y: height / 2 };
-  const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
-  const radius = Math.min(width, height) / 2 - strokeInset;
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  ctx.lineJoin = 'round';
-
-  // Background circle on → the wheel is a solid disc.
-  if (showBackgroundCircle) {
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
-    ctx.fill();
-    if (strokeWidth > 0) { ctx.lineWidth = strokeWidth; ctx.stroke(); }
-    return;
-  }
-
-  // Otherwise the shape is the (rotated) segments themselves.
-  const effectiveWeights = items.map((it, i) =>
-    (fromItems && i < fromItems.length && transition < 1)
-      ? fromItems[i].weight + (it.weight - fromItems[i].weight) * transition
-      : it.weight);
-  const totalWeight = effectiveWeights.reduce((s, w) => s + w, 0);
-  const arcSize = (2 * Math.PI) / totalWeight;
-
-  ctx.save();
-  ctx.translate(center.x, center.y);
-  ctx.rotate(rotation);
-  ctx.translate(-center.x, -center.y);
-  let startAngle = 0;
-  for (let i = 0; i < items.length; i++) {
-    const segmentSize = arcSize * effectiveWeights[i];
-    if (segmentSize >= 0.005) {
-      const path = buildSegmentPath(center, radius, startAngle, startAngle + segmentSize,
-        cornerRadius, innerCornerStyle, centerInset);
-      ctx.fill(path);
-      if (strokeWidth > 0) { ctx.lineWidth = strokeWidth; ctx.stroke(path); }
-    }
-    startAngle += segmentSize;
-  }
-  ctx.restore();
-}
-
 function buildSegmentPath(
   center: { x: number; y: number },
   radius: number,

@@ -84,9 +84,8 @@ function playClickInline(): void {
   src.start(0);
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, paintWheelSilhouette, WheelPainterConfig } from './WheelCanvas';
+import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 import CustomMarker from './CustomMarker';
-import { oklchShadow } from '../utils/colorUtils';
 
 
 export interface SpinningWheelProps {
@@ -101,11 +100,9 @@ export interface SpinningWheelProps {
   centerInset?: number;
   strokeWidth?: number;
   showBackgroundCircle?: boolean;
-  // 3D wheel base — a darkened circle peeking below the wheel. wheelBaseColor
-  // is darkened for it (default = white stroke colour); wheelPeek = % of the
-  // wheel diameter it peeks below.
+  // Colour of the wheel's "white" parts — dividers + outer ring stroke and
+  // the background circle. Default white.
   wheelBaseColor?: string;
-  wheelPeek?: number;
   // Marker tuning: circle diameter (% of the marker box, both layers), peek
   // (% of that diameter the top layer lifts), and the TOP layer's base fill
   // colour (the bottom layer + strokes derive from it).
@@ -156,7 +153,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     strokeWidth = 3,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
-    wheelPeek = 1.5,
     markerDiameter = 62,
     markerPeek = 5,
     markerBaseColor = '#FFFFFF',
@@ -173,7 +169,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const rotationRef = useRef(0);
   const isSpinningRef = useRef(false);
@@ -356,28 +351,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config);
-
-    // 3D base — paint a darkened silhouette of the wheel onto the base canvas
-    // (positioned `wheelPeek`% lower behind the wheel) so it reads as a lifted
-    // disc that matches the wheel's actual shape. Repaints with the wheel so
-    // the silhouette stays in sync with the rotation.
-    const baseCanvas = baseCanvasRef.current;
-    const baseCtx = baseCanvas?.getContext('2d');
-    if (baseCanvas && baseCtx) {
-      if (baseCanvas.width !== displaySize * dpr || baseCanvas.height !== displaySize * dpr) {
-        baseCanvas.width = displaySize * dpr;
-        baseCanvas.height = displaySize * dpr;
-      }
-      baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (wheelPeek > 0) {
-        paintWheelSilhouette(baseCtx, displaySize, displaySize, config, oklchShadow(wheelBaseColor, 0.12));
-      } else {
-        baseCtx.clearRect(0, 0, displaySize, displaySize);
-      }
-    }
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
-      wheelBaseColor, wheelPeek]);
+      wheelBaseColor]);
 
   // Public `paint` is *stable* (never changes identity) but always invokes
   // the latest paintImpl via a ref. The spin/decay rAF callbacks capture
@@ -1168,24 +1144,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
       >
-        {/* 3D base — a darkened silhouette of the wheel (disc, or the segment
-            shape when there's no bg circle), peeking below so it reads as a
-            lifted 3D disc. Behind the wheel canvas; repainted in sync. */}
-        <canvas
-          ref={baseCanvasRef}
-          style={{
-            position: 'absolute',
-            top: size * (wheelPeek / 100),
-            left: 0,
-            width: size,
-            height: size,
-            display: 'block',
-            pointerEvents: 'none',
-          }}
-        />
         <canvas
           ref={canvasRef}
-          style={{ width: size, height: size, display: 'block', position: 'relative' }}
+          style={{ width: size, height: size, display: 'block' }}
         />
         {/* Center marker */}
         <div style={{

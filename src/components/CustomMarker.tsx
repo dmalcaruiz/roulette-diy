@@ -1,4 +1,4 @@
-import { oklchShadow } from '../utils/colorUtils';
+import { oklchShade, oklchShadow } from '../utils/colorUtils';
 
 interface CustomMarkerProps {
   // The marker box diameter in px. The circle diameter is markerDiameter% of
@@ -25,13 +25,16 @@ export default function CustomMarker({
   const peekPx = baseD * (markerPeek / 100);
   // Top fill is the base colour; bottom + strokes all derive (darken) from it.
   const topFill = markerBaseColor;
-  const topStroke = oklchShadow(topFill, 0.012);     // barely darker than top
-  const bottomFill = oklchShadow(topFill, 0.07);      // derivative — darker
-  const bottomStroke = oklchShadow(bottomFill, 0.03); // a bit darker than bottom
-  const ringStroke = oklchShadow(topFill, 0.013);     // slightly darker than base
-  const accentFill = oklchShadow(topFill, 0.04);      // centre accent — a hint lighter than bottom
-  const coreFill = oklchShadow(topFill, 0.008);       // centre base circle — a hint darker than base
-  const coreStroke = oklchShadow(topFill, 0.06);      // centre circle stroke
+  const topStroke = oklchShade(topFill, 0.012);     // barely darker than top
+  const bottomFill = oklchShade(topFill, 0.07);      // derivative — darker
+  const bottomStroke = oklchShade(bottomFill, 0.03); // a bit darker than bottom
+  const ringStroke = oklchShade(topFill, 0.06);      // ring — clearly darker than base
+  const accentFill = oklchShade(topFill, 0.04);      // centre accent — a hint lighter than bottom
+  const coreFill = oklchShade(topFill, 0.008);       // centre base circle — a hint darker than base
+  const coreStroke = oklchShade(topFill, 0.06);      // centre circle stroke
+  // Pin shadow tint — a darker version of the base (hue kept), shown through
+  // the shadow SVG's alpha gradient.
+  const shadowColor = oklchShadow(topFill, 0.3);
   const pinD = baseD * 2.2;
   return (
     <div style={{ position: 'relative', width: size, height: size, pointerEvents: 'none' }}>
@@ -49,10 +52,10 @@ export default function CustomMarker({
       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: baseD * 0.5, height: baseD * 0.5, borderRadius: '50%', backgroundColor: accentFill }} />
       {/* Inner circle — base colour, slightly smaller than the accent, 3px stroke */}
       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: baseD * 0.41, height: baseD * 0.41, borderRadius: '50%', backgroundColor: coreFill, border: `3px solid ${coreStroke}`, boxSizing: 'border-box' }} />
-      {/* Pin base (tinted to base colour), then a doubled shadow on top */}
+      {/* Pin base (tinted to base colour), then the shadow tinted via mask
+          (its alpha gradient kept, recoloured to a darker base shade). */}
       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, backgroundColor: topFill, WebkitMaskImage: 'url(/images/pinbase.svg)', WebkitMaskRepeat: 'no-repeat', WebkitMaskSize: 'contain', WebkitMaskPosition: 'center', maskImage: 'url(/images/pinbase.svg)', maskRepeat: 'no-repeat', maskSize: 'contain', maskPosition: 'center' }} />
-      <img src="/images/pinshadow.svg" alt="" style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, objectFit: 'contain' }} />
-      <img src="/images/pinshadow.svg" alt="" style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, objectFit: 'contain', opacity: 0.5 }} />
+      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, backgroundColor: shadowColor, opacity: 0.85, WebkitMaskImage: 'url(/images/pinshadow.svg)', WebkitMaskRepeat: 'no-repeat', WebkitMaskSize: 'contain', WebkitMaskPosition: 'center', maskImage: 'url(/images/pinshadow.svg)', maskRepeat: 'no-repeat', maskSize: 'contain', maskPosition: 'center' }} />
     </div>
   );
 }

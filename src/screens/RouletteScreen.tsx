@@ -1465,7 +1465,6 @@ export default function RouletteScreen({
               strokeWidth={activeConfig.strokeWidth * staticScale}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
               wheelBaseColor={activeConfig.wheelBaseColor}
-              wheelPeek={activeConfig.wheelPeek}
               markerDiameter={activeConfig.markerDiameter}
               markerPeek={activeConfig.markerPeek}
               markerBaseColor={activeConfig.markerBaseColor}

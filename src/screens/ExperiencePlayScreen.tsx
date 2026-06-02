@@ -228,7 +228,6 @@ export default function ExperiencePlayScreen() {
             strokeWidth={cfg.strokeWidth}
             showBackgroundCircle={cfg.showBackgroundCircle}
             wheelBaseColor={cfg.wheelBaseColor}
-            wheelPeek={cfg.wheelPeek}
             markerDiameter={cfg.markerDiameter}
             markerPeek={cfg.markerPeek}
             markerBaseColor={cfg.markerBaseColor}

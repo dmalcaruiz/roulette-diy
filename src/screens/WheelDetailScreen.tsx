@@ -150,7 +150,6 @@ export default function WheelDetailScreen() {
           strokeWidth={wheel.wheelConfig?.strokeWidth ?? 3}
           showBackgroundCircle={wheel.wheelConfig?.showBackgroundCircle ?? true}
           wheelBaseColor={wheel.wheelConfig?.wheelBaseColor}
-          wheelPeek={wheel.wheelConfig?.wheelPeek}
           markerDiameter={wheel.wheelConfig?.markerDiameter}
           markerPeek={wheel.wheelConfig?.markerPeek}
           markerBaseColor={wheel.wheelConfig?.markerBaseColor}

@@ -21,11 +21,9 @@ export interface WheelConfig {
   imageCornerRadius: number;
   strokeWidth: number;
   showBackgroundCircle: boolean;
-  // 3D wheel base — a darkened circle peeking below the wheel. wheelBaseColor
-  // is the base it darkens from (defaults to the white stroke colour);
-  // wheelPeek = how far it peeks below, as a % of the wheel diameter.
+  // Colour of the wheel's "white" parts — segment dividers + outer ring
+  // stroke and the background circle. Defaults to white.
   wheelBaseColor?: string;
-  wheelPeek?: number;
   // Marker tuning. markerDiameter = circle size as a % of the marker box
   // (both layers); markerPeek = how far the top layer lifts above centre, as
   // a % of that diameter; markerBaseColor = the TOP layer's fill (the bottom

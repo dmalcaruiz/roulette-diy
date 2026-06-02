@@ -73,6 +73,62 @@ export function oklchShadow(hexColor: string, delta = 0.05, lightBoost = 2, topB
   return rgbaToHex(rFinal, gFinal, bFinal, a);
 }
 
+// Like oklchShadow (darken via OKLCh lightness), but ALSO pulls chroma down by
+// `delta · SHADE_CHROMA_RATIO`. Lightness-only steps wash out on highly
+// saturated bases (the vivid hue dominates), so dropping chroma too keeps
+// derived shades visually distinct. White/greys are unaffected by the chroma
+// part (their chroma is ~0). Chroma clamps at 0.
+const SHADE_CHROMA_RATIO = 0.8;
+// Extra lightness darkening scaled by chroma. oklchShadow's lightBoost only
+// boosts *light* colours, so a mid-lightness saturated base darkens too little
+// (its vivid hue also hides small lightness steps). This adds darkening
+// proportional to chroma, so saturated bases get a stronger drop. White/greys
+// (chroma ~0) are unaffected.
+const SHADE_CHROMA_BOOST = 4;
+export function oklchShade(hexColor: string, delta = 0.05, lightBoost = 2): string {
+  const { r, g, b, a } = hexToRgba(hexColor);
+
+  const lr = gammaExpansion(r / 255);
+  const lg = gammaExpansion(g / 255);
+  const lb = gammaExpansion(b / 255);
+
+  const lCone = cubeRoot(0.412221469470763 * lr + 0.5363325372617348 * lg + 0.0514459932675022 * lb);
+  const mCone = cubeRoot(0.2119034958178252 * lr + 0.6806995506452344 * lg + 0.1073969535369406 * lb);
+  const sCone = cubeRoot(0.0883024591900564 * lr + 0.2817188391361215 * lg + 0.6299787016738222 * lb);
+
+  const okL = 0.210454268309314 * lCone + 0.7936177747023054 * mCone - 0.0040720430116193 * sCone;
+  const okA = 1.9779985324311684 * lCone - 2.4285922420485799 * mCone + 0.450593709617411 * sCone;
+  const okB = 0.0259040424655478 * lCone + 0.7827717124575296 * mCone - 0.8086757549230774 * sCone;
+
+  const c = Math.sqrt(okA * okA + okB * okB);
+  const h = Math.atan2(okB, okA);
+
+  const drop = delta * (1 + lightBoost * okL + SHADE_CHROMA_BOOST * c);
+  const newL = Math.max(0, Math.min(1, okL - drop));
+  const newC = Math.max(0, c - delta * SHADE_CHROMA_RATIO);
+  const newA = newC * Math.cos(h);
+  const newB = newC * Math.sin(h);
+
+  const l2 = newL + 0.3963377773761749 * newA + 0.2158037573099136 * newB;
+  const m2 = newL - 0.1055613458156586 * newA - 0.0638541728258133 * newB;
+  const s2 = newL - 0.0894841775298119 * newA - 1.2914855480194092 * newB;
+
+  const l3 = l2 * l2 * l2;
+  const m3 = m2 * m2 * m2;
+  const s3 = s2 * s2 * s2;
+
+  const rOut = 4.0767416360759574 * l3 - 3.3077115392580616 * m3 + 0.2309699031821044 * s3;
+  const gOut = -1.2684379732850317 * l3 + 2.6097573492876887 * m3 - 0.3413193760026573 * s3;
+  const bOut = -0.0041960761386756 * l3 - 0.7034186179359362 * m3 + 1.7076146940746117 * s3;
+
+  return rgbaToHex(
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(rOut))) * 255),
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(gOut))) * 255),
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(bOut))) * 255),
+    a,
+  );
+}
+
 // Simple additive rise in OKLCh L, mirror of oklchShadow:
 //   `newL = okL + delta · (1 + darkBoost · (1 − okL))`
 // C + h preserved. Dark bases get a heavier rise (visible rim on dark
