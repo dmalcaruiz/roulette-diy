@@ -227,7 +227,11 @@ export default function ExperiencePlayScreen() {
             centerInset={cfg.centerInset}
             strokeWidth={cfg.strokeWidth}
             showBackgroundCircle={cfg.showBackgroundCircle}
-            centerMarkerSize={cfg.centerMarkerSize}
+            wheelBaseColor={cfg.wheelBaseColor}
+            wheelPeek={cfg.wheelPeek}
+            markerDiameter={cfg.markerDiameter}
+            markerPeek={cfg.markerPeek}
+            markerBaseColor={cfg.markerBaseColor}
             onFinished={(idx) => advance(items[idx]?.text ?? '')}
           />
         </div>

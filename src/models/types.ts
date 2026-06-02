@@ -21,7 +21,18 @@ export interface WheelConfig {
   imageCornerRadius: number;
   strokeWidth: number;
   showBackgroundCircle: boolean;
-  centerMarkerSize: number;
+  // 3D wheel base — a darkened circle peeking below the wheel. wheelBaseColor
+  // is the base it darkens from (defaults to the white stroke colour);
+  // wheelPeek = how far it peeks below, as a % of the wheel diameter.
+  wheelBaseColor?: string;
+  wheelPeek?: number;
+  // Marker tuning. markerDiameter = circle size as a % of the marker box
+  // (both layers); markerPeek = how far the top layer lifts above centre, as
+  // a % of that diameter; markerBaseColor = the TOP layer's fill (the bottom
+  // layer + strokes derive/darken from it). Optional for older saved wheels.
+  markerDiameter?: number;
+  markerPeek?: number;
+  markerBaseColor?: string;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   // 'list'  = textarea, one segment per line (former 'simple').
@@ -42,7 +53,6 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     imageCornerRadius: 30,
     strokeWidth: 7.7,
     showBackgroundCircle: true,
-    centerMarkerSize: 250,
     innerCornerStyle: 'none',
     centerInset: 50,
     segmentsMode: 'cards',

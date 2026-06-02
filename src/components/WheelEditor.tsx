@@ -30,7 +30,11 @@ export interface EditorState {
   cornerRadius: number;
   strokeWidth: number;
   showBackgroundCircle: boolean;
-  centerMarkerSize: number;
+  wheelBaseColor: string;
+  wheelPeek: number;
+  markerDiameter: number;
+  markerPeek: number;
+  markerBaseColor: string;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   segmentsMode: 'list' | 'cards';
@@ -102,18 +106,27 @@ let segmentIdCounter = 0;
 // RouletteScreen). JSON round-trip also deep-clones. A payload only counts as
 // pasteable if it's structurally a segment, so stale/garbage data stays hidden.
 const SEGMENT_CLIPBOARD_KEY = 'roulette:segmentClipboard';
+// Paste is only offered for this long after the Copy press (see the freshness
+// check at the Paste row). Past it, Paste hides even with valid data.
+const SEGMENT_PASTE_TTL_MS = 3 * 60 * 1000;
+interface SegmentClipboard {
+  segment: SegmentData;
+  copiedAt: number; // epoch ms of the Copy press, for the TTL above
+}
 function isValidSegmentData(v: unknown): v is SegmentData {
   return !!v && typeof v === 'object'
     && typeof (v as SegmentData).text === 'string'
     && typeof (v as SegmentData).color === 'string'
     && typeof (v as SegmentData).weight === 'number';
 }
-function readSegmentClipboard(): SegmentData | null {
+function readSegmentClipboard(): SegmentClipboard | null {
   try {
     const raw = localStorage.getItem(SEGMENT_CLIPBOARD_KEY);
     if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (isValidSegmentData(parsed)) return parsed;
+    const parsed = JSON.parse(raw) as { segment?: unknown; copiedAt?: unknown };
+    if (parsed && isValidSegmentData(parsed.segment) && typeof parsed.copiedAt === 'number') {
+      return { segment: parsed.segment, copiedAt: parsed.copiedAt };
+    }
     localStorage.removeItem(SEGMENT_CLIPBOARD_KEY);
     return null;
   } catch {
@@ -122,7 +135,7 @@ function readSegmentClipboard(): SegmentData | null {
 }
 function writeSegmentClipboard(seg: SegmentData): void {
   try {
-    localStorage.setItem(SEGMENT_CLIPBOARD_KEY, JSON.stringify(seg));
+    localStorage.setItem(SEGMENT_CLIPBOARD_KEY, JSON.stringify({ segment: seg, copiedAt: Date.now() }));
   } catch {
     /* storage unavailable / quota — copy silently no-ops */
   }
@@ -179,7 +192,11 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     cornerRadius: config?.cornerRadius ?? 30,
     strokeWidth: config?.strokeWidth ?? 7.7,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
-    centerMarkerSize: config?.centerMarkerSize ?? 250,
+    wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
+    wheelPeek: config?.wheelPeek ?? 1.5,
+    markerDiameter: config?.markerDiameter ?? 62,
+    markerPeek: config?.markerPeek ?? 5,
+    markerBaseColor: config?.markerBaseColor ?? '#FFFFFF',
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
     // Migrate the legacy 'simple'/'complex' values from older saved wheels
@@ -215,7 +232,11 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     imageCornerRadius: state.cornerRadius,
     strokeWidth: state.strokeWidth,
     showBackgroundCircle: state.showBackgroundCircle,
-    centerMarkerSize: state.centerMarkerSize,
+    wheelBaseColor: state.wheelBaseColor,
+    wheelPeek: state.wheelPeek,
+    markerDiameter: state.markerDiameter,
+    markerPeek: state.markerPeek,
+    markerBaseColor: state.markerBaseColor,
     innerCornerStyle: state.innerCornerStyle,
     centerInset: state.centerInset,
     segmentsMode: state.segmentsMode,
@@ -239,7 +260,11 @@ export default function WheelEditor({
   const [segmentActionsIndex, setSegmentActionsIndex] = useState<number | null>(null);
   // Segment clipboard for the sheet's Copy / Paste. Seeded from localStorage
   // so a segment copied in another wheel (or before a reload) can be pasted.
-  const [copiedSegment, setCopiedSegment] = useState<SegmentData | null>(() => readSegmentClipboard());
+  const [segmentClip, setSegmentClip] = useState<SegmentClipboard | null>(() => readSegmentClipboard());
+  // Paste is offered only when there's valid clipboard data AND the Copy
+  // happened within the TTL. Evaluated at render — the sheet opens via a
+  // state change, so it's fresh each time the sheet appears.
+  const canPasteSegment = !!segmentClip && Date.now() - segmentClip.copiedAt < SEGMENT_PASTE_TTL_MS;
   // On collapse, blur whatever input was focused inside the card and
   // clear any text selection so the closing card doesn't leave a
   // highlighted-but-unfocused-and-unreadable trail in the DOM.
@@ -708,16 +733,16 @@ export default function WheelEditor({
     const seg = stateRef.current.segments[index];
     if (!seg) return;
     writeSegmentClipboard(seg);
-    setCopiedSegment(readSegmentClipboard());
+    setSegmentClip(readSegmentClipboard());
   };
 
   // Insert the clipboard segment right after `index` (same shape as duplicate,
   // but the data comes from the clipboard rather than the source row).
   const pasteSegment = (index: number) => {
-    if (!copiedSegment) return;
+    if (!segmentClip) return;
     const id = `${segmentIdCounter++}`;
     const newSegs = [...stateRef.current.segments];
-    newSegs.splice(index + 1, 0, { ...copiedSegment, id });
+    newSegs.splice(index + 1, 0, { ...segmentClip.segment, id });
     setExpandedIndex(null);
     commitWithAnim(newSegs);
   };
@@ -1866,9 +1891,9 @@ export default function WheelEditor({
       <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
         snapPoint={7.7}
         onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
-      <SettingSlider label="Center Marker" value={state.centerMarkerSize} min={100} max={200} step={1}
-        snapPoint={200}
-        onChange={v => patch({ centerMarkerSize: v })} onChangeEnd={commit} />
+      {/* Marker size is controlled by "Marker Diameter" below (a % of a fixed
+          fraction of the wheel). The old per-wheel "Center Marker" size was
+          removed — it made same-diameter markers render at different sizes. */}
 
       {/* Background circle toggle */}
       <div
@@ -1897,6 +1922,56 @@ export default function WheelEditor({
           Background Circle
         </span>
       </div>
+
+      {/* Wheel 3D base — peek + base colour (darkened for the bottom disc). */}
+      <div style={{ height: 8 }} />
+      <SettingSlider label="Wheel Peek" value={state.wheelPeek} min={0} max={3} step={0.1}
+        snapPoint={2.5}
+        onChange={v => patch({ wheelPeek: v })} onChangeEnd={commit} />
+      <div
+        style={{ marginTop: 8 }}
+        onPointerDown={e => e.stopPropagation()}
+        onMouseDown={e => e.stopPropagation()}
+        onTouchStart={e => e.stopPropagation()}
+        onPointerUp={commit}
+      >
+        <span style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>
+          Wheel Base Color
+        </span>
+        <HexColorPicker
+          color={state.wheelBaseColor}
+          onChange={c => patch({ wheelBaseColor: c })}
+          style={{ width: '100%' }}
+        />
+      </div>
+
+      {/* Marker tuning */}
+          <div style={{ height: 8 }} />
+          <SettingSlider label="Marker Diameter" value={state.markerDiameter} min={10} max={90} step={1}
+            snapPoint={50}
+            onChange={v => patch({ markerDiameter: v })} onChangeEnd={commit} />
+          <SettingSlider label="Marker Peek" value={state.markerPeek} min={0} max={15} step={1}
+            snapPoint={15}
+            onChange={v => patch({ markerPeek: v })} onChangeEnd={commit} />
+          {/* Marker base color */}
+          <div
+            style={{ marginTop: 8 }}
+            // Keep the picker's own drags from bubbling to the sheet's
+            // scroll-to-drag handler; commit one undo entry on release.
+            onPointerDown={e => e.stopPropagation()}
+            onMouseDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}
+            onPointerUp={commit}
+          >
+            <span style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>
+              Marker Base Color
+            </span>
+            <HexColorPicker
+              color={state.markerBaseColor}
+              onChange={c => patch({ markerBaseColor: c })}
+              style={{ width: '100%' }}
+            />
+          </div>
 
       <div style={{ height: 32 }} />
     </div>
@@ -2077,7 +2152,7 @@ export default function WheelEditor({
               label="Copy segment"
               onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); copySegment(i); }}
             />
-            {copiedSegment && (
+            {canPasteSegment && (
               <SegActionRow
                 icon={<ClipboardPaste size={20} />}
                 label="Paste segment"

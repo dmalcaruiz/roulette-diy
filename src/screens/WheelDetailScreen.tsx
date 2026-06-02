@@ -149,7 +149,11 @@ export default function WheelDetailScreen() {
           centerInset={wheel.wheelConfig?.centerInset ?? 50}
           strokeWidth={wheel.wheelConfig?.strokeWidth ?? 3}
           showBackgroundCircle={wheel.wheelConfig?.showBackgroundCircle ?? true}
-          centerMarkerSize={wheel.wheelConfig?.centerMarkerSize ?? 200}
+          wheelBaseColor={wheel.wheelConfig?.wheelBaseColor}
+          wheelPeek={wheel.wheelConfig?.wheelPeek}
+          markerDiameter={wheel.wheelConfig?.markerDiameter}
+          markerPeek={wheel.wheelConfig?.markerPeek}
+          markerBaseColor={wheel.wheelConfig?.markerBaseColor}
           spinIntensity={0.5}
           isRandomIntensity
           headerTextColor="#FFFFFF"

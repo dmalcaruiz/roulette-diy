@@ -84,7 +84,10 @@ function playClickInline(): void {
   src.start(0);
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig } from './WheelCanvas';
+import { paintWheel, paintWheelSilhouette, WheelPainterConfig } from './WheelCanvas';
+import CustomMarker from './CustomMarker';
+import { oklchShadow } from '../utils/colorUtils';
+
 
 export interface SpinningWheelProps {
   items: WheelItem[];
@@ -98,7 +101,17 @@ export interface SpinningWheelProps {
   centerInset?: number;
   strokeWidth?: number;
   showBackgroundCircle?: boolean;
-  centerMarkerSize?: number;
+  // 3D wheel base — a darkened circle peeking below the wheel. wheelBaseColor
+  // is darkened for it (default = white stroke colour); wheelPeek = % of the
+  // wheel diameter it peeks below.
+  wheelBaseColor?: string;
+  wheelPeek?: number;
+  // Marker tuning: circle diameter (% of the marker box, both layers), peek
+  // (% of that diameter the top layer lifts), and the TOP layer's base fill
+  // colour (the bottom layer + strokes derive from it).
+  markerDiameter?: number;
+  markerPeek?: number;
+  markerBaseColor?: string;
   spinIntensity?: number;
   isRandomIntensity?: boolean;
   headerTextColor?: string;
@@ -142,7 +155,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     centerInset = 50,
     strokeWidth = 3,
     showBackgroundCircle = true,
-    centerMarkerSize = 200,
+    wheelBaseColor = '#FFFFFF',
+    wheelPeek = 1.5,
+    markerDiameter = 62,
+    markerPeek = 5,
+    markerBaseColor = '#FFFFFF',
     spinIntensity = 0.5,
     isRandomIntensity = true,
     headerTextColor = '#FFFFFF',
@@ -156,6 +173,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const rotationRef = useRef(0);
   const isSpinningRef = useRef(false);
@@ -323,6 +341,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       cornerRadius,
       strokeWidth,
       showBackgroundCircle,
+      wheelBaseColor,
       imageSize,
       overlayColor,
       textVerticalOffset: displaySize / 700 * 2,
@@ -337,8 +356,28 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config);
+
+    // 3D base — paint a darkened silhouette of the wheel onto the base canvas
+    // (positioned `wheelPeek`% lower behind the wheel) so it reads as a lifted
+    // disc that matches the wheel's actual shape. Repaints with the wheel so
+    // the silhouette stays in sync with the rotation.
+    const baseCanvas = baseCanvasRef.current;
+    const baseCtx = baseCanvas?.getContext('2d');
+    if (baseCanvas && baseCtx) {
+      if (baseCanvas.width !== displaySize * dpr || baseCanvas.height !== displaySize * dpr) {
+        baseCanvas.width = displaySize * dpr;
+        baseCanvas.height = displaySize * dpr;
+      }
+      baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (wheelPeek > 0) {
+        paintWheelSilhouette(baseCtx, displaySize, displaySize, config, oklchShadow(wheelBaseColor, 0.12));
+      } else {
+        baseCtx.clearRect(0, 0, displaySize, displaySize);
+      }
+    }
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth,
-      showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset]);
+      showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
+      wheelBaseColor, wheelPeek]);
 
   // Public `paint` is *stable* (never changes identity) but always invokes
   // the latest paintImpl via a ref. The spin/decay rAF callbacks capture
@@ -1129,43 +1168,38 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
       >
+        {/* 3D base — a darkened silhouette of the wheel (disc, or the segment
+            shape when there's no bg circle), peeking below so it reads as a
+            lifted 3D disc. Behind the wheel canvas; repainted in sync. */}
+        <canvas
+          ref={baseCanvasRef}
+          style={{
+            position: 'absolute',
+            top: size * (wheelPeek / 100),
+            left: 0,
+            width: size,
+            height: size,
+            display: 'block',
+            pointerEvents: 'none',
+          }}
+        />
         <canvas
           ref={canvasRef}
-          style={{ width: size, height: size, display: 'block' }}
+          style={{ width: size, height: size, display: 'block', position: 'relative' }}
         />
-        {/* Center SVG Marker */}
+        {/* Center marker */}
         <div style={{
           position: 'absolute',
           top: '50%',
           left: '50%',
           transform: 'translate(-50%, -50%)',
-          width: centerMarkerSize,
-          height: centerMarkerSize,
           pointerEvents: 'none',
         }}>
-          {/* Shadow */}
-          <img
-            src="/images/Marker.svg"
-            alt=""
-            style={{
-              position: 'absolute',
-              width: '100%',
-              height: '100%',
-              filter: 'blur(4px) brightness(0)',
-              opacity: 0.4,
-              top: '2%',
-              left: '1%',
-            }}
-          />
-          {/* Marker */}
-          <img
-            src="/images/Marker.svg"
-            alt="marker"
-            style={{
-              position: 'relative',
-              width: '100%',
-              height: '100%',
-            }}
+          <CustomMarker
+            size={size * (250 / 700)}
+            markerDiameter={markerDiameter}
+            markerPeek={markerPeek}
+            markerBaseColor={markerBaseColor}
           />
         </div>
       </div>

@@ -56,20 +56,31 @@ interface RouletteScreenProps {
 // and page reloads. JSON round-tripping doubles as a deep clone, so later
 // edits to the copied wheel never mutate what's on the clipboard.
 const WHEEL_CLIPBOARD_KEY = 'roulette:wheelClipboard';
+// Paste is only offered for this long after the Copy press — see the
+// freshness check at the Paste row. Past it, Paste hides even with valid data.
+const PASTE_TTL_MS = 3 * 60 * 1000;
+
+interface WheelClipboard {
+  config: WheelConfig;
+  copiedAt: number; // epoch ms of the Copy press, for the TTL above
+}
 // A clipboard payload only counts as pasteable if it's structurally a wheel
-// (an object with a non-empty `items` array). Guards against stale/garbage
-// localStorage — without it, Paste could be offered for unpasteable data.
+// (an object with a non-empty `items` array) stamped with a copiedAt time.
+// Guards against stale/garbage localStorage — without it, Paste could be
+// offered for unpasteable data.
 function isValidWheelConfig(v: unknown): v is WheelConfig {
   return !!v && typeof v === 'object'
     && Array.isArray((v as { items?: unknown }).items)
     && (v as { items: unknown[] }).items.length > 0;
 }
-function readWheelClipboard(): WheelConfig | null {
+function readWheelClipboard(): WheelClipboard | null {
   try {
     const raw = localStorage.getItem(WHEEL_CLIPBOARD_KEY);
     if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (isValidWheelConfig(parsed)) return parsed;
+    const parsed = JSON.parse(raw) as { config?: unknown; copiedAt?: unknown };
+    if (parsed && isValidWheelConfig(parsed.config) && typeof parsed.copiedAt === 'number') {
+      return { config: parsed.config, copiedAt: parsed.copiedAt };
+    }
     // Stale / malformed payload — drop it so Paste stays hidden.
     localStorage.removeItem(WHEEL_CLIPBOARD_KEY);
     return null;
@@ -77,9 +88,9 @@ function readWheelClipboard(): WheelConfig | null {
     return null;
   }
 }
-function writeWheelClipboard(cfg: WheelConfig): void {
+function writeWheelClipboard(config: WheelConfig): void {
   try {
-    localStorage.setItem(WHEEL_CLIPBOARD_KEY, JSON.stringify(cfg));
+    localStorage.setItem(WHEEL_CLIPBOARD_KEY, JSON.stringify({ config, copiedAt: Date.now() }));
   } catch {
     /* storage unavailable / quota — copy silently no-ops */
   }
@@ -186,8 +197,12 @@ export default function RouletteScreen({
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
   // Wheel clipboard for the Copy / Paste context-menu actions. Seeded from
   // localStorage so a wheel copied in another flow (or before a reload) is
-  // available to paste here. Paste is only offered when this is non-null.
-  const [copiedWheel, setCopiedWheel] = useState<WheelConfig | null>(() => readWheelClipboard());
+  // available to paste here.
+  const [wheelClip, setWheelClip] = useState<WheelClipboard | null>(() => readWheelClipboard());
+  // Paste is offered only when there's valid clipboard data AND the Copy
+  // happened within PASTE_TTL_MS. Evaluated at render — the context menu opens
+  // via a state change, so this is fresh each time the menu appears.
+  const canPasteWheel = !!wheelClip && Date.now() - wheelClip.copiedAt < PASTE_TTL_MS;
   // Mobile rename sheet — replaces inline label-editing on touch devices.
   // Holds the preview-tile index being renamed. null = closed.
   const [renameIndex, setRenameIndex] = useState<number | null>(null);
@@ -985,7 +1000,7 @@ export default function RouletteScreen({
       const cfg = inFlow ? flowSteps![index]?.wheelConfig : activeConfig;
       if (cfg) {
         writeWheelClipboard(cfg);
-        setCopiedWheel(readWheelClipboard());
+        setWheelClip(readWheelClipboard());
       }
       return;
     }
@@ -1021,10 +1036,10 @@ export default function RouletteScreen({
           return;
         }
         if (action === 'paste') {
-          if (!copiedWheel) return;
+          if (!wheelClip) return;
           // Insert the clipboard wheel right after the tapped tile.
           const change = buildInsertWheelChange({
-            currentBlock, experience: exp, steps, index: index + 1, wheelConfig: copiedWheel,
+            currentBlock, experience: exp, steps, index: index + 1, wheelConfig: wheelClip.config,
           });
           commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           return;
@@ -1069,10 +1084,10 @@ export default function RouletteScreen({
           return;
         }
         if (action === 'paste') {
-          if (!copiedWheel) return;
+          if (!wheelClip) return;
           // Wrap the standalone wheel + the pasted clipboard wheel into a
           // fresh flow, the pasted one landing second (after the current).
-          const change = buildInsertWheelChange({ currentBlock, index: 1, wheelConfig: copiedWheel });
+          const change = buildInsertWheelChange({ currentBlock, index: 1, wheelConfig: wheelClip.config });
           commitFlowSet({ experience: change.experience ?? undefined, steps: change.nextSteps });
           const stampedCurrent = change.writes.find(w => w.id === block.id);
           if (stampedCurrent) onBlockUpdated?.(stampedCurrent);
@@ -1093,7 +1108,7 @@ export default function RouletteScreen({
       dbg('RouletteScreen', 'ctx:build-fail', { action, err: e instanceof Error ? e.message : String(e) });
       alert(e instanceof Error ? e.message : 'Action failed.');
     }
-  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, onBlockDelete, flushAutoSave, copiedWheel]);
+  }, [user, block, activeConfig, flowExperience, flowSteps, navigate, onFlowChange, onBlockUpdated, onBlockDelete, flushAutoSave, wheelClip]);
 
   // Dynamic wheel sizing — the wheel + sheet area is a flex column:
   //   child1 (flex:1): app bar + wheel + red container (red grows with sheet)
@@ -1101,7 +1116,7 @@ export default function RouletteScreen({
   // Red container absorbs sheet height so the wheel shrinks in lockstep.
   const RED_BASE = 136;   // red container minimum (preview row + padding)
   const CHIP_H = 56;      // pinned chip bar
-  const SPIN_H = 76;      // spin button + margin
+  const SPIN_H = 66;      // spin button (54) + margin (12)
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
@@ -1449,7 +1464,11 @@ export default function RouletteScreen({
               centerInset={activeConfig.centerInset * staticScale}
               strokeWidth={activeConfig.strokeWidth * staticScale}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
-              centerMarkerSize={activeConfig.centerMarkerSize * staticScale}
+              wheelBaseColor={activeConfig.wheelBaseColor}
+              wheelPeek={activeConfig.wheelPeek}
+              markerDiameter={activeConfig.markerDiameter}
+              markerPeek={activeConfig.markerPeek}
+              markerBaseColor={activeConfig.markerBaseColor}
               spinIntensity={spinIntensity}
               isRandomIntensity={isRandomIntensity}
               headerTextColor={textColor}
@@ -1483,15 +1502,17 @@ export default function RouletteScreen({
           {showSpinButton && (
             <div style={{
               width: '100%',
-              padding: '0 20px',
+              padding: '0 32px',
               flexShrink: 0,
               opacity: Math.max(0, 1 - spacerProgress),
-              height: 64 * Math.max(0, 1 - spacerProgress),
+              height: 54 * Math.max(0, 1 - spacerProgress),
               marginBottom: 12 * Math.max(0, 1 - spacerProgress),
               overflow: 'hidden',
               transition: wheelTransitionCss,
             }}>
-              <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()}>
+              {/* Matches the Add Segment button's style (rounded, 3px stroke,
+                  height 54), but keeps SPIN's larger 24px label. */}
+              <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} borderRadius={32} innerStrokeWidth={3} height={54} bottomBorderWidth={6}>
                 <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
               </PushDownButton>
             </div>
@@ -1667,11 +1688,14 @@ export default function RouletteScreen({
                             const cfg = isCurrent ? activeConfig : step.wheelConfig;
                             return cfg ? {
                               strokeWidth: cfg.strokeWidth,
-                              centerMarkerSize: cfg.centerMarkerSize,
                               showBackgroundCircle: cfg.showBackgroundCircle,
+                              wheelBaseColor: cfg.wheelBaseColor,
                               cornerRadius: cfg.cornerRadius,
                               innerCornerStyle: cfg.innerCornerStyle,
                               centerInset: cfg.centerInset,
+                              markerDiameter: cfg.markerDiameter,
+                              markerPeek: cfg.markerPeek,
+                              markerBaseColor: cfg.markerBaseColor,
                             } : undefined;
                           })()}
                           debugLabel={`tile#${idx}/${sid(step.id)}/curr=${isCurrent}`}
@@ -1700,11 +1724,14 @@ export default function RouletteScreen({
                       size={72}
                       style={{
                         strokeWidth: activeConfig.strokeWidth,
-                        centerMarkerSize: activeConfig.centerMarkerSize,
                         showBackgroundCircle: activeConfig.showBackgroundCircle,
+                        wheelBaseColor: activeConfig.wheelBaseColor,
                         cornerRadius: activeConfig.cornerRadius,
                         innerCornerStyle: activeConfig.innerCornerStyle,
                         centerInset: activeConfig.centerInset,
+                        markerDiameter: activeConfig.markerDiameter,
+                        markerPeek: activeConfig.markerPeek,
+                        markerBaseColor: activeConfig.markerBaseColor,
                       }}
                       debugLabel={`solo/${sid(block.id)}`}
                     />
@@ -1982,7 +2009,7 @@ export default function RouletteScreen({
               label="Copy wheel"
               onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); runCtxAction('copy', i); }}
             />
-            {copiedWheel && (
+            {canPasteWheel && (
               <CtxRow
                 icon={<ClipboardPaste size={20} />}
                 label="Paste wheel"
@@ -2039,8 +2066,17 @@ export default function RouletteScreen({
                 marginBottom: 14,
               }}
             />
-            <PushDownButton color={PRIMARY} onTap={closeRenameSheet}>
-              <span style={{ color: '#FFF', fontSize: 15, fontWeight: 800 }}>Done</span>
+            {/* Matches the Add Segment button's style (same PushDownButton
+                params + label), just without a leading icon. */}
+            <PushDownButton color={PRIMARY} onTap={closeRenameSheet} borderRadius={32} innerStrokeWidth={3} height={54} bottomBorderWidth={6}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#FFFFFF',
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>Done</span>
+              </div>
             </PushDownButton>
           </div>
         </DraggableSheet>

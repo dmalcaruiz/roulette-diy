@@ -8,6 +8,10 @@ export interface WheelPainterConfig {
   cornerRadius: number;
   strokeWidth: number;
   showBackgroundCircle: boolean;
+  // Colour of the wheel's "white" parts — segment dividers + outer ring
+  // stroke and the background circle. Defaults to white. (The 3D base is a
+  // darkened copy of this.)
+  wheelBaseColor?: string;
   imageSize: number;
   overlayColor: string;
   textVerticalOffset: number;
@@ -37,6 +41,7 @@ export function paintWheel(
   const { items, rotation, cornerRadius, strokeWidth, showBackgroundCircle,
           imageSize, overlayColor, textVerticalOffset, innerCornerStyle,
           centerInset, overlayOpacity, winningIndex, fromItems, transition } = config;
+  const wheelBaseColor = config.wheelBaseColor ?? '#FFFFFF';
 
   const center = { x: width / 2, y: height / 2 };
   const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
@@ -58,10 +63,10 @@ export function paintWheel(
     // 50% grey in the no-stroke / no-round edge case (the disc is the
     // only visible "outline" since there's no ring or rounded corners);
     // white otherwise.
-    ctx.fillStyle = noStrokeNoRound ? '#808080' : '#FFFFFF';
+    ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
     ctx.fill();
     if (strokeWidth > 0) {
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = wheelBaseColor;
       ctx.lineWidth = strokeWidth;
       ctx.stroke();
     }
@@ -124,7 +129,7 @@ export function paintWheel(
 
     // Stroke
     if (strokeWidth > 0) {
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = wheelBaseColor;
       ctx.lineWidth = strokeWidth;
       // Round joins instead of the default 'miter' — at small wheel sizes
       // the join between the radial edge and the rounded-corner curve gets
@@ -237,6 +242,64 @@ export function paintWheel(
   }
 }
 
+// Paint a flat silhouette of the wheel in a single `color` — a disc when the
+// background circle is on, otherwise the union of the (rotated) segment
+// shapes. Used for the 3D base: a darkened copy drawn behind + below the real
+// wheel, so it mimics the wheel's actual outline (including the notched edge
+// of background-circle-off wheels) instead of always being a plain circle.
+export function paintWheelSilhouette(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  config: WheelPainterConfig,
+  color: string,
+): void {
+  const { items, rotation, cornerRadius, strokeWidth, showBackgroundCircle,
+          innerCornerStyle, centerInset, fromItems, transition } = config;
+  const center = { x: width / 2, y: height / 2 };
+  const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
+  const radius = Math.min(width, height) / 2 - strokeInset;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineJoin = 'round';
+
+  // Background circle on → the wheel is a solid disc.
+  if (showBackgroundCircle) {
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    if (strokeWidth > 0) { ctx.lineWidth = strokeWidth; ctx.stroke(); }
+    return;
+  }
+
+  // Otherwise the shape is the (rotated) segments themselves.
+  const effectiveWeights = items.map((it, i) =>
+    (fromItems && i < fromItems.length && transition < 1)
+      ? fromItems[i].weight + (it.weight - fromItems[i].weight) * transition
+      : it.weight);
+  const totalWeight = effectiveWeights.reduce((s, w) => s + w, 0);
+  const arcSize = (2 * Math.PI) / totalWeight;
+
+  ctx.save();
+  ctx.translate(center.x, center.y);
+  ctx.rotate(rotation);
+  ctx.translate(-center.x, -center.y);
+  let startAngle = 0;
+  for (let i = 0; i < items.length; i++) {
+    const segmentSize = arcSize * effectiveWeights[i];
+    if (segmentSize >= 0.005) {
+      const path = buildSegmentPath(center, radius, startAngle, startAngle + segmentSize,
+        cornerRadius, innerCornerStyle, centerInset);
+      ctx.fill(path);
+      if (strokeWidth > 0) { ctx.lineWidth = strokeWidth; ctx.stroke(path); }
+    }
+    startAngle += segmentSize;
+  }
+  ctx.restore();
+}
+
 function buildSegmentPath(
   center: { x: number; y: number },
   radius: number,
@@ -323,21 +386,27 @@ function buildSegmentPath(
 }
 
 // ── Thumbnail painter ──────────────────────────────────────────────────
-// Miniature of the actual wheel — `strokeWidth`, `centerMarkerSize`, and
+// Miniature of the actual wheel — `strokeWidth`, corner settings, and
 // `showBackgroundCircle` are taken from the wheel's own config and scaled
 // against the wheel's ideal render size (700px) so the thumbnail reads as
-// a true shrunken copy. Defaults match `defaultWheelConfig` so callers
+// a true shrunken copy. (The center marker is an HTML overlay, drawn by
+// WheelThumbnail, not here.) Defaults match `defaultWheelConfig` so callers
 // that don't pass a style still get a wheel that looks right.
 
 const WHEEL_REFERENCE_SIZE = 700; // mirrors RouletteScreen's idealWheelSize
 
 export interface WheelThumbnailStyle {
   strokeWidth?: number;                                          // default 7.7
-  centerMarkerSize?: number;                                     // default 250 — diameter in wheel-reference px
   showBackgroundCircle?: boolean;                                // default true
+  wheelBaseColor?: string;                                       // default white — divider/ring + bg circle colour
   cornerRadius?: number;                                         // default 30 — segment corner rounding
   innerCornerStyle?: 'none' | 'rounded' | 'circular' | 'straight'; // default 'none'
   centerInset?: number;                                          // default 50 — inner donut inset
+  // Marker tuning — used by the WheelThumbnail overlay (NOT drawn on the
+  // canvas, since the marker is an HTML/CSS element). See CustomMarker.
+  markerDiameter?: number;                                       // default 65 — % of marker box
+  markerPeek?: number;                                           // default 9 — % of diameter
+  markerBaseColor?: string;                                      // default white
 }
 
 export function paintWheelThumbnail(
@@ -352,18 +421,17 @@ export function paintWheelThumbnail(
   // Proportional scale: thumbnail dimension vs the wheel's ideal render size.
   const scale = Math.min(width, height) / WHEEL_REFERENCE_SIZE;
   const wheelStrokeWidth = style?.strokeWidth ?? 7.7;
-  const wheelCenterMarkerSize = style?.centerMarkerSize ?? 250;
   const wheelCornerRadius = style?.cornerRadius ?? 30;
   const wheelInnerStyle = style?.innerCornerStyle ?? 'none';
   const wheelCenterInset = style?.centerInset ?? 50;
   const showRing = style?.showBackgroundCircle ?? true;
+  const wheelBaseColor = style?.wheelBaseColor ?? '#FFFFFF';
   // Stroke gets a small boost over strict 700-reference proportion: at
   // thumbnail scale, sub-pixel strokes render too faint. ~15% bigger reads
   // closer to how the wheel actually looks at its in-app render sizes
   // (typically 300–500px, not the 700px ideal). Marker / corner / inset
   // stay on strict proportion.
   const strokeW = wheelStrokeWidth * scale * 1.15;
-  const centerMarkerR = (wheelCenterMarkerSize / 2) * scale;
   // Corner radius — small BOOST (~15%) over strict proportion. At
   // thumbnail scale the rounded-corner look reads better when the corners
   // are a touch more pronounced than the wheel's own ratio gives.
@@ -398,15 +466,15 @@ export function paintWheelThumbnail(
     ctx.arc(center.x, center.y, canvasR * backCircleScale, 0, Math.PI * 2);
     // 50% grey in the no-stroke / no-round edge case (mirrors paintWheel);
     // white otherwise.
-    ctx.fillStyle = noStrokeNoRound ? '#808080' : '#FFFFFF';
+    ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
     ctx.fill();
   }
 
-  // Pie slices + per-slice white stroke (dividers). Uses the same
+  // Pie slices + per-slice stroke (dividers). Uses the same
   // `buildSegmentPath` the real wheel uses, so corner rounding /
   // innerCornerStyle / centerInset all transfer over proportionally.
   ctx.lineWidth = strokeW;
-  ctx.strokeStyle = '#FFFFFF';
+  ctx.strokeStyle = wheelBaseColor;
   ctx.lineJoin = 'round';
   // The wheel paints with rotation = -Math.PI/2 + rotation; for a static
   // thumbnail we just offset the first segment to start at the top.
@@ -420,12 +488,6 @@ export function paintWheelThumbnail(
     if (strokeW > 0) ctx.stroke(path);
     startAngle += sweep;
   }
-
-  // Centre marker — white dot masking the central spoke convergence.
-  if (centerMarkerR > 0) {
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, centerMarkerR, 0, Math.PI * 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fill();
-  }
+  // The centre marker is drawn as an HTML overlay (CustomMarker) by
+  // WheelThumbnail, not on the canvas — so no center dot here.
 }

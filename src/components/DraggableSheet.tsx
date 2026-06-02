@@ -198,7 +198,7 @@ export default function DraggableSheet({ onClose, children, maxWidth = 500 }: Dr
           <div style={{ padding: '14px 0 8px', cursor: 'grab', flexShrink: 0 }}>
             <div style={{
               width: 44, height: 5,
-              backgroundColor: 'rgba(255, 255, 255, 0.2)',
+              backgroundColor: 'rgba(0, 0, 0, 0.4)',
               borderRadius: 2.5,
               margin: '0 auto',
             }} />

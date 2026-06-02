@@ -680,11 +680,14 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
               size={44}
               style={{
                 strokeWidth: flowPreviewConfigs[0].strokeWidth,
-                centerMarkerSize: flowPreviewConfigs[0].centerMarkerSize,
                 showBackgroundCircle: flowPreviewConfigs[0].showBackgroundCircle,
+                wheelBaseColor: flowPreviewConfigs[0].wheelBaseColor,
                 cornerRadius: flowPreviewConfigs[0].cornerRadius,
                 innerCornerStyle: flowPreviewConfigs[0].innerCornerStyle,
                 centerInset: flowPreviewConfigs[0].centerInset,
+                markerDiameter: flowPreviewConfigs[0].markerDiameter,
+                markerPeek: flowPreviewConfigs[0].markerPeek,
+                markerBaseColor: flowPreviewConfigs[0].markerBaseColor,
               }}
             />
           ) : block.type === 'roulette' && block.wheelConfig ? (
@@ -693,11 +696,14 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
               size={44}
               style={{
                 strokeWidth: block.wheelConfig.strokeWidth,
-                centerMarkerSize: block.wheelConfig.centerMarkerSize,
                 showBackgroundCircle: block.wheelConfig.showBackgroundCircle,
+                wheelBaseColor: block.wheelConfig.wheelBaseColor,
                 cornerRadius: block.wheelConfig.cornerRadius,
                 innerCornerStyle: block.wheelConfig.innerCornerStyle,
                 centerInset: block.wheelConfig.centerInset,
+                markerDiameter: block.wheelConfig.markerDiameter,
+                markerPeek: block.wheelConfig.markerPeek,
+                markerBaseColor: block.wheelConfig.markerBaseColor,
               }}
             />
           ) : (
