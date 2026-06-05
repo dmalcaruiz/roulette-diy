@@ -20,6 +20,13 @@ export interface WheelConfig {
   cornerRadius: number;
   imageCornerRadius: number;
   strokeWidth: number;
+  // Per-segment text auto-fit is always on. This optional flag allows wrapping
+  // a long label onto 2 lines. Default off.
+  textWrap?: boolean;
+  // Extra ring drawn OUTSIDE the wheel edge, on top of (and separate from)
+  // `strokeWidth` — lets the outer border be thicker than the segment
+  // dividers. Uses `wheelBaseColor`. Defaults to 0 (off).
+  outerStrokeWidth?: number;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white.

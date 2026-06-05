@@ -99,6 +99,11 @@ export interface SpinningWheelProps {
   innerCornerStyle?: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset?: number;
   strokeWidth?: number;
+  // Per-segment text auto-fit is always on (shrink-to-fit then middle "…").
+  // This optional flag allows wrapping a long label onto 2 lines. Default off.
+  textWrap?: boolean;
+  // Extra ring outside the wheel edge, separate from `strokeWidth`. Default 0.
+  outerStrokeWidth?: number;
   showBackgroundCircle?: boolean;
   // Colour of the wheel's "white" parts — dividers + outer ring stroke and
   // the background circle. Default white.
@@ -151,10 +156,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     innerCornerStyle = 'none',
     centerInset = 50,
     strokeWidth = 3,
+    textWrap = false,
+    outerStrokeWidth = 0,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
-    markerDiameter = 62,
-    markerPeek = 5,
+    markerDiameter = 60,
+    markerPeek = 4,
     markerBaseColor = '#FFFFFF',
     spinIntensity = 0.5,
     isRandomIntensity = true,
@@ -327,7 +334,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // (b) stopped scaling with displaySize entirely past 16 — text stayed
     // big when the wheel shrunk. `displaySize / Math.max(16, items.length)`
     // gives identical output for ≤16 segments and a smooth taper after.
-    const fontSize = displaySize / Math.max(16, items.length) * textSizeMultiplier;
+    // Map the Segment Text slider's DISPLAY value to the actual render
+    // multiplier, so the UI numbers stay clean while the text is sized right:
+    //   display 0.1 (min)  → 0.30  (smallest, still readable)
+    //   display 1.0 (deflt) → 0.95  (the calibrated neutral)
+    // linear between (and extrapolated above 1.0).
+    const textMult = 0.3 + (textSizeMultiplier - 0.1) * (0.95 - 0.3) / (1.0 - 0.1);
+    const fontSize = displaySize / Math.max(16, items.length) * textMult;
 
     const config: WheelPainterConfig = {
       items,
@@ -335,6 +348,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       fontSize,
       cornerRadius,
       strokeWidth,
+      textWrap,
+      markerDiameter,
+      outerStrokeWidth,
       showBackgroundCircle,
       wheelBaseColor,
       imageSize,
@@ -351,7 +367,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config);
-  }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth,
+  }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth,
+      textWrap, markerDiameter,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
       wheelBaseColor]);
 

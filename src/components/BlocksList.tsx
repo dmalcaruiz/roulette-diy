@@ -680,6 +680,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
               size={44}
               style={{
                 strokeWidth: flowPreviewConfigs[0].strokeWidth,
+                outerStrokeWidth: flowPreviewConfigs[0].outerStrokeWidth,
                 showBackgroundCircle: flowPreviewConfigs[0].showBackgroundCircle,
                 wheelBaseColor: flowPreviewConfigs[0].wheelBaseColor,
                 cornerRadius: flowPreviewConfigs[0].cornerRadius,
@@ -696,6 +697,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
               size={44}
               style={{
                 strokeWidth: block.wheelConfig.strokeWidth,
+                outerStrokeWidth: block.wheelConfig.outerStrokeWidth,
                 showBackgroundCircle: block.wheelConfig.showBackgroundCircle,
                 wheelBaseColor: block.wheelConfig.wheelBaseColor,
                 cornerRadius: block.wheelConfig.cornerRadius,

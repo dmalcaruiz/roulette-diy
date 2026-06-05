@@ -6,7 +6,7 @@ import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../c
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2 } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
@@ -185,8 +185,10 @@ export default function RouletteScreen({
     // closing always lands at 0. The callback still fires on the next
     // render but lands on idempotent state updates.
     if (opening) {
-      setSheetSnapTargetH(400);
-      setSheetHeight(400);
+      // Mobile mid snap is 20px shorter than desktop (see midSnap / snapPositions).
+      const openH = window.innerWidth < 900 ? 380 : 400;
+      setSheetSnapTargetH(openH);
+      setSheetHeight(openH);
     } else if (closing) {
       setSheetSnapTargetH(0);
       setSheetHeight(0);
@@ -1120,7 +1122,7 @@ export default function RouletteScreen({
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
-  const midSnap = 400;
+  const midSnap = isMobile ? 380 : 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
   // Red box's actual DOM height — fixed at RED_BASE (not flexible).
   const redBoxHeight = isPlayMode ? 0 : RED_BASE;
@@ -1183,9 +1185,14 @@ export default function RouletteScreen({
   //     CSS transition so the wheel tracks the finger 1:1
   //   • otherwise → the snap-target state (closed / mid / upper),
   //     and the CSS transition below interpolates to it
+  // Freeze wheel sizing at the mid snap: from mid → upper the wheel stays
+  // STATIC — no shrink, scale, or fade — and the rising sheet simply covers
+  // it. Clamping the sizing input at midSnap means React re-renders with the
+  // identical wheel style above mid (no DOM change → no wheel re-layout/paint),
+  // which is cheaper and reads better than animating it out of view.
   const wheelStyleState = isSheetDragging
-    ? wheelStateAt(sheetHeight)
-    : wheelStateForSnap(sheetSnapTargetH);
+    ? wheelStateAt(Math.min(sheetHeight, midSnap))
+    : wheelStateForSnap(Math.min(sheetSnapTargetH, midSnap));
   // Match the sheet's own height transition exactly so wheel + sheet
   // arrive at their targets on the same frame. `disableHeightTransition`
   // / drag both kill the transition for the cases where the sheet does
@@ -1220,6 +1227,26 @@ export default function RouletteScreen({
     // eslint-disable-next-line no-console
     console.log(`[SHEET-DBG] state=${sheetHeight} sheet[top=${sheetTop} bot=${sB} h=${sH}] chip[top=${chipTop} bot=${cB} h=${cH}] vp[innerH=${window.innerHeight} vvH=${window.visualViewport?.height ?? '∅'}] screenH=${screenHeight}`);
   }, [sheetHeight, screenHeight]);
+
+  // Index of the active wheel within the flow (-1 if not in a flow).
+  const flowIdx = flowSteps ? flowSteps.findIndex(s => s.id === block.id) : -1;
+  // Jump to the previous (dir -1) / next (dir +1) wheel in the flow, with the
+  // matching slide animation — same in-place swap the preview tiles use.
+  const goToAdjacentWheel = (dir: -1 | 1) => {
+    if (!flowSteps || flowIdx < 0) return;
+    const targetIdx = flowIdx + dir;
+    if (targetIdx < 0 || targetIdx >= flowSteps.length) return;
+    const step = flowSteps[targetIdx];
+    setOptimisticActiveId(step.id);
+    flushAutoSave();
+    setPreviewConfig(null);
+    pendingConfigRef.current = null;
+    setWheelTransition(dir > 0 ? 'right' : 'left');
+    onSwitchActive?.(step);
+  };
+  // Side chevrons appear only while the sheet rests at the mid snap, on a
+  // multi-wheel flow.
+  const showSideChevrons = isMobile && flowSteps != null && flowSteps.length > 1 && sheetSnapTargetH === midSnap;
 
   return (
     <div style={{
@@ -1264,6 +1291,8 @@ export default function RouletteScreen({
               onPreview={handleWheelPreview}
               selectedTab={sheetTab === 'style' ? 1 : 0}
               onTabChange={t => setSheetTabAnimated(t === 0 ? 'segments' : 'style')}
+              showSegmentHeader={showSegmentHeader}
+              onToggleSegmentHeader={setShowSegmentHeader}
             />
           </div>
         </div>
@@ -1397,6 +1426,45 @@ export default function RouletteScreen({
           overflow: 'hidden',
           transition: wheelTransitionCss,
         }}>
+          {/* Side wheel-nav chevrons — only while the sheet rests at mid snap
+              on a multi-wheel flow. Vertically centred on the wheel area, at
+              the screen edges; fade via opacity so the snap stays smooth. */}
+          {isMobile && flowSteps && flowSteps.length > 1 && flowIdx > 0 && (
+            <button
+              onClick={() => goToAdjacentWheel(-1)}
+              aria-label="Previous wheel"
+              style={{
+                position: 'absolute', top: '50%', left: 8, transform: 'translateY(-50%)',
+                zIndex: 5, width: 42, height: 42, borderRadius: 999, border: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                backgroundColor: 'transparent',
+                cursor: 'pointer',
+                opacity: showSideChevrons ? 1 : 0,
+                pointerEvents: showSideChevrons ? 'auto' : 'none',
+                transition: 'opacity 0.2s ease',
+              }}
+            >
+              <ChevronLeft size={38} color={ON_SURFACE} strokeWidth={2.5} />
+            </button>
+          )}
+          {isMobile && flowSteps && flowSteps.length > 1 && flowIdx >= 0 && flowIdx < flowSteps.length - 1 && (
+            <button
+              onClick={() => goToAdjacentWheel(1)}
+              aria-label="Next wheel"
+              style={{
+                position: 'absolute', top: '50%', right: 8, transform: 'translateY(-50%)',
+                zIndex: 5, width: 42, height: 42, borderRadius: 999, border: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                backgroundColor: 'transparent',
+                cursor: 'pointer',
+                opacity: showSideChevrons ? 1 : 0,
+                pointerEvents: showSideChevrons ? 'auto' : 'none',
+                transition: 'opacity 0.2s ease',
+              }}
+            >
+              <ChevronRight size={38} color={ON_SURFACE} strokeWidth={2.5} />
+            </button>
+          )}
           {/* Top spacer — slightly less flex than the bottom spacer so the
               wheel+header group sits a hair above the geometric center
               (which optically reads as centered). Snap-target driven +
@@ -1463,6 +1531,8 @@ export default function RouletteScreen({
               innerCornerStyle={activeConfig.innerCornerStyle}
               centerInset={activeConfig.centerInset * staticScale}
               strokeWidth={activeConfig.strokeWidth * staticScale}
+              outerStrokeWidth={(activeConfig.outerStrokeWidth ?? 0) * staticScale}
+              textWrap={activeConfig.textWrap}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
               wheelBaseColor={activeConfig.wheelBaseColor}
               markerDiameter={activeConfig.markerDiameter}
@@ -1687,6 +1757,7 @@ export default function RouletteScreen({
                             const cfg = isCurrent ? activeConfig : step.wheelConfig;
                             return cfg ? {
                               strokeWidth: cfg.strokeWidth,
+                              outerStrokeWidth: cfg.outerStrokeWidth,
                               showBackgroundCircle: cfg.showBackgroundCircle,
                               wheelBaseColor: cfg.wheelBaseColor,
                               cornerRadius: cfg.cornerRadius,
@@ -1723,6 +1794,7 @@ export default function RouletteScreen({
                       size={72}
                       style={{
                         strokeWidth: activeConfig.strokeWidth,
+                        outerStrokeWidth: activeConfig.outerStrokeWidth,
                         showBackgroundCircle: activeConfig.showBackgroundCircle,
                         wheelBaseColor: activeConfig.wheelBaseColor,
                         cornerRadius: activeConfig.cornerRadius,
@@ -1848,7 +1920,7 @@ export default function RouletteScreen({
           <SnappingSheet
             bottomOffset={56}
             visible={sheetTab !== null}
-            snapPositions={[0, 400, screenHeight - 105]}
+            snapPositions={[0, isMobile ? 380 : 400, screenHeight - 105]}
             initialSnap={1}
             onCollapsed={() => {
               // Sync prevSheetTabRef so the next chip-open correctly
@@ -1910,6 +1982,8 @@ export default function RouletteScreen({
                 renderRows={sheetTab === 'segments' || sheetTab === 'style'}
                 sheetHeight={sheetHeight}
                 isMobile={isMobile}
+                showSegmentHeader={showSegmentHeader}
+                onToggleSegmentHeader={setShowSegmentHeader}
               />
             </div>
             <div
@@ -1953,13 +2027,8 @@ export default function RouletteScreen({
                   onChange={setShowWinAnimation}
                 />
                 <div style={{ height: 12 }} />
-                <ToggleRow
-                  label="Segment Header"
-                  icon={<Type size={22} />}
-                  value={showSegmentHeader}
-                  onChange={setShowSegmentHeader}
-                />
-                <div style={{ height: 12 }} />
+                {/* "Segment Header" moved to Style › Text & Images, co-located
+                    with the Header Text size it governs. */}
                 <ToggleRow
                   label="Spin Button"
                   icon={<Play size={22} />}

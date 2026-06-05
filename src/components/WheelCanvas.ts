@@ -7,6 +7,16 @@ export interface WheelPainterConfig {
   fontSize: number;
   cornerRadius: number;
   strokeWidth: number;
+  // Per-segment text auto-fit is always on: `fontSize` is the TARGET (max) and
+  // each label shrinks independently to fit its own wedge (length + angular
+  // thickness) down to TEXT_FIT_FLOOR × target, then a middle "…".
+  textWrap?: boolean;      // allow wrapping a long label onto 2 lines
+  // Centre marker diameter (the % value from config). Only used to keep auto-
+  // fit text clear of the marker: its circle radius pushes the text's inner
+  // limit outward, so a bigger marker truncates/ellipsizes text sooner.
+  markerDiameter?: number;
+  // Extra ring outside the wheel edge, separate from `strokeWidth`. 0 = off.
+  outerStrokeWidth?: number;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white. (The 3D base is a
@@ -32,6 +42,141 @@ interface CachedLayout {
   effectiveWeights: number[];
 }
 
+// Per-segment fitted label: the size it renders at and the line(s) to draw.
+interface FittedText { fontSize: number; lines: string[]; }
+
+// Break a label into (up to) two balanced lines at the space nearest the
+// middle. Returns [text] when there's no usable space.
+function splitTwoLines(text: string): string[] {
+  const trimmed = text.trim();
+  const mid = trimmed.length / 2;
+  let best = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === ' ' && (best === -1 || Math.abs(i - mid) < Math.abs(best - mid))) best = i;
+  }
+  if (best === -1) return [trimmed];
+  return [trimmed.slice(0, best).trim(), trimmed.slice(best + 1).trim()];
+}
+
+// Shorten a line with a MIDDLE "…" (keep head + tail, e.g. "Super…stic") until
+// it fits `avail` px at `fontSize`. `ctx.font` must already be set to the
+// TARGET size (widths scale linearly).
+function ellipsize(ctx: CanvasRenderingContext2D, line: string, targetFont: number, fontSize: number, avail: number): string {
+  const k = fontSize / targetFont;
+  if (ctx.measureText(line).width * k <= avail) return line;
+  // Once we have to truncate, aim for a fraction of the available width so a
+  // few extra characters are dropped — leaves breathing room and keeps the
+  // head/tail clearly legible instead of crammed to the edge.
+  const target = avail * 0.82;
+  // `keep` = total characters retained, split head/tail around the ellipsis.
+  const build = (keep: number) => {
+    const head = line.slice(0, Math.ceil(keep / 2)).trimEnd();
+    const tail = keep > 1 ? line.slice(line.length - Math.floor(keep / 2)).trimStart() : '';
+    return head + '…' + tail;
+  };
+  let lo = 0, hi = line.length - 1;
+  while (lo < hi) {
+    const m = Math.ceil((lo + hi) / 2);
+    if (ctx.measureText(build(m)).width * k <= target) lo = m;
+    else hi = m - 1;
+  }
+  // Give one character back to each half (head + tail) past the `target` fit, as
+  // long as it still clears the real available width — eats a bit less.
+  for (let extra = 0; extra < 2 && lo < line.length - 1; extra++) {
+    if (ctx.measureText(build(lo + 1)).width * k <= avail) lo++;
+    else break;
+  }
+  return lo > 0 ? build(lo) : '…';
+}
+
+// Smallest a label may shrink, as a fraction of the target size, before it
+// ellipsizes instead. Locked (not user-configurable).
+const TEXT_FIT_FLOOR = 0.4;
+
+// Compute the rendered size + lines for every segment. Pure given its inputs;
+// the caller memoizes (see `_ftKey`) so a spin (only rotation changes) reuses
+// it instead of re-measuring every frame.
+function computeFittedText(
+  ctx: CanvasRenderingContext2D,
+  items: WheelItem[],
+  targetFont: number,
+  textX: number,
+  scale: number,
+  centerInset: number,
+  markerRadius: number,
+  wrap: boolean,
+): FittedText[] {
+  const total = items.reduce((s, it) => s + it.weight, 0) || 1;
+  // Text must clear both the donut inset AND the centre marker's circle.
+  const innerLimit = Math.max(centerInset, markerRadius, 0);
+  const avail = Math.max(0, textX - innerLimit);
+  const floorPx = Math.max(targetFont * TEXT_FIT_FLOOR, 6 * scale);
+  // Separate, higher floor for LENGTH-driven shrinking: a too-long label only
+  // shrinks ~this far before we ellipsize instead of shrinking on to the Min
+  // Size floor. (Thin-wedge / angular shrinking still goes all the way to
+  // floorPx.) Higher → ellipsis kicks in sooner at a larger size.
+  const lengthFloorPx = Math.max(targetFont * 0.9, floorPx);
+  const ANG_MARGIN = 1 * scale;
+  const SHRINK = 0.92;
+  // Visual glyph height as a fraction of font size (Inter, centred baseline).
+  // Using the full font size over-shrinks labels that actually fit; 0.82 keeps
+  // uniform wheels at the target while the wedge clip still catches any sliver.
+  const GLYPH_H = 0.82;
+  ctx.font = `600 ${targetFont}px Inter, sans-serif`;
+
+  return items.map((it) => {
+    const half = Math.min(((2 * Math.PI * it.weight) / total) / 2, Math.PI / 2);
+    const sinHalf = Math.sin(half);
+
+    // Best font size for a given set of lines: shrink until both the radial
+    // (length) and angular (thickness at the text's inner end) limits hold.
+    const fitLines = (lines: string[]): number => {
+      let wTarget = 0;
+      for (const ln of lines) wTarget = Math.max(wTarget, ctx.measureText(ln).width);
+      const nLines = lines.length;
+      // Single line → just the glyph height; two lines → a line of spacing
+      // plus a glyph height on top.
+      const lineFactor = nLines > 1 ? (nLines - 1) * 1.05 + GLYPH_H : GLYPH_H;
+      let f = targetFont;
+      for (let k = 0; k < 24; k++) {
+        const textW = (wTarget * f) / targetFont;
+        const rInner = textX - textW;
+        const thickness = 2 * Math.max(rInner, innerLimit) * sinHalf;
+        const angularOK = f * lineFactor + ANG_MARGIN <= thickness;
+        const radialOK = rInner >= innerLimit;
+        // Stop once it fits the wedge thickness AND either the whole label fits
+        // radially or we've shrunk to the length floor (past which we ellipsize
+        // rather than keep shrinking).
+        if (angularOK && (radialOK || f <= lengthFloorPx)) break;
+        f *= SHRINK;
+        if (f <= floorPx) { f = floorPx; break; }
+      }
+      return f;
+    };
+
+    let lines = [it.text];
+    let f = fitLines(lines);
+    // Wrap if the single line would overflow (i.e. it's about to be ellipsized)
+    // and a 2-line split renders at least as large — preferred over chopping.
+    const singleOverflows = (ctx.measureText(it.text).width * f) / targetFont > avail;
+    if (wrap && singleOverflows) {
+      const split = splitTwoLines(it.text);
+      if (split.length === 2) {
+        const f2 = fitLines(split);
+        if (f2 >= f) { lines = split; f = f2; }
+      }
+    }
+    lines = lines.map((ln) => ellipsize(ctx, ln, targetFont, f, avail));
+    return { fontSize: f, lines };
+  });
+}
+
+// Memoize-last: only one wheel animates at a time, so a single-entry cache hits
+// every spin frame (key omits rotation). Thumbnails draw no text, so they
+// never touch this.
+let _ftKey = '';
+let _ftVal: FittedText[] = [];
+
 export function paintWheel(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -42,11 +187,16 @@ export function paintWheel(
           imageSize, overlayColor, textVerticalOffset, innerCornerStyle,
           centerInset, overlayOpacity, winningIndex, fromItems, transition } = config;
   const wheelBaseColor = config.wheelBaseColor ?? '#FFFFFF';
+  const outerStrokeWidth = config.outerStrokeWidth ?? 0;
+  const textWrap = config.textWrap ?? false;
 
   const center = { x: width / 2, y: height / 2 };
   const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
-  const radius = Math.min(width, height) / 2 - strokeInset;
+  // Reserve room at the edge for the extra outer ring (drawn after segments).
+  const outerInset = outerStrokeWidth > 0 ? outerStrokeWidth + 0.5 : 0;
+  const radius = Math.min(width, height) / 2 - strokeInset - outerInset;
   const scale = radius / 350;
+  const textX = radius - 20 * scale;
 
   ctx.clearRect(0, 0, width, height);
 
@@ -96,13 +246,47 @@ export function paintWheel(
     startAngle += segmentSize;
   }
 
+  // Auto-fit text layout (per-segment size + lines). Memoized on everything
+  // it depends on EXCEPT rotation, and sized off the TARGET weights (`items`)
+  // not the interpolated ones, so a spin / add-remove transition reuses the
+  // cached result instead of re-measuring every frame.
+  {
+    // Marker circle radius in canvas px — mirrors SpinningWheel's overlay
+    // (box = size·250/700, circle = box·markerDiameter/100), centred.
+    const markerDiameter = config.markerDiameter ?? 0;
+    const markerRadius = (width * (250 / 700) * (markerDiameter / 100)) / 2;
+    const key = `${width}|${strokeWidth}|${outerStrokeWidth}|${centerInset}|${markerDiameter}|${config.fontSize}|${textWrap ? 1 : 0}|`
+      + items.map((it) => `${it.text}${it.weight}`).join('');
+    if (key !== _ftKey) {
+      _ftVal = computeFittedText(ctx, items, config.fontSize, textX, scale, centerInset, markerRadius, textWrap);
+      _ftKey = key;
+    }
+  }
+
   // Draw rotated segments
   ctx.save();
   ctx.translate(center.x, center.y);
   ctx.rotate(rotation);
   ctx.translate(-center.x, -center.y);
 
-  const fontSize = config.fontSize;
+  // Extra outer ring, silhouette-following variant. With no background circle
+  // the wheel's outline is the segment union (a "flower" once corners are
+  // rounded), not a disc — so a plain circle ring wouldn't hug it. We instead
+  // paint a slightly enlarged copy of the segments behind the real ones: it
+  // peeks out by `outerStrokeWidth` along the true outline (petals AND
+  // notches) and is fully covered everywhere else. (The disc case keeps the
+  // cheaper circle ring below.) Scale is chosen so the peek lands just past
+  // the segments' own outer-arc stroke, matching the circle ring's offset.
+  if (outerStrokeWidth > 0 && !showBackgroundCircle && radius > 0) {
+    const f = (radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth) / radius;
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.scale(f, f);
+    ctx.translate(-center.x, -center.y);
+    ctx.fillStyle = wheelBaseColor;
+    for (const p of layout.paths) ctx.fill(p);
+    ctx.restore();
+  }
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -174,22 +358,40 @@ export function paintWheel(
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
 
-      // Draw text
+      // Draw text — per-segment fitted size + (optional) two lines from the
+      // cached auto-fit layout.
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = `600 ${fontSize}px Inter, sans-serif`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
 
-      const textX = radius - 20 * scale;
-      const textY = -textVerticalOffset;
-
-      ctx.fillText(item.text, textX, textY);
+      const ft = _ftVal[i];
+      ctx.font = `600 ${ft.fontSize}px Inter, sans-serif`;
+      const lineH = ft.fontSize * 1.05;
+      const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
+      for (let li = 0; li < ft.lines.length; li++) {
+        ctx.fillText(ft.lines[li], textX, y0 + li * lineH);
+      }
 
       ctx.restore();
     }
   }
 
   ctx.restore(); // remove rotation
+
+  // ── Extra outer ring (disc silhouette) ──
+  // Background circle on → the outline is a true circle, so a concentric ring
+  // is exact and cheap. (No-bg-circle wheels use the silhouette-following copy
+  // drawn above instead.) Sits just outside the wheel's existing edge; same
+  // colour as the rest of the chrome, so it reads as a thicker outer border
+  // that — unlike `strokeWidth` — doesn't also thicken the dividers.
+  if (outerStrokeWidth > 0 && showBackgroundCircle) {
+    const ringRadius = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth / 2;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, ringRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = wheelBaseColor;
+    ctx.lineWidth = outerStrokeWidth;
+    ctx.stroke();
+  }
 
   // ── Overlay: dark tint + winning segment highlight ──
   if (overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length) {
@@ -198,7 +400,7 @@ export function paintWheel(
     // circle is on — previously the no-bg-circle branch dropped that
     // term and the overlay left the outer ring strokes uncovered (visible
     // as a bright rim on the dimmed win frame). +0.5 is just an AA buffer.
-    const overlayRadius = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + 0.5;
+    const overlayRadius = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth + 0.5;
 
     // Dark overlay
     ctx.beginPath();
@@ -229,10 +431,16 @@ export function paintWheel(
       ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);
 
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = `600 ${fontSize}px Inter, sans-serif`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(winItem.text, radius - 20 * scale, -textVerticalOffset);
+      // Same fitted size + lines as the wheel, so the win overlay matches.
+      const wft = _ftVal[winningIndex];
+      ctx.font = `600 ${wft.fontSize}px Inter, sans-serif`;
+      const wLineH = wft.fontSize * 1.05;
+      const wy0 = -textVerticalOffset - ((wft.lines.length - 1) * wLineH) / 2;
+      for (let li = 0; li < wft.lines.length; li++) {
+        ctx.fillText(wft.lines[li], textX, wy0 + li * wLineH);
+      }
 
       ctx.restore();
     }
@@ -339,6 +547,7 @@ const WHEEL_REFERENCE_SIZE = 700; // mirrors RouletteScreen's idealWheelSize
 
 export interface WheelThumbnailStyle {
   strokeWidth?: number;                                          // default 7.7
+  outerStrokeWidth?: number;                                     // default 0 — extra outer ring
   showBackgroundCircle?: boolean;                                // default true
   wheelBaseColor?: string;                                       // default white — divider/ring + bg circle colour
   cornerRadius?: number;                                         // default 30 — segment corner rounding
@@ -346,8 +555,8 @@ export interface WheelThumbnailStyle {
   centerInset?: number;                                          // default 50 — inner donut inset
   // Marker tuning — used by the WheelThumbnail overlay (NOT drawn on the
   // canvas, since the marker is an HTML/CSS element). See CustomMarker.
-  markerDiameter?: number;                                       // default 65 — % of marker box
-  markerPeek?: number;                                           // default 9 — % of diameter
+  markerDiameter?: number;                                       // default 60 — % of marker box
+  markerPeek?: number;                                           // default 4 — % of diameter
   markerBaseColor?: string;                                      // default white
 }
 
@@ -374,6 +583,9 @@ export function paintWheelThumbnail(
   // (typically 300–500px, not the 700px ideal). Marker / corner / inset
   // stay on strict proportion.
   const strokeW = wheelStrokeWidth * scale * 1.15;
+  // Extra outer ring — scaled with the same boost as the divider stroke.
+  const outerStrokeW = (style?.outerStrokeWidth ?? 0) * scale * 1.15;
+  const ringInset = outerStrokeW > 0 ? outerStrokeW : 0;
   // Corner radius — small BOOST (~15%) over strict proportion. At
   // thumbnail scale the rounded-corner look reads better when the corners
   // are a touch more pronounced than the wheel's own ratio gives.
@@ -385,7 +597,7 @@ export function paintWheelThumbnail(
   // works out to exactly strokeW — matching the divider strokes. Going
   // further inward (pieR = canvasR − strokeW) inflated the outer band to
   // 1.5 × strokeW, which read as a white "peek".
-  const pieR = canvasR - strokeW / 2;
+  const pieR = canvasR - ringInset - strokeW / 2;
   const totalWeight = items.reduce((s, item) => s + item.weight, 0);
 
   ctx.clearRect(0, 0, width, height);
@@ -405,6 +617,8 @@ export function paintWheelThumbnail(
     const noStrokeNoRound = wheelStrokeWidth === 0 && wheelCornerRadius === 0;
     const backCircleScale = noStrokeNoRound ? 0.97 : 1.0;
     ctx.beginPath();
+    // Full disc to the canvas edge — with `pieR` pulled in by `ringInset`, the
+    // base-colour band between the pie and the edge widens by the outer stroke.
     ctx.arc(center.x, center.y, canvasR * backCircleScale, 0, Math.PI * 2);
     // 50% grey in the no-stroke / no-round edge case (mirrors paintWheel);
     // white otherwise.
@@ -415,21 +629,40 @@ export function paintWheelThumbnail(
   // Pie slices + per-slice stroke (dividers). Uses the same
   // `buildSegmentPath` the real wheel uses, so corner rounding /
   // innerCornerStyle / centerInset all transfer over proportionally.
-  ctx.lineWidth = strokeW;
-  ctx.strokeStyle = wheelBaseColor;
-  ctx.lineJoin = 'round';
   // The wheel paints with rotation = -Math.PI/2 + rotation; for a static
   // thumbnail we just offset the first segment to start at the top.
+  const thumbPaths: Path2D[] = [];
   let startAngle = -Math.PI / 2;
   for (const item of items) {
     const sweep = (item.weight / totalWeight) * 2 * Math.PI;
-    const path = buildSegmentPath(center, pieR, startAngle, startAngle + sweep,
-                                   cornerR, wheelInnerStyle, innerInset);
-    ctx.fillStyle = item.color;
-    ctx.fill(path);
-    if (strokeW > 0) ctx.stroke(path);
+    thumbPaths.push(buildSegmentPath(center, pieR, startAngle, startAngle + sweep,
+                                     cornerR, wheelInnerStyle, innerInset));
     startAngle += sweep;
   }
+
+  // No background circle → trace the segment-union silhouette (the "flower")
+  // with an enlarged copy behind, mirroring paintWheel. With the disc on, the
+  // back circle above already supplies the (circular) outer band.
+  if (outerStrokeW > 0 && !showRing && pieR > 0) {
+    const f = (pieR + (strokeW > 0 ? strokeW / 2 : 0) + outerStrokeW) / pieR;
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.scale(f, f);
+    ctx.translate(-center.x, -center.y);
+    ctx.fillStyle = wheelBaseColor;
+    for (const p of thumbPaths) ctx.fill(p);
+    ctx.restore();
+  }
+
+  ctx.lineWidth = strokeW;
+  ctx.strokeStyle = wheelBaseColor;
+  ctx.lineJoin = 'round';
+  for (let i = 0; i < thumbPaths.length; i++) {
+    ctx.fillStyle = items[i].color;
+    ctx.fill(thumbPaths[i]);
+    if (strokeW > 0) ctx.stroke(thumbPaths[i]);
+  }
+
   // The centre marker is drawn as an HTML overlay (CustomMarker) by
   // WheelThumbnail, not on the canvas — so no center dot here.
 }

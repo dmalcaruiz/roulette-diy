@@ -73,19 +73,24 @@ export function oklchShadow(hexColor: string, delta = 0.05, lightBoost = 2, topB
   return rgbaToHex(rFinal, gFinal, bFinal, a);
 }
 
-// Like oklchShadow (darken via OKLCh lightness), but ALSO pulls chroma down by
-// `delta · SHADE_CHROMA_RATIO`. Lightness-only steps wash out on highly
-// saturated bases (the vivid hue dominates), so dropping chroma too keeps
-// derived shades visually distinct. White/greys are unaffected by the chroma
-// part (their chroma is ~0). Chroma clamps at 0.
-const SHADE_CHROMA_RATIO = 0.8;
+// Like oklchShadow (darken via OKLCh lightness), but ALSO eases chroma down a
+// little so derived shades stay distinct on saturated bases. The reduction is
+// PROPORTIONAL — a small fraction (≈ `delta · SHADE_CHROMA_RATIO`) of the
+// colour's OWN chroma — not a flat subtraction. A flat amount washed out
+// medium-saturation colours and stacked up across the darker (bigger-delta)
+// layers; proportional keeps the darkening while preserving most of the
+// saturation. White/greys (chroma ~0) are unaffected. Chroma clamps at 0.
+const SHADE_CHROMA_RATIO = 1.5;
 // Extra lightness darkening scaled by chroma. oklchShadow's lightBoost only
 // boosts *light* colours, so a mid-lightness saturated base darkens too little
 // (its vivid hue also hides small lightness steps). This adds darkening
 // proportional to chroma, so saturated bases get a stronger drop. White/greys
 // (chroma ~0) are unaffected.
 const SHADE_CHROMA_BOOST = 4;
-export function oklchShade(hexColor: string, delta = 0.05, lightBoost = 2): string {
+// `topBoost` adds drop quadratically in lightness (okL²) — like oklchShadow's,
+// it lifts only the brightest end, so near-white bases can darken more without
+// touching mid/dark ones (which a linear lightBoost can't do).
+export function oklchShade(hexColor: string, delta = 0.05, lightBoost = 2, topBoost = 0): string {
   const { r, g, b, a } = hexToRgba(hexColor);
 
   const lr = gammaExpansion(r / 255);
@@ -103,9 +108,9 @@ export function oklchShade(hexColor: string, delta = 0.05, lightBoost = 2): stri
   const c = Math.sqrt(okA * okA + okB * okB);
   const h = Math.atan2(okB, okA);
 
-  const drop = delta * (1 + lightBoost * okL + SHADE_CHROMA_BOOST * c);
+  const drop = delta * (1 + lightBoost * okL + topBoost * okL * okL + SHADE_CHROMA_BOOST * c);
   const newL = Math.max(0, Math.min(1, okL - drop));
-  const newC = Math.max(0, c - delta * SHADE_CHROMA_RATIO);
+  const newC = Math.max(0, c * (1 - delta * SHADE_CHROMA_RATIO));
   const newA = newC * Math.cos(h);
   const newB = newC * Math.sin(h);
 

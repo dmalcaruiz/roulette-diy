@@ -1,4 +1,4 @@
-import { oklchShade, oklchShadow } from '../utils/colorUtils';
+import { oklchShade } from '../utils/colorUtils';
 
 interface CustomMarkerProps {
   // The marker box diameter in px. The circle diameter is markerDiameter% of
@@ -17,8 +17,8 @@ interface CustomMarkerProps {
 // top. Shared by the live wheel (SpinningWheel) and the thumbnail previews.
 export default function CustomMarker({
   size,
-  markerDiameter = 62,
-  markerPeek = 5,
+  markerDiameter = 60,
+  markerPeek = 4,
   markerBaseColor = '#FFFFFF',
 }: CustomMarkerProps) {
   const baseD = size * (markerDiameter / 100);
@@ -28,13 +28,16 @@ export default function CustomMarker({
   const topStroke = oklchShade(topFill, 0.012);     // barely darker than top
   const bottomFill = oklchShade(topFill, 0.07);      // derivative — darker
   const bottomStroke = oklchShade(bottomFill, 0.03); // a bit darker than bottom
-  const ringStroke = oklchShade(topFill, 0.06);      // ring — clearly darker than base
+  // Ring (+ shadow tint). topBoost (3rd→4th args: lightBoost, topBoost) adds a
+  // quadratic lift at the bright end so near-white bases darken enough to stay
+  // visible, while mid/dark bases (which looked right) barely move.
+  const ringStroke = oklchShade(topFill, 0.05, -0.5, 0.9);
   const accentFill = oklchShade(topFill, 0.04);      // centre accent — a hint lighter than bottom
   const coreFill = oklchShade(topFill, 0.008);       // centre base circle — a hint darker than base
   const coreStroke = oklchShade(topFill, 0.06);      // centre circle stroke
-  // Pin shadow tint — a darker version of the base (hue kept), shown through
-  // the shadow SVG's alpha gradient.
-  const shadowColor = oklchShadow(topFill, 0.3);
+  // Pin shadow tint — the same colour as the ring. The shadow SVG carries its
+  // own alpha gradient (0 → full), which controls the shape/strength.
+  const shadowColor = ringStroke;
   const pinD = baseD * 2.2;
   return (
     <div style={{ position: 'relative', width: size, height: size, pointerEvents: 'none' }}>
@@ -55,7 +58,7 @@ export default function CustomMarker({
       {/* Pin base (tinted to base colour), then the shadow tinted via mask
           (its alpha gradient kept, recoloured to a darker base shade). */}
       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, backgroundColor: topFill, WebkitMaskImage: 'url(/images/pinbase.svg)', WebkitMaskRepeat: 'no-repeat', WebkitMaskSize: 'contain', WebkitMaskPosition: 'center', maskImage: 'url(/images/pinbase.svg)', maskRepeat: 'no-repeat', maskSize: 'contain', maskPosition: 'center' }} />
-      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, backgroundColor: shadowColor, opacity: 0.85, WebkitMaskImage: 'url(/images/pinshadow.svg)', WebkitMaskRepeat: 'no-repeat', WebkitMaskSize: 'contain', WebkitMaskPosition: 'center', maskImage: 'url(/images/pinshadow.svg)', maskRepeat: 'no-repeat', maskSize: 'contain', maskPosition: 'center' }} />
+      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, width: pinD, height: pinD, backgroundColor: shadowColor, WebkitMaskImage: 'url(/images/pinshadow.svg)', WebkitMaskRepeat: 'no-repeat', WebkitMaskSize: 'contain', WebkitMaskPosition: 'center', maskImage: 'url(/images/pinshadow.svg)', maskRepeat: 'no-repeat', maskSize: 'contain', maskPosition: 'center' }} />
     </div>
   );
 }

@@ -226,6 +226,8 @@ export default function ExperiencePlayScreen() {
             innerCornerStyle={cfg.innerCornerStyle}
             centerInset={cfg.centerInset}
             strokeWidth={cfg.strokeWidth}
+            outerStrokeWidth={cfg.outerStrokeWidth}
+            textWrap={cfg.textWrap}
             showBackgroundCircle={cfg.showBackgroundCircle}
             wheelBaseColor={cfg.wheelBaseColor}
             markerDiameter={cfg.markerDiameter}

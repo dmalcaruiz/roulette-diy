@@ -6,7 +6,8 @@ import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
-  Copy, CopyPlus, ClipboardPaste, MoreHorizontal, CheckCircle, Circle, Settings,
+  Copy, CopyPlus, ClipboardPaste, MoreHorizontal, Circle, Settings,
+  Type, Heading, PieChart, Disc, MapPin, WrapText,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
@@ -29,11 +30,16 @@ export interface EditorState {
   imageSize: number;
   cornerRadius: number;
   strokeWidth: number;
+  outerStrokeWidth: number;
+  textWrap: boolean;
   showBackgroundCircle: boolean;
+  // One base colour for all wheel chrome — it tints the ring/dividers/bg
+  // circle AND the centre marker (stateToConfig fans it out to the config's
+  // separate wheelBaseColor + markerBaseColor render fields). The editor only
+  // ever sets this single value; the marker no longer has its own colour.
   wheelBaseColor: string;
   markerDiameter: number;
   markerPeek: number;
-  markerBaseColor: string;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   segmentsMode: 'list' | 'cards';
@@ -95,6 +101,14 @@ interface WheelEditorProps {
   // and show cards popping in — see SEG_WINDOW_BUFFER_PHONE / widenPhoneWindow.
   // Defaults false so the desktop sidebar keeps the narrow window.
   isMobile?: boolean;
+  // Segment-header visibility. Lifted in the hosting screen (it drives
+  // wheel-canvas layout there too), but surfaced *here* in the Style tab,
+  // co-located with the "Header Text" size it governs — so an off header
+  // doesn't leave a dead size slider behind. When the toggle handler is
+  // omitted (legacy/desktop with no header concept), the Style tab falls
+  // back to always showing the Header Text size control.
+  showSegmentHeader?: boolean;
+  onToggleSegmentHeader?: (v: boolean) => void;
 }
 
 let segmentIdCounter = 0;
@@ -190,11 +204,12 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     imageSize: config?.imageSize ?? 60,
     cornerRadius: config?.cornerRadius ?? 30,
     strokeWidth: config?.strokeWidth ?? 7.7,
+    outerStrokeWidth: config?.outerStrokeWidth ?? 0,
+    textWrap: config?.textWrap ?? false,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
-    markerDiameter: config?.markerDiameter ?? 62,
-    markerPeek: config?.markerPeek ?? 5,
-    markerBaseColor: config?.markerBaseColor ?? '#FFFFFF',
+    markerDiameter: config?.markerDiameter ?? 60,
+    markerPeek: config?.markerPeek ?? 4,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
     // Migrate the legacy 'simple'/'complex' values from older saved wheels
@@ -229,11 +244,14 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     cornerRadius: state.cornerRadius,
     imageCornerRadius: state.cornerRadius,
     strokeWidth: state.strokeWidth,
+    outerStrokeWidth: state.outerStrokeWidth,
+    textWrap: state.textWrap,
     showBackgroundCircle: state.showBackgroundCircle,
     wheelBaseColor: state.wheelBaseColor,
     markerDiameter: state.markerDiameter,
     markerPeek: state.markerPeek,
-    markerBaseColor: state.markerBaseColor,
+    // Marker shares the one base colour — see EditorState.wheelBaseColor.
+    markerBaseColor: state.wheelBaseColor,
     innerCornerStyle: state.innerCornerStyle,
     centerInset: state.centerInset,
     segmentsMode: state.segmentsMode,
@@ -244,7 +262,7 @@ export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
-  isMobile = false,
+  isMobile = false, showSegmentHeader, onToggleSegmentHeader,
 }: WheelEditorProps) {
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
@@ -1837,135 +1855,142 @@ export default function WheelEditor({
   );
 
   // Render style tab
+  //
+  // In-place reorganization of the (previously flat) 12-control list into four
+  // labelled sections via <StyleSection>. Controls, primitives, and the
+  // patch()/commit() wiring are untouched — only grouping chrome was added,
+  // plus the two colour pickers moved into collapsible <ColorSwatchRow>s so
+  // they don't eat the whole sheet. Row labels drop the now-redundant group
+  // prefix (e.g. "Marker Diameter" → "Diameter" under the Center Marker
+  // header).
   const renderStyleTab = () => (
     <div style={{ paddingTop: 16 }}>
-      <SettingSlider label="Segment Text" value={state.textSize} min={0.05} max={1.5} step={0.05}
-        snapPoint={1}
-        onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
-      <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
-        snapPoint={1}
-        onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
-      <SettingSlider label="Image Size" value={state.imageSize} min={20} max={150} step={1}
-        snapPoint={60}
-        onChange={v => patch({ imageSize: v })} onChangeEnd={commit} />
-      <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
-        snapPoint={30}
-        onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
+      {/* ── Text & Images — everything overlaid on a wedge ──────────────── */}
+      <StyleSection title="Text & Images" icon={<Type size={13} />} first>
+        <SettingSlider label="Segment Text" value={state.textSize} min={0.1} max={1.9} step={0.05}
+          snapPoint={1}
+          onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
 
-      {/* Inner corners dropdown */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '4px', marginBottom: 12 }}>
-        <span style={{ fontWeight: 600, fontSize: 14, color: '#71717A', width: 100 }}>Inner Corners</span>
-        <div style={{ flex: 1 }} />
-        <select
-          value={state.innerCornerStyle}
-          onChange={e => set({ ...state, innerCornerStyle: e.target.value as EditorState['innerCornerStyle'] })}
-          style={{
-            padding: '6px 12px',
-            borderRadius: 10,
-            border: `1.5px solid ${BORDER}`,
-            backgroundColor: SURFACE_ELEVATED,
-            color: ON_SURFACE,
-            fontWeight: 600,
-            fontSize: 14,
-            fontFamily: 'inherit',
-            outline: 'none',
-            cursor: 'pointer',
-          }}
-        >
-          <option value="none">None</option>
-          <option value="circular">Circular</option>
-          <option value="rounded">Rounded</option>
-          <option value="straight">Straight</option>
-        </select>
-      </div>
+        {/* Auto-fit (shrink-to-fit + middle "…") is always on. This just lets a
+            long label wrap onto 2 lines when that renders larger. */}
+        <SettingToggleRow
+          icon={<WrapText size={20} />}
+          label="Wrap (2 lines)"
+          value={state.textWrap}
+          onChange={v => set({ ...state, textWrap: v })}
+        />
 
-      {state.innerCornerStyle !== 'none' && (
-        <SettingSlider label="Center Inset" value={state.centerInset} min={0} max={150} step={1.5}
-          snapPoint={50}
-          onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
-      )}
+        {/* Header on/off + its size, co-located. The on/off was a separate
+            Settings row that activated the header; without it the "Header
+            Text" size slider did nothing. Now the size only appears once the
+            header is on, so an off header leaves no dead control. When the
+            host doesn't wire onToggleSegmentHeader (desktop/legacy), fall
+            back to always showing the size. */}
+        {onToggleSegmentHeader ? (
+          <>
+            <SettingToggleRow
+              icon={<Heading size={20} />}
+              label="Header"
+              value={!!showSegmentHeader}
+              onChange={onToggleSegmentHeader}
+            />
+            {showSegmentHeader && (
+              <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
+                snapPoint={1}
+                onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
+            )}
+          </>
+        ) : (
+          <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
+            snapPoint={1}
+            onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
+        )}
 
-      <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
-        snapPoint={7.7}
-        onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
-      {/* Marker size is controlled by "Marker Diameter" below (a % of a fixed
-          fraction of the wheel). The old per-wheel "Center Marker" size was
-          removed — it made same-diameter markers render at different sizes. */}
+        <SettingSlider label="Image Size" value={state.imageSize} min={20} max={150} step={1}
+          snapPoint={60}
+          onChange={v => patch({ imageSize: v })} onChangeEnd={commit} />
+      </StyleSection>
 
-      {/* Background circle toggle */}
-      <div
-        onClick={() => set({ ...state, showBackgroundCircle: !state.showBackgroundCircle })}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '12px 16px',
-          borderRadius: 14,
-          backgroundColor: state.showBackgroundCircle ? withAlpha(PRIMARY, 0.12) : SURFACE_ELEVATED,
-          border: `1.5px solid ${state.showBackgroundCircle ? PRIMARY : BORDER}`,
-          cursor: 'pointer',
-          marginTop: 8,
-        }}
-      >
-        {state.showBackgroundCircle
-          ? <CheckCircle size={22} color={PRIMARY} />
-          : <Circle size={22} color={BORDER} />
-        }
-        <span style={{
-          marginLeft: 12,
-          fontWeight: 600,
-          fontSize: 15,
-          color: state.showBackgroundCircle ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
-        }}>
-          Background Circle
-        </span>
-      </div>
+      {/* ── Segments — the wedge shape ──────────────────────────────────── */}
+      <StyleSection title="Segments" icon={<PieChart size={13} />}>
+        <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
+          snapPoint={30}
+          onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
 
-      {/* Wheel Base Color — recolours the dividers/ring + background circle. */}
-      <div style={{ height: 8 }} />
-      <div
-        style={{ marginTop: 8 }}
-        onPointerDown={e => e.stopPropagation()}
-        onMouseDown={e => e.stopPropagation()}
-        onTouchStart={e => e.stopPropagation()}
-        onPointerUp={commit}
-      >
-        <span style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>
-          Wheel Base Color
-        </span>
-        <HexColorPicker
+        {/* Inner corners — native select (a solid touch target on mobile),
+            with the label restyled to match the slider rows above. */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '4px', marginBottom: 12 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>Inner Corners</span>
+          <div style={{ flex: 1 }} />
+          <select
+            value={state.innerCornerStyle}
+            onChange={e => set({ ...state, innerCornerStyle: e.target.value as EditorState['innerCornerStyle'] })}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 10,
+              border: `1.5px solid ${BORDER}`,
+              backgroundColor: SURFACE_ELEVATED,
+              color: ON_SURFACE,
+              fontWeight: 600,
+              fontSize: 14,
+              fontFamily: 'inherit',
+              outline: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            <option value="none">None</option>
+            <option value="circular">Circular</option>
+            <option value="rounded">Rounded</option>
+            <option value="straight">Straight</option>
+          </select>
+        </div>
+
+        {/* Center Inset only applies once the wedge has shaped inner corners
+            — progressive disclosure, unchanged. */}
+        {state.innerCornerStyle !== 'none' && (
+          <SettingSlider label="Center Inset" value={state.centerInset} min={0} max={150} step={1.5}
+            snapPoint={50}
+            onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
+        )}
+      </StyleSection>
+
+      {/* ── Wheel — the disc itself (stroke drives ring + dividers) ─────── */}
+      <StyleSection title="Wheel" icon={<Disc size={13} />}>
+        <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
+          snapPoint={7.7}
+          onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
+        {/* Extra outer border, independent of the divider stroke above. */}
+        <SettingSlider label="Outer Stroke" value={state.outerStrokeWidth} min={0} max={30} step={0.1}
+          onChange={v => patch({ outerStrokeWidth: v })} onChangeEnd={commit} />
+
+        <SettingToggleRow
+          icon={<Circle size={20} />}
+          label="Background Circle"
+          value={state.showBackgroundCircle}
+          onChange={v => set({ ...state, showBackgroundCircle: v })}
+        />
+
+        {/* One base colour for the whole wheel chrome — dividers/ring +
+            background circle here, and the centre marker below (which no
+            longer has its own colour). */}
+        <ColorSwatchRow
+          label="Base Color"
           color={state.wheelBaseColor}
           onChange={c => patch({ wheelBaseColor: c })}
-          style={{ width: '100%' }}
+          onCommit={commit}
         />
-      </div>
+      </StyleSection>
 
-      {/* Marker tuning */}
-          <div style={{ height: 8 }} />
-          <SettingSlider label="Marker Diameter" value={state.markerDiameter} min={10} max={90} step={1}
-            snapPoint={50}
-            onChange={v => patch({ markerDiameter: v })} onChangeEnd={commit} />
-          <SettingSlider label="Marker Peek" value={state.markerPeek} min={0} max={15} step={1}
-            snapPoint={15}
-            onChange={v => patch({ markerPeek: v })} onChangeEnd={commit} />
-          {/* Marker base color */}
-          <div
-            style={{ marginTop: 8 }}
-            // Keep the picker's own drags from bubbling to the sheet's
-            // scroll-to-drag handler; commit one undo entry on release.
-            onPointerDown={e => e.stopPropagation()}
-            onMouseDown={e => e.stopPropagation()}
-            onTouchStart={e => e.stopPropagation()}
-            onPointerUp={commit}
-          >
-            <span style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>
-              Marker Base Color
-            </span>
-            <HexColorPicker
-              color={state.markerBaseColor}
-              onChange={c => patch({ markerBaseColor: c })}
-              style={{ width: '100%' }}
-            />
-          </div>
+      {/* ── Center Marker — the pin ─────────────────────────────────────── */}
+      <StyleSection title="Center Marker" icon={<MapPin size={13} />}>
+        <SettingSlider label="Diameter" value={state.markerDiameter} min={10} max={90} step={1}
+          snapPoint={50}
+          onChange={v => patch({ markerDiameter: v })} onChangeEnd={commit} />
+        <SettingSlider label="Peek" value={state.markerPeek} min={0} max={15} step={1}
+          snapPoint={15}
+          onChange={v => patch({ markerPeek: v })} onChangeEnd={commit} />
+        {/* Colour lives in Wheel › Base Color — the marker shares it. */}
+      </StyleSection>
 
       <div style={{ height: 32 }} />
     </div>
@@ -2400,6 +2425,181 @@ function SegmentRow({
 // gradient track (no native <input type="range">). Themed for the dark
 // style sheet using PRIMARY as the accent; the mapping is linear (the
 // weight control's piecewise curve is specific to weights).
+// ── Style-tab section header ─────────────────────────────────────────────
+// Muted, letter-spaced label (with a leading icon) that groups the otherwise
+// flat Style controls into labelled sections — Text & Images / Segments /
+// Wheel / Center Marker. Pure layout chrome: same tokens, radii, and weights
+// as everything else, so it reads as part of the existing design language.
+// `first` drops the leading divider + top spacing so the first section hugs
+// the top of the sheet.
+function StyleSection({ title, icon, first, children }: {
+  title: string;
+  icon?: ReactNode;
+  first?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{
+      marginTop: first ? 0 : 22,
+      paddingTop: first ? 0 : 20,
+      borderTop: first ? undefined : `1px solid ${withAlpha(BORDER, 0.6)}`,
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
+        marginBottom: 14,
+        color: withAlpha(ON_SURFACE, 0.4),
+      }}>
+        {icon && <span style={{ display: 'flex' }}>{icon}</span>}
+        <span style={{
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: 1,
+          textTransform: 'uppercase',
+        }}>
+          {title}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ── Toggle row — icon + label + pill switch ──────────────────────────────
+// Mirrors the Settings tab's ToggleRow so on/off controls read identically
+// across the editor (the Style tab previously had a one-off CheckCircle card).
+// Used for Background Circle and the Header toggle.
+function SettingToggleRow({ icon, label, value, onChange }: {
+  icon?: ReactNode;
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div
+      onClick={() => onChange(!value)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        padding: '12px 16px',
+        borderRadius: 14,
+        backgroundColor: value ? withAlpha(PRIMARY, 0.12) : SURFACE_ELEVATED,
+        border: `1.5px solid ${value ? PRIMARY : BORDER}`,
+        cursor: 'pointer',
+        transition: 'all 0.18s',
+        marginBottom: 12,
+      }}
+    >
+      {icon && (
+        <span style={{ display: 'flex', color: value ? PRIMARY : withAlpha(ON_SURFACE, 0.45) }}>
+          {icon}
+        </span>
+      )}
+      <span style={{
+        flex: 1,
+        marginLeft: icon ? 12 : 0,
+        fontWeight: 600,
+        fontSize: 15,
+        color: value ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
+      }}>
+        {label}
+      </span>
+      <div style={{
+        width: 44,
+        height: 26,
+        borderRadius: 13,
+        backgroundColor: value ? PRIMARY : BORDER,
+        display: 'flex',
+        alignItems: 'center',
+        padding: 2,
+        justifyContent: value ? 'flex-end' : 'flex-start',
+        transition: 'all 0.18s',
+        flexShrink: 0,
+      }}>
+        <div style={{ width: 22, height: 22, borderRadius: '50%', backgroundColor: '#FFFFFF' }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Collapsible colour swatch row ────────────────────────────────────────
+// Replaces an always-open HexColorPicker (~200px tall) with a compact
+// swatch + hex row that expands the picker inline on tap — so two colour
+// controls don't swallow most of the sheet. Preserves the picker's existing
+// contract: its own drags stopPropagation (so the sheet doesn't read them as
+// scroll-to-drag) and one undo entry commits on pointer release.
+function ColorSwatchRow({ label, color, onChange, onCommit }: {
+  label: string;
+  color: string;
+  onChange: (c: string) => void;
+  onCommit: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '10px 14px',
+          borderRadius: 14,
+          backgroundColor: SURFACE_ELEVATED,
+          border: `1.5px solid ${open ? withAlpha(PRIMARY, 0.6) : BORDER}`,
+          cursor: 'pointer',
+          transition: 'border-color 0.18s',
+        }}
+      >
+        {/* Live swatch — dark ring + faint inner highlight so both light and
+            dark fills still read as a raised chip. */}
+        <div style={{
+          width: 26,
+          height: 26,
+          borderRadius: 8,
+          backgroundColor: color,
+          border: `2px solid ${withAlpha(BG, 0.55)}`,
+          boxShadow: `inset 0 0 0 1px ${withAlpha('#ffffff', 0.08)}`,
+          flexShrink: 0,
+        }} />
+        <span style={{ marginLeft: 12, flex: 1, fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>
+          {label}
+        </span>
+        <span style={{
+          marginRight: 10,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 13,
+          fontWeight: 600,
+          letterSpacing: 0.3,
+          color: withAlpha(ON_SURFACE, 0.5),
+          textTransform: 'uppercase',
+        }}>
+          {color}
+        </span>
+        <ChevronDown
+          size={18}
+          color={withAlpha(ON_SURFACE, 0.5)}
+          style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s ease' }}
+        />
+      </div>
+
+      {open && (
+        <div
+          style={{ marginTop: 10 }}
+          // Keep the picker's own drags from bubbling to the sheet's
+          // scroll-to-drag handler; commit one undo entry on release.
+          onPointerDown={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          onTouchStart={e => e.stopPropagation()}
+          onPointerUp={onCommit}
+        >
+          <HexColorPicker color={color} onChange={onChange} style={{ width: '100%' }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, snapPoint }: {
   label: string;
   value: number;
