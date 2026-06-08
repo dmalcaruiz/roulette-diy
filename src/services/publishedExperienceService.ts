@@ -3,7 +3,7 @@ import {
   serverTimestamp, runTransaction, increment,
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { Block } from '../models/types';
+import type { Block, ExperienceStep } from '../models/types';
 import type { UserProfile } from '../types/profile';
 import type { PublishedExperience, PublishedStepBlock } from '../types/experience';
 import { saveDraft, getDraft } from './blockService';
@@ -180,6 +180,85 @@ export async function syncPublishedExperience(args: {
     updatedAt: now,
     updatedAtServer: serverTimestamp(),
   }, { merge: true });
+}
+
+// ── Fork a published Experience into the viewer's own drafts ───────────────
+// The "use as template" / join-loop primitive: anyone who played a shared
+// Experience can spin up their OWN editable copy. Because published_experiences
+// inline every step's full config (stepBlocks), no extra fetch is needed — we
+// deep-copy those snapshots into brand-new draft blocks owned by the current
+// (possibly anonymous) user, remapping every id so nothing collides with or
+// points back at the original. Pure: builds the blocks; the caller persists
+// them with saveDraft and opens the editor.
+
+export interface ForkSource {
+  name: string;
+  description?: string | null;
+  steps: ExperienceStep[];
+  stepBlocks: PublishedStepBlock[];
+}
+
+// Fresh, collision-resistant id for a forked block (the codebase keys blocks
+// by opaque string ids; we just need uniqueness across the batch).
+let forkCounter = 0;
+function freshId(): string {
+  return `${Date.now().toString(36)}-${(forkCounter++).toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function buildForkedExperience(source: ForkSource): { experience: Block; stepBlocks: Block[] } {
+  const now = new Date().toISOString();
+  const experienceId = freshId();
+
+  // old step-block id -> new draft id, so the flow's steps[] can be remapped.
+  const remap = new Map<string, string>();
+
+  const stepBlocks: Block[] = source.stepBlocks.map(sb => {
+    const newId = freshId();
+    remap.set(sb.id, newId);
+    if (sb.type === 'roulette') {
+      return {
+        id: newId,
+        name: sb.name,
+        type: 'roulette',
+        createdAt: now,
+        lastUsedAt: now,
+        // Clone the config and re-id it (wheelConfig.id mirrors the block id
+        // for freshly-created wheels — keep that invariant).
+        wheelConfig: { ...sb.wheelConfig, id: newId },
+        parentExperienceId: experienceId,
+      };
+    }
+    return {
+      id: newId,
+      name: sb.name,
+      type: 'listRandomizer',
+      createdAt: now,
+      lastUsedAt: now,
+      listConfig: { categories: sb.listConfig.categories.map(c => ({ ...c, options: [...c.options] })) },
+      parentExperienceId: experienceId,
+    };
+  });
+
+  // Preserve flow order + branch conditions, remapped to the new ids. Drop any
+  // step whose block didn't snapshot (defensive); fall back to plain order if
+  // the source carried no usable steps.
+  const remappedSteps: ExperienceStep[] = source.steps
+    .filter(s => remap.has(s.blockId))
+    .map(s => ({ blockId: remap.get(s.blockId)!, conditionSegment: s.conditionSegment ?? null }));
+  const steps = remappedSteps.length > 0
+    ? remappedSteps
+    : stepBlocks.map(b => ({ blockId: b.id }));
+
+  const experience: Block = {
+    id: experienceId,
+    name: source.name,
+    type: 'experience',
+    createdAt: now,
+    lastUsedAt: now,
+    experienceConfig: { steps, description: source.description ?? null },
+  };
+
+  return { experience, stepBlocks };
 }
 
 // Author-only delete.

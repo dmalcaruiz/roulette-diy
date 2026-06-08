@@ -6,7 +6,15 @@
       "Bash(awk 'NR>=1242 && NR<=1518' c:/Users/dmalc/Documents/GitHub/roulette-diy/src/screens/RouletteScreen.tsx)",
       "PowerShell($conn = Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue; if \\($conn\\) { $conn | Select-Object -Unique -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue; \"killed pid $_\" } } else { \"no vite on 5173\" })",
       "PowerShell(npm run dev)",
-      "Bash(node -e \"const p=require\\('./package.json'\\); const d={...p.dependencies,...p.devDependencies}; console.log\\('canvas:',d.canvas||'no'\\); console.log\\('playwright:',d.playwright||d['@playwright/test']||'no'\\); console.log\\('puppeteer:',d.puppeteer||'no'\\); console.log\\('vitest:',d.vitest||'no'\\); console.log\\('jest:',d.jest||'no'\\);\")"
+      "Bash(node -e \"const p=require\\('./package.json'\\); const d={...p.dependencies,...p.devDependencies}; console.log\\('canvas:',d.canvas||'no'\\); console.log\\('playwright:',d.playwright||d['@playwright/test']||'no'\\); console.log\\('puppeteer:',d.puppeteer||'no'\\); console.log\\('vitest:',d.vitest||'no'\\); console.log\\('jest:',d.jest||'no'\\);\")",
+      "Bash(grep -iE \"firebase\\\\.json|firestore.*\\\\.\\(rules|json\\)|storage.*\\\\.rules|\\\\.firebaserc|functions/.*\\\\.\\(ts|js\\)$\")",
+      "WebSearch",
+      "WebFetch(domain:wheelofnames.com)",
+      "WebFetch(domain:wheelorbit.com)",
+      "WebFetch(domain:streamerutility.com)",
+      "WebFetch(domain:www.roulette.diy)",
+      "WebFetch(domain:roulette.diy)",
+      "WebFetch(domain:roulette-diy.web.app)"
     ]
   }
 }

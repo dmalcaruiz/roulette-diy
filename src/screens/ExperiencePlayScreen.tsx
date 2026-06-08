@@ -10,7 +10,8 @@ import { withAlpha } from '../utils/colorUtils';
 import { PushDownButton } from '../components/PushDownButton';
 import type { ExperienceStep, WheelConfig, ListRandomizerConfig } from '../models/types';
 import type { PublishedStepBlock } from '../types/experience';
-import { ArrowLeft, RotateCcw, Loader2 } from 'lucide-react';
+import type { ForkSource } from '../services/publishedExperienceService';
+import { ArrowLeft, RotateCcw, Loader2, Sparkles } from 'lucide-react';
 
 // Chromeless renderer for an Experience flow. Designed to be droppable into
 // OBS as a browser source — no nav bar, no header, optional transparent
@@ -32,7 +33,14 @@ interface PlayableExperience {
   isPublished: boolean;
 }
 
-export default function ExperiencePlayScreen() {
+interface ExperiencePlayScreenProps {
+  // Fork the just-played Experience into the viewer's own drafts and open the
+  // editor. Wired from App so it can persist + navigate; absent in contexts
+  // that only want a read-only player.
+  onUseAsTemplate?: (source: ForkSource) => void | Promise<void>;
+}
+
+export default function ExperiencePlayScreen({ onUseAsTemplate }: ExperiencePlayScreenProps) {
   const { id } = useParams<{ id: string }>();
   const [search] = useSearchParams();
   const navigate = useNavigate();
@@ -43,6 +51,7 @@ export default function ExperiencePlayScreen() {
   const [history, setHistory] = useState<{ stepBlockId: string; resultText: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [forking, setForking] = useState(false);
 
   const wheelRef = useRef<SpinningWheelHandle>(null);
   const transparent = search.get('bg') === 'transparent';
@@ -152,6 +161,19 @@ export default function ExperiencePlayScreen() {
     setHistory([]);
   };
 
+  // Turn what they just played into their OWN editable copy. App persists the
+  // forked drafts (under their anon or real uid) and navigates into the editor,
+  // so this screen just disables the button while that runs.
+  const onFork = async () => {
+    if (!exp || !onUseAsTemplate || forking) return;
+    setForking(true);
+    try {
+      await onUseAsTemplate({ name: exp.name, steps: exp.steps, stepBlocks: exp.stepBlocks });
+    } finally {
+      setForking(false);
+    }
+  };
+
   // Auto-spin on each step if requested.
   useEffect(() => {
     if (!autoStart || !exp) return;
@@ -190,6 +212,19 @@ export default function ExperiencePlayScreen() {
             </div>
           ))}
         </div>
+        {onUseAsTemplate && (
+          <div style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <p style={{ fontSize: 13, color: withAlpha(ON_SURFACE, 0.55), margin: '0 0 10px' }}>
+              Liked it? Make your own editable copy.
+            </p>
+            <PushDownButton color="#8B5CF6" onTap={forking ? undefined : onFork}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF', padding: '0 18px' }}>
+                {forking ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
+                <span style={{ fontWeight: 700 }}>{forking ? 'Creating your copy…' : 'Use as template'}</span>
+              </div>
+            </PushDownButton>
+          </div>
+        )}
         <PushDownButton color={PRIMARY} onTap={restart}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF', padding: '0 18px' }}>
             <RotateCcw size={18} />

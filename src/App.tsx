@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Block, BlockType, newRouletteBlock, newListRandomizerBlock } from './models/types';
 import { loadDrafts, saveDraft, deleteDraft, saveDraftOrder, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
+import { buildForkedExperience, type ForkSource } from './services/publishedExperienceService';
 import { dbg, sid, sids } from './utils/debugLog';
 import { useAuth } from './contexts/AuthContext';
 import LoginScreen from './screens/LoginScreen';
@@ -27,6 +28,13 @@ export default function App() {
   const [blocksLoaded, setBlocksLoaded] = useState(false);
   const [showCreateSheet, setShowCreateSheet] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  // The public play surface (/e/:id/play) must render for ANYONE — including
+  // a brand-new visitor before/without any sign-in — because the whole join
+  // loop starts there (play a shared Experience → fork it). It reads a public
+  // doc with no auth, so it must never be hidden behind the sign-in fallback
+  // below, even if anonymous auth is disabled in the Firebase console.
+  const isPublicPlayRoute = /^\/e\/[^/]+\/play$/.test(location.pathname);
 
   const reload = useCallback(async () => {
     if (!user) return;
@@ -269,6 +277,33 @@ export default function App() {
     saveDraft(activeUser.uid, newBlock).catch(e => console.error('saveDraft failed:', e));
   }, [user, navigateToBlock]);
 
+  // Fork a played Experience into the viewer's own drafts ("use as template").
+  // This is the join loop: anyone — including a brand-new anonymous visitor who
+  // just opened a shared /e/:id/play link — can turn what they played into an
+  // editable copy they own, then keep building (and eventually publish/share).
+  const handleForkExperience = useCallback(async (source: ForkSource) => {
+    // Anonymous-first: the visitor may still be mid background sign-in. Wait
+    // for the uid exactly like handleCreateType does.
+    let activeUser = user;
+    if (!activeUser) {
+      const { auth } = await import('./firebase');
+      const { onAuthStateChanged } = await import('firebase/auth');
+      activeUser = await new Promise<NonNullable<typeof user>>(resolve => {
+        const unsub = onAuthStateChanged(auth, (u) => { if (u) { unsub(); resolve(u); } });
+      });
+    }
+    const { experience, stepBlocks } = buildForkedExperience(source);
+    // Optimistic: surface the new copy in Profile immediately.
+    setBlocks(prev => [...prev, experience as CloudBlock, ...stepBlocks.map(b => b as CloudBlock)]);
+    // Persist the whole flow, THEN open it in the editor at step 0 — the
+    // flow-load effect needs the drafts to resolve the steps preview row.
+    await Promise.all([
+      saveDraft(activeUser.uid, experience),
+      ...stepBlocks.map(b => saveDraft(activeUser!.uid, b)),
+    ]);
+    openFlowAtStep0(experience as CloudBlock, stepBlocks as CloudBlock[], true);
+  }, [user, openFlowAtStep0]);
+
   // Gating ────────────────────────────────────────────────────────────────
   // Anonymous-first: AuthContext kicks off signInAnonymously in the
   // background but does NOT block first paint on it. The shell renders
@@ -276,8 +311,9 @@ export default function App() {
   // wait for `user` to populate.
   if (authLoading) return null;
   // Fallback: anonymous provider disabled in Firebase — show Google sign-in
-  // so the user can still get in.
-  if (!user && anonymousAuthBlocked) return <LoginScreen onLoginSuccess={() => {}} />;
+  // so the user can still get in. EXCEPT on the public play route, which must
+  // stay open to everyone (the join loop's entry point).
+  if (!user && anonymousAuthBlocked && !isPublicPlayRoute) return <LoginScreen onLoginSuccess={() => {}} />;
   // Profile setup is a permanent-user gate, not an anonymous-user gate.
   if (user && !isAnonymous && profileLoading) return null;
   if (user && !isAnonymous && !profile) return <ProfileSetupScreen />;
@@ -307,7 +343,7 @@ export default function App() {
         } />
         <Route path="/wheel/:wheelId" element={<RouteOverlay><WheelDetailScreen /></RouteOverlay>} />
         <Route path="/u/:handle" element={<RouteOverlay><UserProfileScreen /></RouteOverlay>} />
-        <Route path="/e/:id/play" element={<RouteOverlay><ExperiencePlayScreen /></RouteOverlay>} />
+        <Route path="/e/:id/play" element={<RouteOverlay><ExperiencePlayScreen onUseAsTemplate={handleForkExperience} /></RouteOverlay>} />
         <Route path="/diagnostics" element={<RouteOverlay><DiagnosticsScreen /></RouteOverlay>} />
       </Routes>
       {showCreateSheet && (

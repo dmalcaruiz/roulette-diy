@@ -99,6 +99,36 @@ export async function migrateLocalBlocksIfNeeded(uid: string): Promise<{ migrate
   return { migrated: local.length };
 }
 
+// ── Cross-uid draft rescue ──────────────────────────────────────────────
+// Merge a set of drafts into a user's collection WITHOUT clobbering drafts
+// that already live there. Used when an anonymous device signs into an
+// EXISTING Google account: signInWithCredential abandons the anon uid, so the
+// wheels created on that device would be orphaned. We read them while still
+// authed as the anon user, then call this once switched to the real account.
+// Drafts whose id already exists on the target are left untouched (the real
+// account's data wins); genuinely new ones are appended after the current
+// max order. Returns how many were added.
+export async function mergeDraftsInto(uid: string, drafts: CloudBlock[]): Promise<number> {
+  if (drafts.length === 0) return 0;
+  const existing = await loadDrafts(uid);
+  const existingIds = new Set(existing.map(d => d.id));
+  const toAdd = drafts.filter(d => !existingIds.has(d.id));
+  if (toAdd.length === 0) return 0;
+
+  let nextOrder = existing.reduce((m, d) => Math.max(m, d.order ?? 0), 0) + 1;
+  const batch = writeBatch(db);
+  const now = new Date().toISOString();
+  for (const d of toAdd) {
+    batch.set(draftDoc(uid, d.id), {
+      ...stripUndefined(d),
+      updatedAt: d.updatedAt ?? now,
+      order: nextOrder++,
+    }, { merge: true });
+  }
+  await batch.commit();
+  return toAdd.length;
+}
+
 // Preserve a backup of localStorage blocks after migration — users can still
 // view them signed-out, but the cloud is now the source of truth when signed-in.
 export function clearLocalBlocksCache(): void {

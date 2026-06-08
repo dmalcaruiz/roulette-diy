@@ -31,6 +31,14 @@ jobs:
 
       - run: npm run build
 
+      # SPA history fallback. GitHub Pages is a static host with no
+      # history-API rewrite, so every client-side route (/block/:id,
+      # /e/:id/play, /u/:handle, /wheel/:id) returns a hard 404 on direct
+      # load / reload / shared link. GitHub Pages serves /404.html for any
+      # unmatched path — making it a copy of index.html boots the SPA there,
+      # and React Router renders the correct route from window.location.
+      - run: cp dist/index.html dist/404.html
+
       - run: touch dist/.nojekyll
 
       - uses: actions/configure-pages@v4

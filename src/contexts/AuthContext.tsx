@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
 import { getProfile } from '../services/profileService';
+import { loadDrafts, mergeDraftsInto, type CloudBlock } from '../services/blockService';
 import type { UserProfile } from '../types/profile';
 
 interface AuthState {
@@ -129,10 +130,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (e?.code === 'auth/credential-already-in-use') {
           const credential = GoogleAuthProvider.credentialFromError(e);
           if (!credential) throw e; // shouldn't happen, but bail
-          // Sign in to the existing account using the credential we just
-          // obtained. signInWithCredential replaces the current (anon)
-          // session with the existing real user — no popup, no redirect.
+
+          // The Google identity already belongs to an existing account, so
+          // signInWithCredential will switch us OFF this anonymous uid onto
+          // the real one — abandoning the wheels created on THIS device while
+          // anonymous. Rescue them: read this anon user's drafts NOW (while we
+          // still satisfy the isSelf rule for the anon uid), switch accounts,
+          // then merge them into the real account's drafts. Without this, a
+          // second device signing into an existing account silently loses its
+          // local wheels — the "same account, different wheels per device" bug.
+          const anonUid = current.uid;
+          let rescued: CloudBlock[] = [];
+          try {
+            rescued = await loadDrafts(anonUid);
+          } catch (readErr) {
+            console.error('Could not read anonymous drafts before account switch:', readErr);
+          }
+
+          // signInWithCredential replaces the current (anon) session with the
+          // existing real user — no popup, no redirect.
           await signInWithCredential(auth, credential);
+
+          if (rescued.length > 0 && auth.currentUser) {
+            try {
+              const added = await mergeDraftsInto(auth.currentUser.uid, rescued);
+              if (added > 0) console.log(`Recovered ${added} draft(s) from the anonymous session.`);
+            } catch (mergeErr) {
+              console.error('Failed to migrate anonymous drafts into the signed-in account:', mergeErr);
+            }
+          }
           return;
         }
         throw e;
