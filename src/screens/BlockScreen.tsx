@@ -18,6 +18,7 @@ import { db } from '../firebase';
 import {
   X, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
   Share2, Lock, Trash2, Tag, FileText, Loader2, Compass,
+  Link2, Copy, Check,
 } from 'lucide-react';
 
 interface BlockScreenProps {
@@ -509,7 +510,7 @@ function BlockViewLayer({
 
 // ── Publishing (extracted from PublishSheet + unpublish/sync controls) ───
 
-function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: Block; onBlockUpdated: (b: Block) => void }) {
+function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpdated: (b: Block) => void }) {
   const { profile } = useAuth();
   const publishedWheelId = (block as Block & { publishedWheelId?: string | null }).publishedWheelId;
   const isPublished = !!publishedWheelId;
@@ -545,6 +546,9 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
         const coverUrl = await uploadImage({ purpose: 'wheel-cover', source: coverFile, wheelId: experienceId });
         await setDoc(doc(db, 'published_experiences', experienceId), { coverUrl, updatedAtServer: serverTimestamp() }, { merge: true });
       }
+      // Reflect the new published id in local state so the Share card appears
+      // immediately (no reload) and the rest of the app treats it as published.
+      onBlockUpdated({ ...block, publishedWheelId: experienceId } as CloudBlock);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Publish failed.');
     } finally {
@@ -580,6 +584,7 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
 
   return (
     <>
+    {isPublished && publishedWheelId && <ShareSection experienceId={publishedWheelId} />}
     <Section title="Publishing" icon={<Share2 size={16} />}>
       {isPublished ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -646,6 +651,85 @@ function PublishingSection({ block, onBlockUpdated: _onBlockUpdated }: { block: 
       />
     )}
     </>
+  );
+}
+
+// ── Share — published play link + OBS overlay URL ────────────────────────
+// Shown once an Experience is published. Deliberately minimal and in the
+// editor's Section style: the link, one primary Copy button, and the
+// transparent OBS overlay URL for a Browser Source.
+function ShareSection({ experienceId }: { experienceId: string }) {
+  const origin = (typeof window !== 'undefined' && window.location.origin)
+    ? window.location.origin
+    : 'https://roulette.diy';
+  const playUrl = `${origin}/e/${experienceId}/play`;
+  const obsUrl = `${playUrl}?bg=transparent`;
+  const [copied, setCopied] = useState<'link' | 'obs' | null>(null);
+
+  const copy = async (text: string, which: 'link' | 'obs') => {
+    const flash = () => {
+      setCopied(which);
+      setTimeout(() => setCopied(c => (c === which ? null : c)), 1600);
+    };
+    try {
+      await navigator.clipboard.writeText(text);
+      flash();
+    } catch {
+      // Fallback for browsers/contexts without the async clipboard API.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        flash();
+      } catch { /* clipboard unavailable — no-op */ }
+    }
+  };
+
+  return (
+    <Section title="Share" icon={<Link2 size={16} />}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '10px 12px', borderRadius: 12,
+        backgroundColor: SURFACE_ELEVATED, border: `1.5px solid ${BORDER}`,
+        marginBottom: 12,
+      }}>
+        <Link2 size={16} color={withAlpha(ON_SURFACE, 0.45)} style={{ flexShrink: 0 }} />
+        <span style={{
+          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontSize: 13, fontWeight: 600, color: ON_SURFACE,
+        }}>
+          {playUrl.replace(/^https?:\/\//, '')}
+        </span>
+      </div>
+
+      {/* flow-root: PushDownButton's press animation collapses without a BFC parent. */}
+      <div style={{ display: 'flow-root' }}>
+        <PushDownButton color={PRIMARY} onTap={() => copy(playUrl, 'link')}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF' }}>
+            {copied === 'link' ? <Check size={18} /> : <Copy size={18} />}
+            <span style={{ fontWeight: 700, fontSize: 15 }}>{copied === 'link' ? 'Copied!' : 'Copy link'}</span>
+          </div>
+        </PushDownButton>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <SecondaryButton onClick={() => copy(obsUrl, 'obs')}>
+          {copied === 'obs' ? 'Copied!' : 'Copy OBS overlay'}
+        </SecondaryButton>
+        <SecondaryButton onClick={() => window.open(playUrl, '_blank', 'noopener')}>
+          Open
+        </SecondaryButton>
+      </div>
+
+      <p style={{ fontSize: 11, color: withAlpha(ON_SURFACE, 0.45), margin: '10px 4px 0', lineHeight: 1.4 }}>
+        Drop the OBS overlay URL into a Browser Source — transparent background, no chrome.
+      </p>
+    </Section>
   );
 }
 
