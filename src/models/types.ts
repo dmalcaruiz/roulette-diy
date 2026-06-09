@@ -50,6 +50,8 @@ export interface WheelConfig {
   // Tick sound: 'click' = sampled click.mp3 (default); the rest are synthesized
   // voices. The win arpeggio plays regardless of this choice.
   tickSound?: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
+  // Show a result dialog + dot celebration as the win overlay fades out.
+  resultDialog?: boolean;
 }
 
 export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfig {

@@ -7,7 +7,7 @@ import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } fro
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CopyPlus, ClipboardPaste, MoreHorizontal, Circle, Settings,
-  Type, Heading, PieChart, Disc, MapPin, WrapText, Volume2,
+  Type, Heading, PieChart, Disc, MapPin, WrapText, Volume2, PartyPopper,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
@@ -47,6 +47,8 @@ export interface EditorState {
   segmentsMode: 'list' | 'cards';
   // Tick sound — 'click' (sampled) or a synth voice. Win arpeggio always plays.
   tickSound: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
+  // Result dialog + dot celebration as the win overlay fades out.
+  resultDialog: boolean;
   // Wheel id this state was initialized FROM (via buildInitialState). Used
   // by the [state, onPreview, configId] useEffect to detect the brief
   // mid-switch race where state still carries the previous wheel's data
@@ -224,6 +226,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
       : (config?.segmentsMode as unknown) === 'complex' ? 'cards'
       : config?.segmentsMode ?? 'cards'),
     tickSound: config?.tickSound ?? 'click',
+    resultDialog: config?.resultDialog ?? false,
     // Use the BLOCK id (which is unique per wheel-in-flow), NOT the
     // wheelConfig.id — in some data setups multiple blocks reference
     // the same wheelConfig id, so the wheelConfig id can't distinguish
@@ -267,6 +270,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     centerInset: state.centerInset,
     segmentsMode: state.segmentsMode,
     tickSound: state.tickSound,
+    resultDialog: state.resultDialog,
   };
 }
 
@@ -2046,6 +2050,16 @@ export default function WheelEditor({
             <option value="zap">Zap</option>
           </select>
         </div>
+      </StyleSection>
+
+      {/* ── Result — celebration screen shown when a spin lands ──────────── */}
+      <StyleSection title="Result" icon={<PartyPopper size={13} />}>
+        <SettingToggleRow
+          icon={<PartyPopper size={20} />}
+          label="Result screen + confetti"
+          value={state.resultDialog}
+          onChange={v => set({ ...state, resultDialog: v })}
+        />
       </StyleSection>
 
       <div style={{ height: 32 }} />

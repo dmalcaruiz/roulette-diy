@@ -1540,6 +1540,7 @@ export default function RouletteScreen({
               markerPeek={activeConfig.markerPeek}
               markerBaseColor={activeConfig.markerBaseColor}
               tickSound={activeConfig.tickSound}
+              resultDialog={activeConfig.resultDialog}
               spinIntensity={spinIntensity}
               isRandomIntensity={isRandomIntensity}
               headerTextColor={textColor}

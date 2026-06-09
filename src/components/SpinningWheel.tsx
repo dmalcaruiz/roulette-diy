@@ -1,4 +1,5 @@
 import { useRef, useEffect, useLayoutEffect, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 
 // WebAudio click playback. HTMLAudioElement was visibly blocking the rAF
 // loop on each spin tick (every play() call did a few ms of synchronous
@@ -327,6 +328,7 @@ function playWinChord(): void {
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 import CustomMarker from './CustomMarker';
+import DotCelebration, { DotCelebrationHandle } from './DotCelebration';
 
 // Evaluate a CSS cubic-bezier(x1,y1,x2,y2) timing function in JS, so audio
 // scheduled from it lines up exactly with a CSS `transition` using the same
@@ -387,6 +389,8 @@ export interface SpinningWheelProps {
   outerStrokeWidth?: number;
   // Decorative dots around the outer stroke band (carnival-bulb bezel).
   outerStrokeDots?: boolean;
+  // Show a result dialog + dot celebration as the win overlay fades out.
+  resultDialog?: boolean;
   showBackgroundCircle?: boolean;
   // Colour of the wheel's "white" parts — dividers + outer ring stroke and
   // the background circle. Default white.
@@ -445,6 +449,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     textWrap = false,
     outerStrokeWidth = 0,
     outerStrokeDots = false,
+    resultDialog = false,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
     markerDiameter = 60,
@@ -499,6 +504,17 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Overlay animation state
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
+  // True only while the win overlay is in its ACTIVE lifecycle (fade-in, hold,
+  // natural fade-out) — NOT during a user-triggered dismiss fade. A tap stops an
+  // active overlay; once it's being dismissed, the next tap spins normally.
+  const winOverlayActiveRef = useRef(false);
+  // Result dialog + dot celebration, revealed as the win overlay fades out.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const resultDialogRef = useRef(false);
+  resultDialogRef.current = resultDialog;
+  const celebrationRef = useRef<DotCelebrationHandle>(null);
+  const [resultText, setResultText] = useState<string | null>(null);
   // Win-overlay rAF lives in its own slot, separate from the spin /
   // decay loop's animRef. This way `cancelInFlight()` (which fires when
   // the user grabs the wheel for a new gesture) can cancel the spin
@@ -798,6 +814,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const cancelWinOverlay = useCallback(() => {
     // Nothing in flight: nothing to do.
     if (overlayOpacityRef.current === 0 && winningIndexRef.current === -1) return;
+    // The overlay is now being dismissed (no longer actively playing) — a tap
+    // from here should spin normally rather than "stop" again.
+    winOverlayActiveRef.current = false;
     cancelAnimationFrame(winAnimRef.current);
     if (winHoldTimerRef.current) {
       clearTimeout(winHoldTimerRef.current);
@@ -828,6 +847,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       winHoldTimerRef.current = null;
     }
     winningIndexRef.current = idx;
+    winOverlayActiveRef.current = true;
     const overlayDuration = 400;
     const overlayStart = performance.now();
     const animateOverlayIn = (t0: number) => {
@@ -836,7 +856,21 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       paint();
       if (t < 1) {
         winAnimRef.current = requestAnimationFrame(animateOverlayIn);
+      } else if (resultDialogRef.current) {
+        // Dialog mode: a short beat after the flash fades in, reveal the dialog
+        // + celebration and FREEZE the flash at full opacity. The fade-out is
+        // deferred until the dialog is dismissed (Done) — or killed instantly on
+        // "Spin again". So the flash is "paused" behind the dialog meanwhile.
+        winHoldTimerRef.current = setTimeout(() => {
+          winHoldTimerRef.current = null;
+          const its = itemsRef.current;
+          setResultText(its[winningIndexRef.current]?.text ?? '');
+          const cols = Array.from(new Set(its.map((it) => it.color)));
+          cols.push('#FFD23D', '#FFFFFF');
+          celebrationRef.current?.burst(cols);
+        }, 250);
       } else {
+        // No dialog: hold the flash, then fade it out (the usual win flash).
         winHoldTimerRef.current = setTimeout(() => {
           winHoldTimerRef.current = null;
           const fadeStart = performance.now();
@@ -849,6 +883,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             } else {
               overlayOpacityRef.current = 0;
               winningIndexRef.current = -1;
+              winOverlayActiveRef.current = false;
               paint();
             }
           };
@@ -1069,6 +1104,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     overlayOpacityRef.current = 0;
     winningIndexRef.current = -1;
+    winOverlayActiveRef.current = false;
 
     const current = rotationRef.current;
     const fullRotation = 2 * Math.PI;
@@ -1126,6 +1162,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // True while a momentum-decay is running, so a re-grab can mark the
   // spin as interrupted (no win animation).
   const decayInterruptedRef = useRef(false);
+  // True if the win-overlay END animation was playing at the last pointerdown —
+  // a plain tap (no drag) then just STOPS it (like a drag does) instead of
+  // launching a fresh spin. A tap on a LIVE spin still restarts the spin.
+  const tappedToStopRef = useRef(false);
   // Long-press detection on the wheel canvas. Timer fires at LONG_PRESS_MS
   // if the pointer hasn't moved past the tap-vs-drag threshold; on fire,
   // we compute which segment the tap landed on and call onSegmentLongPress.
@@ -1179,6 +1219,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button === 2) return;
+    // Was the win-overlay END animation playing when grabbed? If so a plain tap
+    // just stops it; a tap on a LIVE spin still restarts the spin as usual.
+    // Captured before the cancels below clear that state.
+    tappedToStopRef.current = winOverlayActiveRef.current;
     // Grab interrupts an in-flight win flash — fade it out gracefully
     // from its current opacity rather than letting it sit on top of
     // the user's drag.
@@ -1296,6 +1340,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (drag.crossedThreshold) setCurrentSegment(lastRenderedSegmentRef.current);
 
     if (!drag.crossedThreshold) {
+      // A tap that interrupted the END animation just stops it (already
+      // cancelled on pointerdown) — don't launch a fresh spin.
+      if (tappedToStopRef.current) return;
       // Stationary press → treat as tap → use the existing deterministic
       // spin path (with pre-scheduled audio and weighted-random winner).
       spin();
@@ -1470,6 +1517,22 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     };
   }, []);
 
+  // Result dialog dismissal: close it and let the (paused) win flash fade out.
+  const dismissResult = () => {
+    setResultText(null);
+    cancelWinOverlay();
+  };
+  // "Spin again": kill the win flash outright (next paint clears it) and re-spin.
+  const spinAgainFromResult = () => {
+    cancelAnimationFrame(winAnimRef.current);
+    if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
+    overlayOpacityRef.current = 0;
+    winningIndexRef.current = -1;
+    winOverlayActiveRef.current = false;
+    setResultText(null);
+    spin();
+  };
+
   const headerFontSize = 56 * headerTextSizeMultiplier;
 
   return (
@@ -1551,6 +1614,59 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       </div>
 
       <div style={{ height: 16 * (0.5 + 0.5 * headerSizeProgress), transition: headerTransition }} />
+
+      {/* Celebration + result dialog are PORTALED to <body>: the wheel can sit
+          inside a transformed/scaled ancestor (e.g. the editor preview), which
+          would otherwise make these position:fixed layers relative to that
+          ancestor instead of the viewport — scaling/hiding them. */}
+      {resultDialog && typeof document !== 'undefined' && createPortal(
+        <>
+          {/* Dot celebration overlay (fires as the win overlay fades out). */}
+          <DotCelebration ref={celebrationRef} />
+
+          {/* Result dialog — shown just as the win overlay begins fading out. */}
+          {resultText !== null && (
+        <div
+          onPointerDown={(e) => { if (e.target === e.currentTarget) dismissResult(); }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 10000, padding: 24,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(20, 16, 40, 0.55)',
+          }}
+        >
+          <style>{'@keyframes dotResultPop{from{opacity:0;transform:scale(.85) translateY(8px)}to{opacity:1;transform:none}}'}</style>
+          <div style={{
+            width: '100%', maxWidth: 340, background: '#fff', borderRadius: 26,
+            boxShadow: '0 24px 70px rgba(0,0,0,0.35)', padding: '30px 24px', textAlign: 'center',
+            animation: 'dotResultPop .34s cubic-bezier(.2,1.4,.4,1)',
+          }}>
+            <div style={{ fontSize: 52, lineHeight: 1 }}>🎉</div>
+            <div style={{ marginTop: 8, color: '#9b93bd', fontWeight: 700, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase' }}>
+              It landed on
+            </div>
+            <div style={{ marginTop: 6, fontSize: 30, fontWeight: 800, color: '#241a40', lineHeight: 1.15, wordBreak: 'break-word' }}>
+              {resultText}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 24 }}>
+              <button
+                onClick={spinAgainFromResult}
+                style={{ height: 50, borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#fff', background: '#7b5cff' }}
+              >
+                Spin again
+              </button>
+              <button
+                onClick={dismissResult}
+                style={{ height: 50, borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 16, fontWeight: 700, color: '#6b6688', background: '#f0eef7' }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+          )}
+        </>,
+        document.body,
+      )}
     </div>
   );
 });
