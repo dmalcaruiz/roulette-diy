@@ -503,11 +503,24 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const cancelInFlight = useCallback(() => {
     cancelAnimationFrame(animRef.current);
     cancelAnimationFrame(headerRafRef.current);
-    // Freeze a tap-spin where it is: rotationRef and the element transform were
-    // set together in the last spin frame, so committing rotationRef into the
-    // bitmap (paint → bake + transform 0) leaves the visual unchanged.
     if (gpuSpinActiveRef.current) {
       gpuSpinActiveRef.current = false;
+      // Freeze at the EXACT visual rotation. A tap-spin runs as a CSS transition
+      // on the compositor, while rotationRef is only an analytic estimate that
+      // can drift a frame or two — baking the estimate snaps the wheel the
+      // instant you grab ("harsh"). Read the live transform matrix and rebuild
+      // the absolute rotation: the matrix gives the angle mod 2π, the estimate
+      // supplies the turn count.
+      const canvas = canvasRef.current;
+      if (canvas) {
+        try {
+          const m = new DOMMatrixReadOnly(getComputedStyle(canvas).transform);
+          const matrixTheta = Math.atan2(m.b, m.a);
+          const approxDelta = rotationRef.current - bakedRotationRef.current;
+          const k = Math.round((approxDelta - matrixTheta) / (2 * Math.PI));
+          rotationRef.current = bakedRotationRef.current + matrixTheta + k * 2 * Math.PI;
+        } catch { /* DOMMatrix string ctor unsupported → keep the estimate */ }
+      }
       paint();
     }
     for (const s of scheduledSourcesRef.current) {
