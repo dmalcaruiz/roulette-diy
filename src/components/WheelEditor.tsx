@@ -255,7 +255,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     // stroke/corners hides the dots (without losing the user's on/off choice).
     outerStrokeDots: state.outerStrokeDots
       && (state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE)
-      && state.cornerRadius <= OUTER_DOTS_MAX_CORNER,
+      && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle),
     textWrap: state.textWrap,
     showBackgroundCircle: state.showBackgroundCircle,
     wheelBaseColor: state.wheelBaseColor,
@@ -1979,7 +1979,7 @@ export default function WheelEditor({
             (divider + outer) is wide enough to host them. The two add up, so
             either slider alone can reach the threshold. */}
         {state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE
-          && state.cornerRadius <= OUTER_DOTS_MAX_CORNER && (
+          && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle) && (
           <SettingToggleRow
             icon={<Circle size={20} />}
             label="Bezel Dots"

@@ -17,33 +17,57 @@ function dotsContrastColor(baseColor: string): string {
   return oklchShade(baseColor, lum > 0.5 ? 0.42 : -0.5);
 }
 
-// Decorative carnival-bulb bezel: a dot on every segment divider, PLUS a dot at
-// each segment centre — but only when the segment is wide enough that its two
-// divider dots are ≥ 2 dot-diameters apart (skipped on thin segments so the
-// centre dot doesn't crowd the dividers). Geometry in render px.
+// Decorative carnival-bulb bezel: a dot on each segment divider plus evenly-
+// spaced in-between dots. Spacing is set by the dot SIZE (which the stroke band
+// defines) — ~9 dot-diameters of arc, so a ~30-wide band lands ~30° apart (the
+// reference) and a thinner band makes smaller dots that pack tighter → MORE
+// in-between dots. A super-slim segment, whose two divider dots would crowd,
+// drops those edge dots for ONE central dot. Geometry in render px.
 function drawOuterDots(
   ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number,
   strokeWidth: number, outerStrokeWidth: number, dotColor: string,
   dividerAngles: number[], sweeps: number[],
 ): void {
   // Full chrome band: the divider stroke STRADDLES `radius` (±strokeWidth/2) and
-  // the outer stroke sits beyond it → union is [radius−sw/2, radius+sw/2+osw],
-  // centred at radius+osw/2. Centre the dots there so they sit mid-stroke whether
-  // unlocked via the divider, the outer stroke, or both.
+  // the outer stroke sits beyond it → union centred at radius+osw/2; the dots
+  // ride that centre. The band's total width also drives the dot size below.
   const bandWidth = strokeWidth + outerStrokeWidth;
   if (bandWidth <= 0 || radius <= 0) return;
   const dotRing = radius + outerStrokeWidth / 2;
-  const dotR = Math.max(1, Math.min(bandWidth * 0.34, radius * 0.032));
-  const minCentreSep = 4 * dotR; // 2 dot-diameters of arc between a segment's divider dots
+  // Dot radius tracks the band, so a wider stroke ⇒ bigger dots (and the spacing
+  // + slim thresholds below scale with it, since they derive from dotR). The
+  // radius term is just a loose safety cap so dots can't blow up on tiny wheels.
+  const dotR = Math.max(1, Math.min(bandWidth * 0.34, radius * 0.08));
   const dot = (a: number) => {
     ctx.beginPath();
     ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, dotR, 0, Math.PI * 2);
     ctx.fill();
   };
   ctx.fillStyle = dotColor;
-  for (let i = 0; i < dividerAngles.length; i++) {
-    dot(dividerAngles[i]);
-    if (sweeps[i] * dotRing >= minCentreSep) dot(dividerAngles[i] + sweeps[i] / 2);
+  const n = dividerAngles.length;
+
+  // Spacing relative to the dot size: ~7.5 diameters (= 15·dotR) of arc between
+  // dots. Smaller dots ⇒ smaller gap ⇒ more in-between dots. The per-segment
+  // count then just follows from its arc (pure geometry → symmetric).
+  const targetGap = (15 * dotR) / dotRing;
+  // A segment whose two divider dots would sit closer than ~1¼ diameters is
+  // "super slim": suppress its (shared) edge dots and place one central dot.
+  const slimArc = (2.5 * dotR) / dotRing;
+  const slim = sweeps.map((s) => s < slimArc);
+
+  for (let i = 0; i < n; i++) {
+    const prev = (i - 1 + n) % n;
+    // Shared divider dot — suppressed if either adjacent segment is super-slim,
+    // so the slim segment's crowded edges collapse into its central dot.
+    if (!slim[i] && !slim[prev]) dot(dividerAngles[i]);
+    if (slim[i]) {
+      dot(dividerAngles[i] + sweeps[i] / 2); // one central dot on the slim segment
+    } else {
+      const interior = Math.max(0, Math.min(40, Math.round(sweeps[i] / targetGap) - 1));
+      for (let j = 1; j <= interior; j++) {
+        dot(dividerAngles[i] + sweeps[i] * (j / (interior + 1)));
+      }
+    }
   }
 }
 
