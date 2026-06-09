@@ -269,22 +269,30 @@ export function paintWheel(
   ctx.rotate(rotation);
   ctx.translate(-center.x, -center.y);
 
-  // Extra outer ring, silhouette-following variant. With no background circle
-  // the wheel's outline is the segment union (a "flower" once corners are
-  // rounded), not a disc — so a plain circle ring wouldn't hug it. We instead
-  // paint a slightly enlarged copy of the segments behind the real ones: it
-  // peeks out by `outerStrokeWidth` along the true outline (petals AND
-  // notches) and is fully covered everywhere else. (The disc case keeps the
-  // cheaper circle ring below.) Scale is chosen so the peek lands just past
-  // the segments' own outer-arc stroke, matching the circle ring's offset.
+  // Extra outer ring, silhouette-following. With no background circle the
+  // outline is the segment union (a "flower" once corners are rounded). A
+  // scaled copy was used here, but a uniform scale offsets each edge in
+  // proportion to its distance from centre, so the ring TAPERED where the
+  // rounded corners curve inward. Instead STROKE the segment outlines: the
+  // outer half lands `outerStrokeWidth` past the segment's own edge stroke, and
+  // the fills + dividers below cover the inner half and every interior edge —
+  // leaving a constant-width ring that hugs the true outline (corners included).
   if (outerStrokeWidth > 0 && !showBackgroundCircle && radius > 0) {
-    const f = (radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth) / radius;
+    // Donut wheels have an inner hole; clip it out so the wide stroke doesn't
+    // also ring the inner edge. (innerCornerStyle 'none' fills to the centre, so
+    // the inner half is covered there and no clip is needed.)
+    const innerHole = centerInset > 0 && innerCornerStyle !== 'none' ? centerInset : 0;
     ctx.save();
-    ctx.translate(center.x, center.y);
-    ctx.scale(f, f);
-    ctx.translate(-center.x, -center.y);
-    ctx.fillStyle = wheelBaseColor;
-    for (const p of layout.paths) ctx.fill(p);
+    if (innerHole > 0) {
+      ctx.beginPath();
+      ctx.rect(-width, -height, width * 3, height * 3);
+      ctx.arc(center.x, center.y, innerHole, 0, Math.PI * 2);
+      ctx.clip('evenodd');
+    }
+    ctx.strokeStyle = wheelBaseColor;
+    ctx.lineWidth = strokeWidth + outerStrokeWidth * 2;
+    ctx.lineJoin = 'round';
+    for (const p of layout.paths) ctx.stroke(p);
     ctx.restore();
   }
 
@@ -646,17 +654,21 @@ export function paintWheelThumbnail(
     startAngle += sweep;
   }
 
-  // No background circle → trace the segment-union silhouette (the "flower")
-  // with an enlarged copy behind, mirroring paintWheel. With the disc on, the
-  // back circle above already supplies the (circular) outer band.
+  // No background circle → a constant-width STROKE of the segment-union
+  // silhouette (a scaled copy tapered at the rounded corners). Mirrors paintWheel.
   if (outerStrokeW > 0 && !showRing && pieR > 0) {
-    const f = (pieR + (strokeW > 0 ? strokeW / 2 : 0) + outerStrokeW) / pieR;
+    const innerHole = innerInset > 0 && wheelInnerStyle !== 'none' ? innerInset : 0;
     ctx.save();
-    ctx.translate(center.x, center.y);
-    ctx.scale(f, f);
-    ctx.translate(-center.x, -center.y);
-    ctx.fillStyle = monochrome ?? wheelBaseColor;
-    for (const p of thumbPaths) ctx.fill(p);
+    if (innerHole > 0) {
+      ctx.beginPath();
+      ctx.rect(-width, -height, width * 3, height * 3);
+      ctx.arc(center.x, center.y, innerHole, 0, Math.PI * 2);
+      ctx.clip('evenodd');
+    }
+    ctx.strokeStyle = monochrome ?? wheelBaseColor;
+    ctx.lineWidth = strokeW + outerStrokeW * 2;
+    ctx.lineJoin = 'round';
+    for (const p of thumbPaths) ctx.stroke(p);
     ctx.restore();
   }
 
