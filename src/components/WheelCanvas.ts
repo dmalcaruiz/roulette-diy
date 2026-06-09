@@ -466,11 +466,17 @@ export function paintWheel(
   // colour as the rest of the chrome, so it reads as a thicker outer border
   // that — unlike `strokeWidth` — doesn't also thicken the dividers.
   if (outerStrokeWidth > 0 && showBackgroundCircle) {
-    const ringRadius = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth / 2;
+    // Extend the ring's INNER edge in to `radius` so it OVERLAPS the wheel's own
+    // edge stroke rather than merely abutting it at radius+strokeWidth/2. That
+    // abutment left a sub-pixel AA seam — a faint dark sliver — whenever
+    // strokeWidth > 0 (at strokeWidth 0 the ring already started flush at radius,
+    // which is why the artifact vanished there). Outer edge is unchanged.
+    const innerEdge = radius;
+    const outerEdge = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth;
     ctx.beginPath();
-    ctx.arc(center.x, center.y, ringRadius, 0, Math.PI * 2);
+    ctx.arc(center.x, center.y, (innerEdge + outerEdge) / 2, 0, Math.PI * 2);
     ctx.strokeStyle = wheelBaseColor;
-    ctx.lineWidth = outerStrokeWidth;
+    ctx.lineWidth = outerEdge - innerEdge;
     ctx.stroke();
   }
 
