@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
-import { OUTER_DOTS_MIN_STROKE, OUTER_DOTS_MAX_CORNER } from './WheelCanvas';
+import { OUTER_DOTS_MIN_STROKE, OUTER_DOTS_MAX_CORNER, SEGMENT_TEXTURES } from './WheelCanvas';
 import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
@@ -22,6 +22,7 @@ interface SegmentData {
   weight: number;
   imagePath?: string | null;
   iconName?: string | null;
+  texture?: string | null;
 }
 
 export interface EditorState {
@@ -188,6 +189,25 @@ function getNextColor(segments: SegmentData[]): string {
   return SEGMENT_COLORS[(lastIdx + 1) % SEGMENT_COLORS.length];
 }
 
+// CSS background pattern previewing a segment texture over its colour, for the
+// inline texture-picker swatches. Mirrors the canvas patterns in WheelCanvas.
+function texturePreviewStyle(texture: string, color: string): React.CSSProperties {
+  if (texture === 'none') return { backgroundColor: color };
+  const ov = withAlpha(readableTextColor(color), 0.4);
+  switch (texture) {
+    case 'dots':
+      return { backgroundColor: color, backgroundImage: `radial-gradient(${ov} 1.4px, transparent 1.6px)`, backgroundSize: '7px 7px' };
+    case 'stripes':
+      return { backgroundColor: color, backgroundImage: `repeating-linear-gradient(45deg, ${ov} 0 1.4px, transparent 1.4px 7px)` };
+    case 'grid':
+      return { backgroundColor: color, backgroundImage: `linear-gradient(${ov} 1px, transparent 1px), linear-gradient(90deg, ${ov} 1px, transparent 1px)`, backgroundSize: '7px 7px' };
+    case 'crosshatch':
+      return { backgroundColor: color, backgroundImage: `repeating-linear-gradient(45deg, ${ov} 0 1px, transparent 1px 7px), repeating-linear-gradient(-45deg, ${ov} 0 1px, transparent 1px 7px)` };
+    default:
+      return { backgroundColor: color };
+  }
+}
+
 export function buildInitialState(config?: WheelConfig | null, wheelId?: string): EditorState {
   const segments: SegmentData[] = config
     ? config.items.map(item => ({
@@ -197,6 +217,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
         weight: item.weight,
         imagePath: item.imagePath,
         iconName: item.iconName,
+        texture: item.texture,
       }))
     : [
         { id: `${segmentIdCounter++}`, text: 'Option 1', color: SEGMENT_COLORS[9], weight: 1 },
@@ -247,6 +268,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
       weight: seg.weight,
       imagePath: seg.imagePath,
       iconName: seg.iconName,
+      texture: seg.texture,
     })),
     textSize: state.textSize,
     headerTextSize: state.headerTextSize,
@@ -336,6 +358,7 @@ export default function WheelEditor({
     }
   };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
+  const [texturePickerSegment, setTexturePickerSegment] = useState<number | null>(null);
   // Weight slider thumb grows only while directly touched/dragged (only one
   // card is expanded at a time, so a single flag covers it). No grow/glide
   // tied to the +/- buttons.
@@ -1624,34 +1647,75 @@ export default function WheelEditor({
                 </div>
 
                 {/* Color + image buttons */}
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  {/* Color — a single base-layer chip (the +/- button's lower
+                      layer) filled with the SEGMENT colour. */}
                   <button
-                    onClick={() => setColorPickerSegment(colorPickerSegment === index ? null : index)}
+                    onClick={() => { setColorPickerSegment(colorPickerSegment === index ? null : index); setTexturePickerSegment(null); }}
+                    aria-label="Segment colour"
                     style={{
-                      flex: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 8,
-                      padding: '10px 16px',
-                      borderRadius: 12,
-                      backgroundColor: '#F8F8F9',
-                      border: `1.5px solid ${withAlpha('#1E1E2C', 0.12)}`,
-                      cursor: 'pointer',
-                      fontSize: 14,
-                      fontWeight: 600,
-                      color: '#1E1E2C',
+                      flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
+                      backgroundColor: segment.color,
+                      boxShadow: `0 0 0 3.5px ${deriveCardSurfaces(segment.color).halo}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}
                   >
-                    <Palette size={18} color={withAlpha('#1E1E2C', 0.6)} />
-                    <div style={{
-                      width: 20, height: 20,
-                      borderRadius: '50%',
-                      backgroundColor: segment.color,
-                      border: `1.5px solid ${withAlpha('#1E1E2C', 0.12)}`,
-                    }} />
+                    <Palette size={18} color={readableTextColor(segment.color)} />
+                  </button>
+                  {/* Texture — opens the preset-pattern picker. */}
+                  <button
+                    onClick={() => { setTexturePickerSegment(texturePickerSegment === index ? null : index); setColorPickerSegment(null); }}
+                    aria-label="Segment texture"
+                    style={{
+                      flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
+                      backgroundColor: '#F8F8F9',
+                      boxShadow: `0 0 0 3.5px ${deriveCardSurfaces('#F8F8F9').halo}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      fontSize: 13, fontWeight: 700, color: '#1E1E2C',
+                    }}
+                  >
+                    <LayoutGrid size={17} color={withAlpha('#1E1E2C', 0.6)} />
+                    Texture
+                  </button>
+                  {/* Image — picker lands in the next pass; styled in now. */}
+                  <button
+                    aria-label="Segment image (coming soon)"
+                    style={{
+                      flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'not-allowed',
+                      backgroundColor: '#F8F8F9',
+                      boxShadow: `0 0 0 3.5px ${deriveCardSurfaces('#F8F8F9').halo}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      fontSize: 13, fontWeight: 700, color: withAlpha('#1E1E2C', 0.45),
+                    }}
+                  >
+                    <Image size={17} color={withAlpha('#1E1E2C', 0.45)} />
+                    Image
                   </button>
                 </div>
+
+                {/* Inline texture picker — preset patterns over the segment colour. */}
+                {texturePickerSegment === index && (
+                  <div
+                    onPointerDown={(e) => e.stopPropagation()}
+                    style={{ marginTop: 12, display: 'flex', gap: 8 }}
+                  >
+                    {SEGMENT_TEXTURES.map((t) => {
+                      const active = (segment.texture ?? 'none') === t;
+                      return (
+                        <button
+                          key={t}
+                          onClick={() => { patchSegment(index, { texture: t === 'none' ? null : t }); commit(); }}
+                          aria-label={`Texture: ${t}`}
+                          style={{
+                            flex: 1, height: 44, borderRadius: 10, cursor: 'pointer',
+                            border: active ? `2.5px solid ${PRIMARY}` : `1.5px solid ${withAlpha('#1E1E2C', 0.15)}`,
+                            ...texturePreviewStyle(t, segment.color),
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Inline color picker */}
                 {colorPickerSegment === index && (

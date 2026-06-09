@@ -1,6 +1,68 @@
 import { WheelItem } from '../models/types';
 import { hexToRgba, lerpColor, withAlpha, oklchShade, readableTextColor } from '../utils/colorUtils';
 
+// Preset segment textures — a repeating pattern overlaid on the fill colour.
+// 'none' = solid colour. Shared with the editor's texture picker.
+export const SEGMENT_TEXTURES = ['none', 'dots', 'stripes', 'grid', 'crosshatch'] as const;
+export type SegmentTexture = (typeof SEGMENT_TEXTURES)[number];
+
+// Semi-transparent contrasting overlay for the pattern, so it reads on both
+// light and dark fills.
+function textureOverlayColor(fill: string): string {
+  return withAlpha(readableTextColor(fill), 0.18);
+}
+
+// Draw a repeating pattern clipped to a segment's wedge `path`, over its fill.
+// Centred on (cx, cy) and spanning the wheel radius, so every segment shares one
+// aligned global pattern (it rotates with the wheel, as the call site is inside
+// the rotated frame).
+function drawSegmentTexture(
+  ctx: CanvasRenderingContext2D, path: Path2D, cx: number, cy: number,
+  radius: number, texture: string, overlay: string,
+): void {
+  if (!texture || texture === 'none' || radius <= 0) return;
+  const sp = Math.max(7, radius * 0.05); // pattern spacing
+  ctx.save();
+  ctx.clip(path);
+  ctx.fillStyle = overlay;
+  ctx.strokeStyle = overlay;
+  if (texture === 'dots') {
+    const dr = sp * 0.2;
+    for (let x = cx - radius; x <= cx + radius; x += sp) {
+      for (let y = cy - radius; y <= cy + radius; y += sp) {
+        ctx.beginPath();
+        ctx.arc(x, y, dr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (texture === 'grid') {
+    ctx.lineWidth = Math.max(1, sp * 0.09);
+    for (let x = cx - radius; x <= cx + radius; x += sp) {
+      ctx.beginPath(); ctx.moveTo(x, cy - radius); ctx.lineTo(x, cy + radius); ctx.stroke();
+    }
+    for (let y = cy - radius; y <= cy + radius; y += sp) {
+      ctx.beginPath(); ctx.moveTo(cx - radius, y); ctx.lineTo(cx + radius, y); ctx.stroke();
+    }
+  } else { // stripes / crosshatch — diagonal lines
+    ctx.lineWidth = Math.max(1, sp * 0.16);
+    for (let o = -2 * radius; o <= 2 * radius; o += sp) {
+      ctx.beginPath();
+      ctx.moveTo(cx - radius, cy - radius + o);
+      ctx.lineTo(cx + radius, cy + radius + o);
+      ctx.stroke();
+    }
+    if (texture === 'crosshatch') {
+      for (let o = -2 * radius; o <= 2 * radius; o += sp) {
+        ctx.beginPath();
+        ctx.moveTo(cx - radius, cy + radius - o);
+        ctx.lineTo(cx + radius, cy - radius - o);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
 // Minimum combined (strokeWidth + outerStrokeWidth) for the decorative outer
 // dots to be available/drawn — below this there isn't enough chrome band to
 // host them. Shared with the editor so the toggle unlocks at the same point.
@@ -397,6 +459,9 @@ export function paintWheel(
     ctx.fillStyle = effectiveColor;
     ctx.fill(path);
 
+    // Texture — pattern overlay on the fill (under the divider stroke + text).
+    if (item.texture) drawSegmentTexture(ctx, path, center.x, center.y, radius, item.texture, textureOverlayColor(effectiveColor));
+
     // Stroke
     if (strokeWidth > 0) {
       ctx.strokeStyle = wheelBaseColor;
@@ -525,6 +590,7 @@ export function paintWheel(
     const winItem = items[winningIndex];
     ctx.fillStyle = winItem.color;
     ctx.fill(layout.paths[winningIndex]);
+    if (winItem.texture) drawSegmentTexture(ctx, layout.paths[winningIndex], center.x, center.y, radius, winItem.texture, textureOverlayColor(winItem.color));
 
     // Winning segment text — always drawn (the wedge clip below crops
     // anything that would overflow a too-thin slice into its neighbours).

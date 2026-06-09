@@ -6,6 +6,9 @@ export interface WheelItem {
   weight: number;
   imagePath?: string | null;
   iconName?: string | null;
+  // Preset pattern overlaid on the segment's fill colour. See SEGMENT_TEXTURES
+  // in WheelCanvas. Undefined / 'none' = solid colour.
+  texture?: string | null;
 }
 
 // ── WheelConfig ──────────────────────────────────────────────────────────

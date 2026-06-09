@@ -16,7 +16,8 @@
       "WebFetch(domain:roulette.diy)",
       "WebFetch(domain:roulette-diy.web.app)",
       "Bash(node c:/tmp/render-ticks.mjs)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "PowerShell($ErrorActionPreference='SilentlyContinue'; gh repo list --limit 200 | Select-String -Pattern 'wheel' -SimpleMatch; Write-Output '--- gh available? ---'; \\(Get-Command gh\\).Source)"
     ]
   }
 }
