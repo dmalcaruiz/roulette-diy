@@ -1,5 +1,5 @@
 import { WheelItem } from '../models/types';
-import { hexToRgba, lerpColor, withAlpha, oklchShade } from '../utils/colorUtils';
+import { hexToRgba, lerpColor, withAlpha, oklchShade, readableTextColor } from '../utils/colorUtils';
 
 // Minimum combined (strokeWidth + outerStrokeWidth) for the decorative outer
 // dots to be available/drawn — below this there isn't enough chrome band to
@@ -440,8 +440,8 @@ export function paintWheel(
       ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
 
       // Draw text — per-segment fitted size + (optional) two lines from the
-      // cached auto-fit layout.
-      ctx.fillStyle = '#FFFFFF';
+      // cached auto-fit layout. Colour flips to black on light fills (OKLCH L).
+      ctx.fillStyle = readableTextColor(effectiveColor);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
 
@@ -531,7 +531,7 @@ export function paintWheel(
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);
 
-      ctx.fillStyle = '#FFFFFF';
+      ctx.fillStyle = readableTextColor(winItem.color);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       // Same fitted size + lines as the wheel, so the win overlay matches.

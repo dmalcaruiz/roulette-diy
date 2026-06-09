@@ -260,3 +260,24 @@ export function lerpColor(from: string, to: string, t: number): string {
     Math.round(a.a + (b.a - a.a) * t),
   );
 }
+
+// OKLCH perceptual lightness (L, 0..1) of a hex colour.
+export function oklchLightness(hexColor: string): number {
+  const { r, g, b } = hexToRgba(hexColor);
+  const lr = gammaExpansion(r / 255);
+  const lg = gammaExpansion(g / 255);
+  const lb = gammaExpansion(b / 255);
+  const lCone = cubeRoot(0.412221469470763 * lr + 0.5363325372617348 * lg + 0.0514459932675022 * lb);
+  const mCone = cubeRoot(0.2119034958178252 * lr + 0.6806995506452344 * lg + 0.1073969535369406 * lb);
+  const sCone = cubeRoot(0.0883024591900564 * lr + 0.2817188391361215 * lg + 0.6299787016738222 * lb);
+  return 0.210454268309314 * lCone + 0.7936177747023054 * mCone - 0.0040720430116193 * sCone;
+}
+
+// Readable text colour over a coloured fill: white by default, flipping to black
+// only once the fill is LIGHTER (in OKLCH lightness) than #ffd500. The flip point
+// sits a hair ABOVE #ffd500's own lightness, so #ffd500 itself (and anything
+// darker) keeps white text; only fills lighter than it get black.
+const TEXT_FLIP_LIGHTNESS = oklchLightness('#ffd500') + 0.02;
+export function readableTextColor(bgHex: string): string {
+  return oklchLightness(bgHex) > TEXT_FLIP_LIGHTNESS ? '#000000' : '#FFFFFF';
+}

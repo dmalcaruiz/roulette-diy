@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
-import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, readableTextColor } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
@@ -1123,7 +1123,7 @@ export default function WheelEditor({
     const bgColor = isExpanded ? '#FFFFFF' : surfaces.top;
     const borderColor = surfaces.innerStroke;
     const bottomColor = surfaces.bottom;
-    const textColor = isExpanded ? '#1E1E2C' : '#FFFFFF';
+    const textColor = isExpanded ? '#1E1E2C' : readableTextColor(surfaces.top);
 
     const card = (
       // paddingBottom: 6.5 reserves room inside the SwipeableActionCell's
