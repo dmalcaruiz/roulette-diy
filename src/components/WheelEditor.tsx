@@ -1133,7 +1133,7 @@ export default function WheelEditor({
       // halo extends past the SwipeableActionCell entirely.
       <div
         key={segment.id}
-        style={{ paddingBottom: 6.5 }}
+        style={{ paddingBottom: 5 }}
         // Desktop right-click → segment actions sheet (mirrors the preview
         // tiles). Only while collapsed, so right-clicking an expanded card's
         // text field still gives the native copy/paste menu during editing.
@@ -1148,7 +1148,7 @@ export default function WheelEditor({
               SegmentRow's outer boxShadow. */}
           <div style={{
             position: 'absolute',
-            left: 0, right: 0, top: 6.5, bottom: -6.5,
+            left: 0, right: 0, top: 5, bottom: -5,
             borderRadius: 21,
             backgroundColor: bottomColor,
           }} />
@@ -1725,7 +1725,7 @@ export default function WheelEditor({
       <SwipeableActionCell
         key={segment.id}
         disabled={grabbedIndex === index}
-        bottomPeek={6.5}
+        bottomPeek={5}
         onOffsetChange={(offset, dragging) => {
           const el = haloElsRef.current.get(segment.id);
           if (!el) return;
@@ -1744,7 +1744,7 @@ export default function WheelEditor({
               position: 'absolute',
               left: 0,
               right: 0,
-              top: 6.5,
+              top: 5,
               bottom: 0,
               borderRadius: 21,
               boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.36)`,
@@ -2462,17 +2462,12 @@ function SegmentRow({
         WebkitTouchCallout: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
-        // Skip layout + paint for off-screen rows. With a long segment
-        // list this is the difference between the browser laying out N
-        // cards on sheet-open (laggy) vs only the ~5 that fit in the
-        // sheet viewport. `contain-intrinsic-size` is the assumed
-        // height while the element is skipped — set conservatively to
-        // the typical collapsed card height so scrollbar sizing /
-        // scroll-anchoring stay reasonable. Disabled while the row is
-        // being drag-reordered (the transform can carry it past the
-        // viewport edge and we want it rendered the whole time).
-        contentVisibility: isGrabbed ? 'visible' : 'auto',
-        containIntrinsicSize: 'auto 80px',
+        // NOTE: per-row `content-visibility: auto` was removed here. The spacer
+        // virtualization above already renders only the in-window rows, so it
+        // wasn't needed for perf — and its implicit `contain: paint` clipped the
+        // halo's box-shadow (a descendant) to the row box, which is why the
+        // outer shadow halo wasn't showing. Dropping it restores the halo, the
+        // same as BlockRow (which never had content-visibility).
       }}
     >
       {/* Halo is rendered INSIDE the SwipeableActionCell now (via its
