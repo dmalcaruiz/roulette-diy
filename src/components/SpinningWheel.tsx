@@ -87,6 +87,46 @@ import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 import CustomMarker from './CustomMarker';
 
+// Evaluate a CSS cubic-bezier(x1,y1,x2,y2) timing function in JS, so audio
+// scheduled from it lines up exactly with a CSS `transition` using the same
+// curve. Newton-Raphson with a bisection fallback (what browsers do internally).
+function makeCubicBezier(x1: number, y1: number, x2: number, y2: number): (x: number) => number {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (t: number) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t: number) => ((ay * t + by) * t + cy) * t;
+  const sampleDX = (t: number) => (3 * ax * t + 2 * bx) * t + cx;
+  return (x: number) => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const dx = sampleX(t) - x;
+      if (Math.abs(dx) < 1e-5) return sampleY(t);
+      const d = sampleDX(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= dx / d;
+    }
+    let lo = 0, hi = 1; t = x;
+    for (let i = 0; i < 20; i++) {
+      const dx = sampleX(t) - x;
+      if (Math.abs(dx) < 1e-5) break;
+      if (dx < 0) lo = t; else hi = t;
+      t = (lo + hi) / 2;
+    }
+    return sampleY(t);
+  };
+}
+
+// Spin deceleration curve — fast launch, long gentle settle. Shared by the CSS
+// transition (visual) and the JS evaluator (audio/header), so they stay locked.
+const SPIN_EASE_CSS = 'cubic-bezier(0.12, 0.78, 0.16, 1)';
+const SPIN_EASE_FN = makeCubicBezier(0.12, 0.78, 0.16, 1);
+
+// Wind-up curve — a quick ease-in-out reverse before the spin launches.
+const PULLBACK_EASE_CSS = 'cubic-bezier(0.45, 0, 0.55, 1)';
+const PULLBACK_EASE_FN = makeCubicBezier(0.45, 0, 0.55, 1);
+
 
 export interface SpinningWheelProps {
   items: WheelItem[];
@@ -179,8 +219,25 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const animRef = useRef<number>(0);
   const rotationRef = useRef(0);
   const isSpinningRef = useRef(false);
+
+  // Rotation the canvas BITMAP is painted at. The live/visual rotation is
+  // `rotationRef`; the difference (rotationRef − bakedRotation) is applied as a
+  // CSS transform on the canvas element. This lets the tap-spin rotate on the
+  // GPU compositor without re-rasterizing the wheel every frame.
+  const bakedRotationRef = useRef(0);
+  // The tap-spin rotates the canvas ELEMENT via a per-frame transform (cheap,
+  // compositor-only) instead of rasterizing the wheel each frame. headerRaf is
+  // that loop; gpuSpinActive guards paint() from re-baking mid-spin; spinStart
+  // is the spin clock.
+  const headerRafRef = useRef<number>(0);
+  const gpuSpinActiveRef = useRef(false);
+  const spinStartPerfRef = useRef<number>(0);
   const [isSpinning, setIsSpinning] = useState(false);
   const [currentSegment, setCurrentSegment] = useState('');
+  // Header text element — written directly (no React re-render) during a live
+  // finger drag, where a setState per segment crossing would saturate the main
+  // thread and stall the transform that tracks the finger.
+  const headerTextRef = useRef<HTMLDivElement>(null);
   const [segmentHeaderOpacity, setSegmentHeaderOpacity] = useState(1);
 
   // Overlay animation state
@@ -344,7 +401,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     const config: WheelPainterConfig = {
       items,
-      rotation: rotationRef.current,
+      rotation: bakedRotationRef.current,
       fontSize,
       cornerRadius,
       strokeWidth,
@@ -383,7 +440,23 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // call site automatically up-to-date with no other code changes.
   const paintImplRef = useRef(paintImpl);
   paintImplRef.current = paintImpl;
-  const paint = useCallback(() => paintImplRef.current(), []);
+  // Paint the wheel at the CURRENT visual rotation and clear the element
+  // transform — i.e. "commit" the rotation into the bitmap. Every interactive
+  // path (drag, decay, reset, transitions, win flash, initial) calls this; only
+  // the GPU tap-spin bypasses it to animate the element transform instead.
+  const paint = useCallback(() => {
+    // Guarded during a tap-spin: the canvas stays baked at the start rotation
+    // while the element transform animates, so a stray paint() (e.g. from a
+    // prop-change effect) must not re-bake and desync the transform.
+    if (gpuSpinActiveRef.current) return;
+    bakedRotationRef.current = rotationRef.current;
+    paintImplRef.current();
+    const c = canvasRef.current;
+    // Clear any spin transition so this commit applies the new transform
+    // instantly instead of animating toward it. translateZ(0) forces a
+    // persistent GPU layer so element transforms stay compositor-only.
+    if (c) { c.style.transition = 'none'; c.style.transform = 'rotate(0rad) translateZ(0)'; }
+  }, []);
 
   // Initial paint and repaint on prop changes — useLayoutEffect (not
   // useEffect) so the canvas is drawn synchronously after layout BEFORE the
@@ -426,11 +499,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // begins it must run to completion regardless of subsequent gestures.
   const cancelInFlight = useCallback(() => {
     cancelAnimationFrame(animRef.current);
+    cancelAnimationFrame(headerRafRef.current);
+    // Freeze a tap-spin where it is: rotationRef and the element transform were
+    // set together in the last spin frame, so committing rotationRef into the
+    // bitmap (paint → bake + transform 0) leaves the visual unchanged.
+    if (gpuSpinActiveRef.current) {
+      gpuSpinActiveRef.current = false;
+      paint();
+    }
     for (const s of scheduledSourcesRef.current) {
       try { s.stop(); } catch {}
     }
     scheduledSourcesRef.current = [];
-  }, []);
+  }, [paint]);
 
   // Win-overlay flash. Lives in its own animation slot so user gestures
   // (drag-to-spin, tap-to-spin, anything that calls cancelInFlight) can
@@ -531,115 +612,101 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       effectiveIntensity = Math.max(0, Math.min(1, spinIntensity + offset));
     }
 
-    // Pullback
-    const basePullback = isRandomIntensity
-      ? (10 + effectiveIntensity * 35) * (Math.PI / 180)
-      : (5 + effectiveIntensity * 45) * (Math.PI / 180);
-    const pullbackVariation = isRandomIntensity
-      ? (Math.random() - 0.5) * 10 * (Math.PI / 180)
-      : (Math.random() - 0.5) * 2 * (Math.PI / 180);
-    const pullbackAmount = basePullback + pullbackVariation;
-
-    // Rotations — bumped up so the tap-spin feels punchy. More
-    // revolutions packed into the same duration = higher peak angular
-    // velocity = more dramatic spin.
+    // Revolutions + winner alignment → total rotation delta from the rest
+    // position so the winning segment lands under the marker.
     const baseRotations = isRandomIntensity
       ? 3 + Math.floor(effectiveIntensity * 7)
       : 3 + Math.floor(effectiveIntensity * 9);
     const totalRotations = isRandomIntensity
       ? baseRotations + Math.random()
       : baseRotations + Math.random() * 0.2;
-
-    // Winning angle
     let winningAngle = 0;
     const winningSegmentSize = arcSize * items[winningIndex].weight;
-    for (let i = 0; i <= winningIndex; i++) {
-      winningAngle += arcSize * items[i].weight;
-    }
-    const offset = Math.random() * winningSegmentSize;
-    const finalRotation = totalRotations * 2 * Math.PI + (2 * Math.PI - winningAngle + offset);
+    for (let i = 0; i <= winningIndex; i++) winningAngle += arcSize * items[i].weight;
+    const segOffset = Math.random() * winningSegmentSize;
+    const finalRotation = totalRotations * 2 * Math.PI + (2 * Math.PI - winningAngle + segOffset);
 
-    // Duration
+    // Duration (ms) — scales with intensity.
     const baseDuration = isRandomIntensity
       ? 2000 + effectiveIntensity * 4000
       : 1500 + effectiveIntensity * 5500;
-    const durationOffset = isRandomIntensity
-      ? Math.random() * 500 - 250
-      : Math.random() * 100 - 50;
-    const mainDuration = baseDuration + durationOffset;
+    const durationOffset = isRandomIntensity ? Math.random() * 500 - 250 : Math.random() * 100 - 50;
+    const durationMs = baseDuration + durationOffset;
 
-    const pullbackDuration = isRandomIntensity
+    // Wind-up — a short reverse rotation (a few degrees) before the launch, so
+    // it reads as anticipation rather than a real backspin.
+    const pullbackAmount = (isRandomIntensity
+      ? (10 + effectiveIntensity * 35) + (Math.random() - 0.5) * 10
+      : (5 + effectiveIntensity * 45) + (Math.random() - 0.5) * 2) * (Math.PI / 180);
+    const pullbackDurationMs = isRandomIntensity
       ? 200 + effectiveIntensity * 100
       : 150 + effectiveIntensity * 200;
+    const totalMs = pullbackDurationMs + durationMs;
 
     const startRotation = rotationRef.current;
 
-    // Phase 1: Pullback
-    const pullbackStart = performance.now();
+    // Trajectory shared by the audio scheduler + the read-only header loop, so
+    // both stay locked to the two chained CSS transitions: a quick wind-up to
+    // −pullback, then the main spin to finalRotation.
+    const rotAtElapsed = (ms: number): number => {
+      if (ms <= 0) return startRotation;
+      if (ms < pullbackDurationMs) {
+        return startRotation - pullbackAmount * PULLBACK_EASE_FN(ms / pullbackDurationMs);
+      }
+      const p = Math.min(1, (ms - pullbackDurationMs) / durationMs);
+      return (startRotation - pullbackAmount) + (pullbackAmount + finalRotation) * SPIN_EASE_FN(p);
+    };
 
-    // Pre-schedule every click for the entire spin via WebAudio's
-    // sample-accurate scheduler. Each src.start(time) call queues the
-    // click on the audio thread to fire at the exact predicted moment
-    // the rotation crosses a segment boundary — completely decoupled
-    // from rAF jitter, main-thread blocking, or render hitches. The
-    // visual updates (paint + setCurrentSegment) still happen in the
-    // rAF loop, but audio sync no longer depends on them firing on time.
-    // Cancel any sources from a previous spin that haven't fired yet
-    // (defensive — spin() bails early if isSpinningRef is set, but a
-    // pre-empted reset could leave queued sources alive).
+    // ── Faithful Spinly mechanism: CSS transitions drive the rotation on the
+    // compositor thread — no per-frame JS touches the transform, so it stays
+    // smooth even under main-thread load. Phase 1 (wind-up) starts now; phase 2
+    // (main spin) is flipped on by the read-only loop once the wind-up elapses.
+    // That loop also drives the header — like Spinly's tickLoop. ─────────────
+    rotationRef.current = startRotation;
+    paint();                          // bake at start; transition none; transform 0
+    bakedRotationRef.current = startRotation;
+    gpuSpinActiveRef.current = true;
+    spinStartPerfRef.current = performance.now();
+
+    const canvasEl = canvasRef.current;
+    if (canvasEl) {
+      // Commit the start state with no transition, force a reflow so the browser
+      // registers it, then start the wind-up transition.
+      canvasEl.style.transition = 'none';
+      canvasEl.style.transform = 'rotate(0rad) translateZ(0)';
+      void canvasEl.offsetWidth;
+      requestAnimationFrame(() => {
+        if (!gpuSpinActiveRef.current) return; // cancelled before it started
+        canvasEl.style.transition = `transform ${pullbackDurationMs / 1000}s ${PULLBACK_EASE_CSS}`;
+        canvasEl.style.transform = `rotate(${-pullbackAmount}rad) translateZ(0)`;
+      });
+    }
+
+    // Pre-schedule clicks on the WebAudio thread against the SAME bezier the CSS
+    // transition uses — sample-accurate AND aligned to the visual, immune to
+    // rAF jitter. Cancel any sources still queued from a previous spin first.
     for (const s of scheduledSourcesRef.current) {
       try { s.stop(); } catch {}
     }
     scheduledSourcesRef.current = [];
     const ctx = sharedAudioCtx;
     const buf = sharedClickBuffer;
-    // Capture wall-clock spin start so the schedule can compensate for
-    // any delay if the AudioContext is still resuming (edge case: spin
-    // tap is the user's first-ever gesture, so resume() and spin() race).
     const scheduleStartPerf = performance.now();
-
     const doScheduleClicks = () => {
       if (!ctx || !buf) return;
-      // If the context took some time to come up, drop any clicks that
-      // would have already fired by now and shift the rest so they still
-      // align with the visual rotation.
       const resumeDelayMs = performance.now() - scheduleStartPerf;
       const audioBaseTime = ctx.currentTime - resumeDelayMs / 1000;
       const samples = 600;
-      const startSeg = segmentAtRotation(startRotation);
-      let prevSeg = startSeg;
-      // Cap audio click rate at 30/sec during the tap-spin specifically —
-      // on wheels with many segments (100+), the peak crossing rate
-      // produces an overwhelming click stream. Throttle by tracking the
-      // last scheduled click time and skipping any crossing whose ideal
-      // time is closer than MIN_CLICK_GAP_SEC to it. Visual segment
-      // updates aren't affected (they live in the rAF onFrameRotation
-      // callback, which is independent of this scheduler).
+      let prevSeg = segmentAtRotation(startRotation);
+      // 100/sec cap so dense wheels don't produce an overwhelming click stream.
       const MIN_CLICK_GAP_SEC = 1 / 100;
       let lastScheduledClickTime = -Infinity;
       for (let i = 1; i <= samples; i++) {
-        const progress = i / samples;
-        let rot: number;
-        let timeOffsetSec: number;
-        if (progress < pullbackDuration / (pullbackDuration + mainDuration)) {
-          const localT = progress / (pullbackDuration / (pullbackDuration + mainDuration));
-          const eased = easeInOut(localT);
-          rot = startRotation - pullbackAmount * eased;
-          timeOffsetSec = (localT * pullbackDuration) / 1000;
-        } else {
-          const localT = (progress - pullbackDuration / (pullbackDuration + mainDuration))
-                       / (mainDuration / (pullbackDuration + mainDuration));
-          const eased = easeOutCubic(localT);
-          rot = (startRotation - pullbackAmount) + eased * (pullbackAmount + finalRotation);
-          timeOffsetSec = (pullbackDuration + localT * mainDuration) / 1000;
-        }
+        const tMs = (i / samples) * totalMs;
+        const rot = rotAtElapsed(tMs);
         const seg = segmentAtRotation(rot);
         if (seg !== prevSeg) {
-          const scheduledTime = audioBaseTime + timeOffsetSec;
-          // Skip clicks whose ideal time has already passed during the
-          // resume wait — better to lose a few early ticks than to bunch
-          // them all up at currentTime. ALSO skip if too close to the
-          // last scheduled click (30/sec cap).
+          const scheduledTime = audioBaseTime + tMs / 1000;
           if (scheduledTime > ctx.currentTime - 0.005
               && scheduledTime - lastScheduledClickTime >= MIN_CLICK_GAP_SEC) {
             const src = ctx.createBufferSource();
@@ -653,79 +720,71 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         }
       }
     };
-
     if (ctx && buf) {
-      if (ctx.state === 'running') {
-        doScheduleClicks();
-      } else {
-        // First-ever-gesture-is-spin edge case: resume is in flight from
-        // either the global unlock listener or our own gestureCtx.resume()
-        // above; chain the schedule onto its completion so we don't miss
-        // every click for this spin.
-        ctx.resume().then(doScheduleClicks).catch(() => {});
-      }
+      if (ctx.state === 'running') doScheduleClicks();
+      else ctx.resume().then(doScheduleClicks).catch(() => {});
     }
 
-    // Visual segment-header update: still rAF-driven, fires only on real
-    // crossings (cheap — no audio engine work, just a setState diff).
+    // Read-only loop — updates the header text + winner index analytically from
+    // the SAME bezier. It does NOT touch the transform (the CSS transition owns
+    // it on the compositor thread), so main-thread jank here cannot stutter the
+    // spin — exactly Spinly's read-only tickLoop.
     let lastSegment = segmentAtRotation(startRotation);
     lastRenderedSegmentRef.current = lastSegment;
-    const onFrameRotation = (newRotation: number) => {
-      const seg = segmentAtRotation(newRotation);
+
+    const finishSpin = () => {
+      gpuSpinActiveRef.current = false;
+      cancelAnimationFrame(headerRafRef.current);
+      // Commit the resting rotation into the bitmap; paint() also clears the
+      // transition + transform so nothing animates back.
+      rotationRef.current = startRotation + finalRotation;
+      paint();
+      isSpinningRef.current = false;
+      setIsSpinning(false);
+      const idx = getWinningIndex();
+      onFinished(idx);
+      // Win flash runs on its own slot — once kicked off it can't be
+      // interrupted by a subsequent drag.
+      if (showWinAnimation) playWinOverlay(idx);
+    };
+
+    let phase2Started = false;
+    const tickLoop = () => {
+      const elapsed = performance.now() - spinStartPerfRef.current;
+      // Hand off to the main-spin transition once the wind-up has elapsed.
+      if (!phase2Started && elapsed >= pullbackDurationMs) {
+        phase2Started = true;
+        if (canvasEl) {
+          canvasEl.style.transition = `transform ${durationMs / 1000}s ${SPIN_EASE_CSS}`;
+          canvasEl.style.transform = `rotate(${finalRotation}rad) translateZ(0)`;
+        }
+      }
+      rotationRef.current = rotAtElapsed(elapsed);
+      const seg = segmentAtRotation(rotationRef.current);
       if (seg !== lastSegment) {
         lastSegment = seg;
         lastRenderedSegmentRef.current = seg;
         setCurrentSegment(seg);
       }
-    };
-
-    const animatePullback = (now: number) => {
-      const elapsed = now - pullbackStart;
-      const t = Math.min(1, elapsed / pullbackDuration);
-      const eased = easeInOut(t);
-      rotationRef.current = startRotation - pullbackAmount * eased;
-      onFrameRotation(rotationRef.current);
-      paint();
-
-      if (t < 1) {
-        animRef.current = requestAnimationFrame(animatePullback);
+      if (elapsed < totalMs) {
+        headerRafRef.current = requestAnimationFrame(tickLoop);
       } else {
-        // Phase 2: Main spin
-        const spinStart = performance.now();
-        const spinStartRotation = rotationRef.current;
-        const spinTotalRotation = pullbackAmount + finalRotation;
-
-        const animateMainSpin = (now: number) => {
-          const elapsed = now - spinStart;
-          const t = Math.min(1, elapsed / mainDuration);
-          const eased = easeOutCubic(t);
-          rotationRef.current = spinStartRotation + spinTotalRotation * eased;
-          onFrameRotation(rotationRef.current);
-          paint();
-
-          if (t < 1) {
-            animRef.current = requestAnimationFrame(animateMainSpin);
-          } else {
-            // Spin complete
-            isSpinningRef.current = false;
-            setIsSpinning(false);
-            const idx = getWinningIndex();
-            onFinished(idx);
-            // Win flash runs on its own animation slot — once kicked off
-            // here it can't be interrupted by a subsequent drag.
-            if (showWinAnimation) playWinOverlay(idx);
-          }
-        };
-        animRef.current = requestAnimationFrame(animateMainSpin);
+        finishSpin();
       }
     };
-
-    animRef.current = requestAnimationFrame(animatePullback);
+    headerRafRef.current = requestAnimationFrame(tickLoop);
   }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint,
       segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playWinOverlay]);
 
   const reset = useCallback(() => {
     cancelAnimationFrame(animRef.current);
+    cancelAnimationFrame(headerRafRef.current);
+    // Stop a tap-spin if one is in flight, baking its current angle so the
+    // settle animation below starts from where the wheel actually is.
+    if (gpuSpinActiveRef.current) {
+      gpuSpinActiveRef.current = false;
+      paint();
+    }
     // Stop any scheduled clicks that haven't fired yet — otherwise the
     // wheel snaps to rest visually but ticks keep playing.
     for (const s of scheduledSourcesRef.current) {
@@ -895,6 +954,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     }
   }, [cancelInFlight, segmentAtRotation, onSegmentLongPress, segmentIndexAtPos]);
 
+  // Live drag: re-paint the wheel BITMAP on each pointermove (rotation baked
+  // into the canvas, element transform left at identity). This is what rendered
+  // perfectly before; manually CSS-transforming the element stuttered here, so
+  // the drag deliberately does NOT enter transform mode. (Tap-spin and the
+  // release/decay still use the compositor CSS transitions.)
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
@@ -904,16 +968,15 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const dy = e.clientY - drag.startClientPos.y;
       if (Math.hypot(dx, dy) < 6) return; // still might be a tap
       drag.crossedThreshold = true;
-      // Movement past threshold = not a long-press anymore; cancel the
-      // timer so it doesn't fire mid-drag and open the sheet unexpectedly.
+      // Movement past threshold = not a long-press; cancel the timer.
       if (longPressTimerRef.current) {
         clearTimeout(longPressTimerRef.current);
         longPressTimerRef.current = null;
       }
     }
 
-    // Convert pointer position to angle around wheel center; the delta
-    // since last frame is how far the wheel rotated under the finger.
+    // Pointer angle around the wheel centre; the delta since last event is how
+    // far the wheel rotated under the finger.
     const angle = Math.atan2(e.clientY - drag.centerScreen.y, e.clientX - drag.centerScreen.x);
     let delta = angle - drag.lastPointerAngle;
     if (delta > Math.PI) delta -= 2 * Math.PI;
@@ -921,21 +984,18 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     drag.lastPointerAngle = angle;
     rotationRef.current += delta;
 
-    // Click sound on segment crossing (inline — cheap WebAudio).
     const seg = segmentAtRotation(rotationRef.current);
     if (seg !== drag.lastRenderedSegment) {
       drag.lastRenderedSegment = seg;
       lastRenderedSegmentRef.current = seg;
-      setCurrentSegment(seg);
+      if (headerTextRef.current) headerTextRef.current.textContent = seg;
       playClickInline();
     }
 
     // Keep the last ~80ms of samples for release-velocity computation.
     const now = performance.now();
     drag.samples.push({ time: now, rotation: rotationRef.current });
-    while (drag.samples.length > 1 && now - drag.samples[0].time > 80) {
-      drag.samples.shift();
-    }
+    while (drag.samples.length > 1 && now - drag.samples[0].time > 80) drag.samples.shift();
 
     paint();
   }, [paint, segmentAtRotation]);
@@ -958,6 +1018,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       didLongPressRef.current = false;
       return;
     }
+
+    // The header was written straight to the DOM during the drag; sync React
+    // state to it now so later renders keep the correct text.
+    if (drag.crossedThreshold) setCurrentSegment(lastRenderedSegmentRef.current);
 
     if (!drag.crossedThreshold) {
       // Stationary press → treat as tap → use the existing deterministic
@@ -1007,35 +1071,77 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
     const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
 
-    // No spin → just leave the wheel where the user dropped it.
+    // No spin → just leave the wheel where the user dropped it. Commit the
+    // dragged rotation into the bitmap and exit transform mode.
     if (Math.abs(velocity) < STOP_VELOCITY) {
+      gpuSpinActiveRef.current = false;
       paint();
       return;
     }
 
-    // Momentum decay loop. Friction is exp-applied per ms so frame-rate
-    // changes don't change the feel of the wind-down. Each frame: advance
-    // rotation by velocity * dt, scale velocity by FRICTION^dt, fire a
-    // click on segment crossings, paint. Bail when velocity dips below
-    // the stop threshold.
+    // Momentum decay as ONE compositor CSS transition (smooth even under
+    // main-thread load — the per-frame rAF version stuttered). Exponential
+    // friction has a closed form, so the rest point + stop time are computed
+    // analytically and we transition there with a decel curve. A read-only rAF
+    // tracks the angle for the header, ticks, the win check, and momentum carry.
     isSpinningRef.current = true;
     decayInterruptedRef.current = false;
     momentumVelocityRef.current = velocity;
-    let lastFrameTime = performance.now();
-    let lastSegment = segmentAtRotation(rotationRef.current);
-    // Track total rotation accumulated during the decay so we can gate
-    // the win flash on a minimum-revolution threshold (a lazy flick
-    // that only nudges the wheel a fraction of a turn shouldn't earn a
-    // win-overlay celebration).
     const decayStartRotation = rotationRef.current;
 
-    const decayFrame = (now: number) => {
-      const dt = Math.min(50, now - lastFrameTime); // cap dt across long pauses
-      lastFrameTime = now;
-      rotationRef.current += velocity * dt;
-      velocity *= Math.pow(FRICTION_PER_MS, dt);
-      momentumVelocityRef.current = velocity;
+    // Closed form of `rotation += v·dt; v *= F^dt`: rotation(t) = r0 + v0·(Fᵗ−1)/lnF.
+    // Stops when |v| dips below STOP_VELOCITY.
+    const lnF = Math.log(FRICTION_PER_MS);
+    const decayDurationMs = Math.log(STOP_VELOCITY / Math.abs(velocity)) / lnF;
+    const decayDelta = (Math.sign(velocity) * STOP_VELOCITY - velocity) / lnF;
+    const decayTarget = decayStartRotation + decayDelta;
 
+    // Re-bake at the current dragged rotation, then hand the wind-down to the
+    // compositor (the drag left us in transform mode at bakedRotation = grab).
+    gpuSpinActiveRef.current = false;
+    rotationRef.current = decayStartRotation;
+    paint();                          // bake current; transition none; transform 0
+    bakedRotationRef.current = decayStartRotation;
+    gpuSpinActiveRef.current = true;
+    spinStartPerfRef.current = performance.now();
+
+    const decayCanvas = canvasRef.current;
+    if (decayCanvas) {
+      void decayCanvas.offsetWidth;   // commit the transform:0 start state
+      requestAnimationFrame(() => {
+        if (!gpuSpinActiveRef.current) return; // grabbed/cancelled before it began
+        decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${SPIN_EASE_CSS}`;
+        decayCanvas.style.transform = `rotate(${decayDelta}rad) translateZ(0)`;
+      });
+    }
+
+    let lastSegment = segmentAtRotation(decayStartRotation);
+
+    const finishDecay = () => {
+      gpuSpinActiveRef.current = false;
+      cancelAnimationFrame(headerRafRef.current);
+      rotationRef.current = decayTarget;
+      paint();                        // commit the rest rotation
+      isSpinningRef.current = false;
+      momentumVelocityRef.current = 0;
+      if (decayInterruptedRef.current) { decayInterruptedRef.current = false; return; }
+      if (!isSpinAttempt) return;
+      // Natural stop after a real spin attempt → fire the win flow, gated on a
+      // minimum travel so a lazy flick doesn't earn a celebration.
+      const idx = getWinningIndex();
+      onFinished(idx);
+      const MIN_WIN_REVOLUTIONS = 1.3;
+      if (showWinAnimation && Math.abs(decayDelta) / (2 * Math.PI) >= MIN_WIN_REVOLUTIONS) playWinOverlay(idx);
+    };
+
+    const decayTick = () => {
+      const elapsed = performance.now() - spinStartPerfRef.current;
+      const p = Math.min(1, elapsed / decayDurationMs);
+      rotationRef.current = decayStartRotation + decayDelta * SPIN_EASE_FN(p);
+      // Momentum carry for re-grab: numeric derivative of the curve (rad/ms).
+      const epsMs = 8;
+      const pPrev = Math.max(0, (elapsed - epsMs) / decayDurationMs);
+      momentumVelocityRef.current = (decayDelta * (SPIN_EASE_FN(p) - SPIN_EASE_FN(pPrev))) / epsMs;
       const seg = segmentAtRotation(rotationRef.current);
       if (seg !== lastSegment) {
         lastSegment = seg;
@@ -1043,34 +1149,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         setCurrentSegment(seg);
         playClickInline();
       }
-      paint();
-
-      if (Math.abs(velocity) > STOP_VELOCITY && !decayInterruptedRef.current) {
-        animRef.current = requestAnimationFrame(decayFrame);
-        return;
+      if (elapsed < decayDurationMs && !decayInterruptedRef.current) {
+        headerRafRef.current = requestAnimationFrame(decayTick);
+      } else {
+        finishDecay();
       }
-
-      // Decay complete (or interrupted). Reset spinning flag.
-      isSpinningRef.current = false;
-      momentumVelocityRef.current = 0;
-      const interrupted = decayInterruptedRef.current;
-      decayInterruptedRef.current = false;
-      if (interrupted || !isSpinAttempt) return;
-
-      // Natural stop after a real spin attempt → fire the win flow.
-      const idx = getWinningIndex();
-      onFinished(idx);
-      // Only play the win flash if the wheel travelled at least
-      // MIN_WIN_REVOLUTIONS turns from the release point. A short-coast
-      // flick (well under a full revolution) registers as a "spin
-      // attempt" by velocity but doesn't feel like a real spin — no
-      // celebration in that case.
-      const MIN_WIN_REVOLUTIONS = 1.3;
-      const revolutionsTraveled = Math.abs(rotationRef.current - decayStartRotation) / (2 * Math.PI);
-      if (showWinAnimation && revolutionsTraveled >= MIN_WIN_REVOLUTIONS) playWinOverlay(idx);
     };
-
-    animRef.current = requestAnimationFrame(decayFrame);
+    headerRafRef.current = requestAnimationFrame(decayTick);
   }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay]);
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
@@ -1078,7 +1163,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
-  }, []);
+    // If we were dragging via the element transform, commit it into the bitmap.
+    if (gpuSpinActiveRef.current) {
+      gpuSpinActiveRef.current = false;
+      paint();
+    }
+  }, [paint]);
 
   useImperativeHandle(ref, () => ({
     spin,
@@ -1098,6 +1188,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     return () => {
       cancelAnimationFrame(animRef.current);
       cancelAnimationFrame(winAnimRef.current);
+      cancelAnimationFrame(headerRafRef.current);
+      gpuSpinActiveRef.current = false;
       if (winHoldTimerRef.current) clearTimeout(winHoldTimerRef.current);
       for (const s of scheduledSourcesRef.current) {
         try { s.stop(); } catch {}
@@ -1128,7 +1220,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         willChange: 'transform, height, opacity',
         transition: headerTransition,
       }}>
-        <div style={{
+        <div ref={headerTextRef} style={{
           opacity: segmentHeaderOpacity,
           transition: 'opacity 0.3s ease',
           fontSize: headerFontSize,
@@ -1163,7 +1255,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       >
         <canvas
           ref={canvasRef}
-          style={{ width: size, height: size, display: 'block' }}
+          // will-change promotes the canvas to its own compositor layer so the
+          // tap-spin's transform animation runs on the GPU thread.
+          style={{ width: size, height: size, display: 'block', willChange: 'transform' }}
         />
         {/* Center marker */}
         <div style={{
