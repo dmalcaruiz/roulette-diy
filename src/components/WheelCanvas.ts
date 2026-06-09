@@ -26,7 +26,7 @@ function dotsContrastColor(baseColor: string): string {
 function drawOuterDots(
   ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number,
   strokeWidth: number, outerStrokeWidth: number, dotColor: string,
-  dividerAngles: number[], sweeps: number[],
+  dividerAngles: number[], sweeps: number[], dotRadiusScale = 1,
 ): void {
   // Full chrome band: the divider stroke STRADDLES `radius` (±strokeWidth/2) and
   // the outer stroke sits beyond it → union centred at radius+osw/2; the dots
@@ -37,7 +37,12 @@ function drawOuterDots(
   // Dot radius tracks the band, so a wider stroke ⇒ bigger dots (and the spacing
   // + slim thresholds below scale with it, since they derive from dotR). The
   // radius term is just a loose safety cap so dots can't blow up on tiny wheels.
-  const dotR = Math.max(1, Math.min(bandWidth * 0.34, radius * 0.08));
+  // `dotRadiusScale` lets the thumbnail cancel its ×1.15 stroke boost on the
+  // dots (which would otherwise make them read oversized on the mini previews).
+  // Low floor (0.5) so small-band dots stay proportionally TINY on the small
+  // preview tiles instead of clamping to 1px (the full wheel never hits it —
+  // its dots are always ≥~4px once the option is unlocked).
+  const dotR = Math.max(0.5, Math.min(bandWidth * 0.34, radius * 0.08) * dotRadiusScale);
   const dot = (a: number) => {
     ctx.beginPath();
     ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, dotR, 0, Math.PI * 2);
@@ -782,7 +787,7 @@ export function paintWheelThumbnail(
   // Decorative outer dots (carnival-bulb bezel) — geometry in scaled thumbnail
   // px. Skipped in silhouette (mono) mode. Flag is gated at config-save time.
   if (!monochrome && (style?.outerStrokeDots ?? false)) {
-    drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW, dotsContrastColor(wheelBaseColor), thumbDividers, thumbSweeps);
+    drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW, dotsContrastColor(wheelBaseColor), thumbDividers, thumbSweeps, 1 / 1.15);
   }
 
   // The centre marker is drawn as an HTML overlay (CustomMarker) by
