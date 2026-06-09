@@ -1532,6 +1532,7 @@ export default function RouletteScreen({
               centerInset={activeConfig.centerInset * staticScale}
               strokeWidth={activeConfig.strokeWidth * staticScale}
               outerStrokeWidth={(activeConfig.outerStrokeWidth ?? 0) * staticScale}
+              outerStrokeDots={activeConfig.outerStrokeDots}
               textWrap={activeConfig.textWrap}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
               wheelBaseColor={activeConfig.wheelBaseColor}
@@ -1757,6 +1758,7 @@ export default function RouletteScreen({
                             return cfg ? {
                               strokeWidth: cfg.strokeWidth,
                               outerStrokeWidth: cfg.outerStrokeWidth,
+                              outerStrokeDots: cfg.outerStrokeDots,
                               showBackgroundCircle: cfg.showBackgroundCircle,
                               wheelBaseColor: cfg.wheelBaseColor,
                               cornerRadius: cfg.cornerRadius,
@@ -1794,6 +1796,7 @@ export default function RouletteScreen({
                       style={{
                         strokeWidth: activeConfig.strokeWidth,
                         outerStrokeWidth: activeConfig.outerStrokeWidth,
+                        outerStrokeDots: activeConfig.outerStrokeDots,
                         showBackgroundCircle: activeConfig.showBackgroundCircle,
                         wheelBaseColor: activeConfig.wheelBaseColor,
                         cornerRadius: activeConfig.cornerRadius,

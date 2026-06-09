@@ -39,9 +39,36 @@ function ensureClickBuffer(): Promise<void> {
   return clickLoadPromise;
 }
 
-// Kick off the load eagerly so by the time the user spins, the buffer is
-// decoded and ready.
+// Pre-rendered tick + win voices (WAV files next to click.mp3). Each voice
+// prefers its decoded buffer and falls back to live synthesis until it loads
+// (or if the fetch fails), so sound is never lost.
+const voiceBuffers: Record<string, AudioBuffer> = {};
+let voiceLoadPromise: Promise<void> | null = null;
+const VOICE_FILES: Record<string, string> = {
+  blip: '/audio/blip.wav',
+  fire: '/audio/fire.wav',
+  ding: '/audio/ding.wav',
+  zap: '/audio/zap.wav',
+  win: '/audio/win.wav',
+};
+function ensureVoiceBuffers(): Promise<void> {
+  if (voiceLoadPromise) return voiceLoadPromise;
+  const ctx = getAudioCtx();
+  if (!ctx) return Promise.resolve();
+  voiceLoadPromise = (async () => {
+    await Promise.all(Object.entries(VOICE_FILES).map(async ([name, url]) => {
+      try {
+        const res = await fetch(url);
+        voiceBuffers[name] = await ctx.decodeAudioData(await res.arrayBuffer());
+      } catch { /* leave unset → that voice falls back to live synth */ }
+    }));
+  })();
+  return voiceLoadPromise;
+}
+
+// Kick off the loads eagerly so the buffers are decoded before the user spins.
 ensureClickBuffer();
+ensureVoiceBuffers();
 
 // AudioContext starts suspended in every modern browser and only
 // transitions to 'running' after a user gesture calls resume(). The
@@ -61,6 +88,7 @@ if (typeof document !== 'undefined') {
     // Also nudge buffer load — fetch may have failed silently if the
     // module-load attempt ran before the document was ready.
     ensureClickBuffer();
+    ensureVoiceBuffers();
     document.removeEventListener('pointerdown', unlock, true);
     document.removeEventListener('touchstart', unlock, true);
     document.removeEventListener('keydown', unlock, true);
@@ -233,25 +261,35 @@ function synthFireAt(ctx: AudioContext, time: number): AudioScheduledSourceNode[
   return nodes;
 }
 
+// Play a decoded buffer once, optionally with a little per-hit pitch jitter so
+// repeated ticks (one shared buffer) don't sound mechanically identical.
+function playBuffer(ctx: AudioContext, buf: AudioBuffer, time: number, jitter: number): AudioScheduledSourceNode {
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  if (jitter) src.playbackRate.value = 1 + (Math.random() * 2 - 1) * jitter;
+  src.connect(ctx.destination);
+  src.start(time);
+  return src;
+}
+
 // A tick generator bound to one chosen sound, resolved ONCE per sound (not per
-// tick) — so firing a tick is just a call, with no branching or table lookup.
-// Returns every node created (fire/zap make several) so callers can track them.
+// tick). Each voice plays its PRE-RENDERED buffer (cheap — like click), falling
+// back to live synthesis only until that buffer decodes / if its file is
+// missing. Returns every node created so callers can track them for cancel.
 type TickFn = (ctx: AudioContext, time: number) => AudioScheduledSourceNode[];
 function resolveTickFn(tickSound: string): TickFn {
   if (tickSound === 'click') {
-    return (ctx, time) => {
-      if (!sharedClickBuffer) return [];
-      const src = ctx.createBufferSource();
-      src.buffer = sharedClickBuffer;
-      src.connect(ctx.destination);
-      src.start(time);
-      return [src];
-    };
+    return (ctx, time) => (sharedClickBuffer ? [playBuffer(ctx, sharedClickBuffer, time, 0)] : []);
   }
-  if (tickSound === 'fire') return synthFireAt;
-  if (tickSound === 'zap') return synthZapAt;
-  const spec = TICK_SPECS[tickSound] ?? TICK_SPECS.blip; // table lookup ONCE, here
-  return (ctx, time) => [synthTickAt(ctx, time, spec)];
+  // Live-synth fallback for this voice (used only until its buffer is ready).
+  const synth: TickFn =
+    tickSound === 'fire' ? synthFireAt
+      : tickSound === 'zap' ? synthZapAt
+        : ((spec) => (ctx: AudioContext, time: number) => [synthTickAt(ctx, time, spec)])(TICK_SPECS[tickSound] ?? TICK_SPECS.blip);
+  return (ctx, time) => {
+    const buf = voiceBuffers[tickSound];
+    return buf ? [playBuffer(ctx, buf, time, 0.06)] : synth(ctx, time);
+  };
 }
 
 // Fire one inline tick now (drag / decay) with the already-resolved generator.
@@ -268,6 +306,8 @@ function playWinChord(): void {
   const ctx = sharedAudioCtx;
   if (!ctx) return;
   if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  // Prefer the pre-rendered arpeggio; fall back to live synthesis until it loads.
+  if (voiceBuffers.win) { playBuffer(ctx, voiceBuffers.win, ctx.currentTime, 0); return; }
   const t = ctx.currentTime;
   const notes = [523.25, 659.25, 783.99, 1046.5];
   for (let i = 0; i < notes.length; i++) {
@@ -345,6 +385,8 @@ export interface SpinningWheelProps {
   textWrap?: boolean;
   // Extra ring outside the wheel edge, separate from `strokeWidth`. Default 0.
   outerStrokeWidth?: number;
+  // Decorative dots around the outer stroke band (carnival-bulb bezel).
+  outerStrokeDots?: boolean;
   showBackgroundCircle?: boolean;
   // Colour of the wheel's "white" parts — dividers + outer ring stroke and
   // the background circle. Default white.
@@ -402,6 +444,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     strokeWidth = 3,
     textWrap = false,
     outerStrokeWidth = 0,
+    outerStrokeDots = false,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
     markerDiameter = 60,
@@ -621,6 +664,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       textWrap,
       markerDiameter,
       outerStrokeWidth,
+      outerStrokeDots,
       showBackgroundCircle,
       wheelBaseColor,
       imageSize,
@@ -637,7 +681,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config);
-  }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth,
+  }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
       textWrap, markerDiameter,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
       wheelBaseColor]);
@@ -825,6 +869,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const gestureCtx = getAudioCtx();
     if (gestureCtx && gestureCtx.state === 'suspended') gestureCtx.resume().catch(() => {});
     ensureClickBuffer();
+    ensureVoiceBuffers();
 
     isSpinningRef.current = true;
     setIsSpinning(true);

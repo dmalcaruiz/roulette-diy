@@ -27,6 +27,9 @@ export interface WheelConfig {
   // `strokeWidth` — lets the outer border be thicker than the segment
   // dividers. Uses `wheelBaseColor`. Defaults to 0 (off).
   outerStrokeWidth?: number;
+  // Decorative dots/beads around the outer stroke band (carnival-bulb bezel).
+  // Only renders once strokeWidth + outerStrokeWidth is wide enough.
+  outerStrokeDots?: boolean;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white.
@@ -57,8 +60,8 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     textSize: 1.0,
     headerTextSize: 1.0,
     imageSize: 60,
-    cornerRadius: 30,
-    imageCornerRadius: 30,
+    cornerRadius: 0,
+    imageCornerRadius: 0,
     strokeWidth: 7.7,
     showBackgroundCircle: true,
     innerCornerStyle: 'none',

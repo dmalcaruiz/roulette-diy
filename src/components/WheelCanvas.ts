@@ -1,5 +1,51 @@
 import { WheelItem } from '../models/types';
-import { hexToRgba, lerpColor, withAlpha } from '../utils/colorUtils';
+import { hexToRgba, lerpColor, withAlpha, oklchShade } from '../utils/colorUtils';
+
+// Minimum combined (strokeWidth + outerStrokeWidth) for the decorative outer
+// dots to be available/drawn — below this there isn't enough chrome band to
+// host them. Shared with the editor so the toggle unlocks at the same point.
+export const OUTER_DOTS_MIN_STROKE = 12;
+// Past this corner radius the wheel reads as a flower/blob and a clean bezel
+// ring of dots stops looking right — so the option is disabled above it.
+export const OUTER_DOTS_MAX_CORNER = 20;
+
+// A colour that reads against the (usually light) chrome stroke — darken a
+// light base, lighten a dark one — so the dots look like beads/rivets on it.
+function dotsContrastColor(baseColor: string): string {
+  const { r, g, b } = hexToRgba(baseColor);
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return oklchShade(baseColor, lum > 0.5 ? 0.42 : -0.5);
+}
+
+// Decorative carnival-bulb bezel: a dot on every segment divider, PLUS a dot at
+// each segment centre — but only when the segment is wide enough that its two
+// divider dots are ≥ 2 dot-diameters apart (skipped on thin segments so the
+// centre dot doesn't crowd the dividers). Geometry in render px.
+function drawOuterDots(
+  ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number,
+  strokeWidth: number, outerStrokeWidth: number, dotColor: string,
+  dividerAngles: number[], sweeps: number[],
+): void {
+  // Full chrome band: the divider stroke STRADDLES `radius` (±strokeWidth/2) and
+  // the outer stroke sits beyond it → union is [radius−sw/2, radius+sw/2+osw],
+  // centred at radius+osw/2. Centre the dots there so they sit mid-stroke whether
+  // unlocked via the divider, the outer stroke, or both.
+  const bandWidth = strokeWidth + outerStrokeWidth;
+  if (bandWidth <= 0 || radius <= 0) return;
+  const dotRing = radius + outerStrokeWidth / 2;
+  const dotR = Math.max(1, Math.min(bandWidth * 0.34, radius * 0.032));
+  const minCentreSep = 4 * dotR; // 2 dot-diameters of arc between a segment's divider dots
+  const dot = (a: number) => {
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, dotR, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  ctx.fillStyle = dotColor;
+  for (let i = 0; i < dividerAngles.length; i++) {
+    dot(dividerAngles[i]);
+    if (sweeps[i] * dotRing >= minCentreSep) dot(dividerAngles[i] + sweeps[i] / 2);
+  }
+}
 
 export interface WheelPainterConfig {
   items: WheelItem[];
@@ -17,6 +63,8 @@ export interface WheelPainterConfig {
   markerDiameter?: number;
   // Extra ring outside the wheel edge, separate from `strokeWidth`. 0 = off.
   outerStrokeWidth?: number;
+  // Decorative dots/beads around the outer stroke band (carnival-bulb bezel).
+  outerStrokeDots?: boolean;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white. (The 3D base is a
@@ -188,6 +236,7 @@ export function paintWheel(
           centerInset, overlayOpacity, winningIndex, fromItems, transition } = config;
   const wheelBaseColor = config.wheelBaseColor ?? '#FFFFFF';
   const outerStrokeWidth = config.outerStrokeWidth ?? 0;
+  const outerStrokeDots = config.outerStrokeDots ?? false;
   const textWrap = config.textWrap ?? false;
 
   const center = { x: width / 2, y: height / 2 };
@@ -401,6 +450,20 @@ export function paintWheel(
     ctx.stroke();
   }
 
+  // ── Decorative outer dots (carnival-bulb bezel) ──
+  // A dot on every segment divider AND every segment centre. Drawn inside a
+  // rotation so they're baked WITH the wheel (rotate during a live drag, ride the
+  // CSS transform during a tap-spin). Flag is gated by the stroke threshold at
+  // save time, so the painter just honours it.
+  if (outerStrokeDots) {
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(rotation);
+    ctx.translate(-center.x, -center.y);
+    drawOuterDots(ctx, center.x, center.y, radius, strokeWidth, outerStrokeWidth, dotsContrastColor(wheelBaseColor), layout.startAngles, layout.segmentSizes);
+    ctx.restore();
+  }
+
   // ── Overlay: dark tint + winning segment highlight ──
   if (overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length) {
     // Always extend past the outermost stroke. Segment outer-arc strokes
@@ -556,6 +619,7 @@ const WHEEL_REFERENCE_SIZE = 700; // mirrors RouletteScreen's idealWheelSize
 export interface WheelThumbnailStyle {
   strokeWidth?: number;                                          // default 7.7
   outerStrokeWidth?: number;                                     // default 0 — extra outer ring
+  outerStrokeDots?: boolean;                                     // decorative bezel dots
   showBackgroundCircle?: boolean;                                // default true
   wheelBaseColor?: string;                                       // default white — divider/ring + bg circle colour
   cornerRadius?: number;                                         // default 30 — segment corner rounding
@@ -646,9 +710,13 @@ export function paintWheelThumbnail(
   // The wheel paints with rotation = -Math.PI/2 + rotation; for a static
   // thumbnail we just offset the first segment to start at the top.
   const thumbPaths: Path2D[] = [];
+  const thumbDividers: number[] = []; // segment divider angles (for bezel dots)
+  const thumbSweeps: number[] = [];
   let startAngle = -Math.PI / 2;
   for (const item of items) {
     const sweep = (item.weight / totalWeight) * 2 * Math.PI;
+    thumbDividers.push(startAngle);
+    thumbSweeps.push(sweep);
     thumbPaths.push(buildSegmentPath(center, pieR, startAngle, startAngle + sweep,
                                      cornerR, wheelInnerStyle, innerInset));
     startAngle += sweep;
@@ -679,6 +747,12 @@ export function paintWheelThumbnail(
     ctx.fillStyle = monochrome ?? items[i].color;
     ctx.fill(thumbPaths[i]);
     if (strokeW > 0) ctx.stroke(thumbPaths[i]);
+  }
+
+  // Decorative outer dots (carnival-bulb bezel) — geometry in scaled thumbnail
+  // px. Skipped in silhouette (mono) mode. Flag is gated at config-save time.
+  if (!monochrome && (style?.outerStrokeDots ?? false)) {
+    drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW, dotsContrastColor(wheelBaseColor), thumbDividers, thumbSweeps);
   }
 
   // The centre marker is drawn as an HTML overlay (CustomMarker) by

@@ -262,6 +262,7 @@ export default function ExperiencePlayScreen({ onUseAsTemplate }: ExperiencePlay
             centerInset={cfg.centerInset}
             strokeWidth={cfg.strokeWidth}
             outerStrokeWidth={cfg.outerStrokeWidth}
+            outerStrokeDots={cfg.outerStrokeDots}
             textWrap={cfg.textWrap}
             showBackgroundCircle={cfg.showBackgroundCircle}
             wheelBaseColor={cfg.wheelBaseColor}

@@ -14,7 +14,9 @@
       "WebFetch(domain:streamerutility.com)",
       "WebFetch(domain:www.roulette.diy)",
       "WebFetch(domain:roulette.diy)",
-      "WebFetch(domain:roulette-diy.web.app)"
+      "WebFetch(domain:roulette-diy.web.app)",
+      "Bash(node c:/tmp/render-ticks.mjs)",
+      "Bash(node -e ' *)"
     ]
   }
 }

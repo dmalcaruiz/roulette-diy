@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
+import { OUTER_DOTS_MIN_STROKE, OUTER_DOTS_MAX_CORNER } from './WheelCanvas';
 import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
@@ -31,6 +32,7 @@ export interface EditorState {
   cornerRadius: number;
   strokeWidth: number;
   outerStrokeWidth: number;
+  outerStrokeDots: boolean;
   textWrap: boolean;
   showBackgroundCircle: boolean;
   // One base colour for all wheel chrome — it tints the ring/dividers/bg
@@ -207,6 +209,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     cornerRadius: config?.cornerRadius ?? 30,
     strokeWidth: config?.strokeWidth ?? 7.7,
     outerStrokeWidth: config?.outerStrokeWidth ?? 0,
+    outerStrokeDots: config?.outerStrokeDots ?? false,
     textWrap: config?.textWrap ?? false,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
@@ -248,6 +251,11 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     imageCornerRadius: state.cornerRadius,
     strokeWidth: state.strokeWidth,
     outerStrokeWidth: state.outerStrokeWidth,
+    // Gate on the same conditions as the toggle's visibility, so changing the
+    // stroke/corners hides the dots (without losing the user's on/off choice).
+    outerStrokeDots: state.outerStrokeDots
+      && (state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE)
+      && state.cornerRadius <= OUTER_DOTS_MAX_CORNER,
     textWrap: state.textWrap,
     showBackgroundCircle: state.showBackgroundCircle,
     wheelBaseColor: state.wheelBaseColor,
@@ -1966,6 +1974,19 @@ export default function WheelEditor({
         {/* Extra outer border, independent of the divider stroke above. */}
         <SettingSlider label="Outer Stroke" value={state.outerStrokeWidth} min={0} max={30} step={0.1}
           onChange={v => patch({ outerStrokeWidth: v })} onChangeEnd={commit} />
+
+        {/* Decorative bezel dots — unlocked only once the combined stroke band
+            (divider + outer) is wide enough to host them. The two add up, so
+            either slider alone can reach the threshold. */}
+        {state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE
+          && state.cornerRadius <= OUTER_DOTS_MAX_CORNER && (
+          <SettingToggleRow
+            icon={<Circle size={20} />}
+            label="Bezel Dots"
+            value={state.outerStrokeDots}
+            onChange={v => set({ ...state, outerStrokeDots: v })}
+          />
+        )}
 
         <SettingToggleRow
           icon={<Circle size={20} />}
