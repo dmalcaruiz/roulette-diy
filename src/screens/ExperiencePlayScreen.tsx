@@ -268,6 +268,7 @@ export default function ExperiencePlayScreen({ onUseAsTemplate }: ExperiencePlay
             markerDiameter={cfg.markerDiameter}
             markerPeek={cfg.markerPeek}
             markerBaseColor={cfg.markerBaseColor}
+            tickSound={cfg.tickSound}
             onFinished={(idx) => advance(items[idx]?.text ?? '')}
           />
         </div>

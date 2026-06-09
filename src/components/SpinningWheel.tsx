@@ -70,18 +70,219 @@ if (typeof document !== 'undefined') {
   document.addEventListener('keydown', unlock, true);
 }
 
-function playClickInline(): void {
+// ── Tick sound packs ─────────────────────────────────────────────────────
+// A wheel ticks with either the sampled click.mp3 (default 'click') or a
+// synthesized triangle blip ported from the Spinly reference ('synth'), chosen
+// per-wheel via the tickSound config option. Synth also gets a win arpeggio.
+
+// Synthesized tick voices. Each is a short pitched blip with its own waveform,
+// frequency, and envelope: `blip` is the bright triangle, `tok` a low woodblock,
+// `ding` a soft bell, `zap` a falling arcade chirp.
+interface TickSpec {
+  type: OscillatorType;
+  freq: number;     // base frequency (Hz)
+  jitter: number;   // random Hz added per hit, so repeats don't sound identical
+  peak: number;     // gain peak
+  attack: number;   // s to peak
+  decay: number;    // s to silence
+  pitchTo?: number; // optional end frequency (a pitch sweep over `decay`)
+}
+const TICK_SPECS: Record<string, TickSpec> = {
+  blip: { type: 'triangle', freq: 1250, jitter: 260, peak: 0.11, attack: 0.002, decay: 0.06 },
+  ding: { type: 'sine',     freq: 920,  jitter: 120, peak: 0.10, attack: 0.003, decay: 0.16 },
+  // 'fire' and 'zap' are multi-node (synthFireAt / synthZapAt), not this path.
+};
+
+// One synth tick. Returns the node so a pre-scheduled tick can be stopped if the
+// spin is interrupted.
+function synthTickAt(ctx: AudioContext, time: number, spec: TickSpec): AudioScheduledSourceNode {
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = spec.type;
+  o.frequency.setValueAtTime(spec.freq + Math.random() * spec.jitter, time);
+  if (spec.pitchTo) o.frequency.exponentialRampToValueAtTime(spec.pitchTo, time + spec.decay);
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(spec.peak, time + spec.attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + spec.decay);
+  o.connect(g).connect(ctx.destination);
+  o.start(time);
+  o.stop(time + spec.decay + 0.02);
+  return o;
+}
+
+// White-noise buffer (cached) — the airy hiss in the laser.
+let sharedNoiseBuffer: AudioBuffer | null = null;
+function getNoiseBuffer(ctx: AudioContext): AudioBuffer {
+  if (sharedNoiseBuffer && sharedNoiseBuffer.sampleRate === ctx.sampleRate) return sharedNoiseBuffer;
+  const len = Math.floor(ctx.sampleRate * 0.4);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  sharedNoiseBuffer = buf;
+  return buf;
+}
+
+// "Zap" laser — a thick descending sweep that actually goes "pssheeew": two
+// DETUNED sawtooths for the tonal pew PLUS filtered NOISE swept down with it for
+// the airy hiss. Returns every node so a pre-scheduled zap stops cleanly.
+function synthZapAt(ctx: AudioContext, time: number): AudioScheduledSourceNode[] {
+  const dur = 0.16;
+  const startF = 2600 + Math.random() * 500;
+  const endF = 170 + Math.random() * 60;
+  const nodes: AudioScheduledSourceNode[] = [];
+
+  // Tonal sweep — two slightly detuned saws (the detune is what thickens it).
+  const toneGain = ctx.createGain();
+  toneGain.gain.setValueAtTime(0.0001, time);
+  toneGain.gain.exponentialRampToValueAtTime(0.08, time + 0.004);
+  toneGain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  toneGain.connect(ctx.destination);
+  for (const detune of [1, 1.011]) {
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(startF * detune, time);
+    o.frequency.exponentialRampToValueAtTime(endF * detune, time + dur);
+    o.connect(toneGain);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+    nodes.push(o);
+  }
+
+  // Airy hiss — noise through a bandpass whose centre sweeps down with the pitch.
+  const noise = ctx.createBufferSource();
+  noise.buffer = getNoiseBuffer(ctx);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 1.1;
+  bp.frequency.setValueAtTime(startF * 1.3, time);
+  bp.frequency.exponentialRampToValueAtTime(endF * 1.5, time + dur);
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.0001, time);
+  noiseGain.gain.exponentialRampToValueAtTime(0.06, time + 0.004);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  noise.connect(bp).connect(noiseGain).connect(ctx.destination);
+  noise.start(time);
+  noise.stop(time + dur + 0.02);
+  nodes.push(noise);
+
+  return nodes;
+}
+
+// Soft-clip distortion curve (cached) — drives the "crunch" in the fire tick.
+let crunchCurve: Float32Array | null = null;
+function getCrunchCurve(): Float32Array {
+  if (crunchCurve) return crunchCurve;
+  const n = 256;
+  const c = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    c[i] = Math.tanh(x * 4); // soft saturation
+  }
+  crunchCurve = c;
+  return c;
+}
+
+// "Fire" — a grainy, crunchy crackle (the element, not a gunshot): resonant
+// low-passed noise for the grain + a low square for the body, BOTH pushed
+// through a soft-clip waveshaper so it reads gritty/8-bit rather than clean.
+// Returns every node so a pre-scheduled tick stops cleanly.
+function synthFireAt(ctx: AudioContext, time: number): AudioScheduledSourceNode[] {
+  const dur = 0.09;
+  const nodes: AudioScheduledSourceNode[] = [];
+
+  // Shared crunch stage: everything saturates here, then a master level out.
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = getCrunchCurve();
+  const out = ctx.createGain();
+  out.gain.value = 0.2;
+  shaper.connect(out).connect(ctx.destination);
+
+  // Grain — noise through a RESONANT low-pass sweeping down (the crackle). The
+  // playbackRate jitter varies the grain so repeats don't sound identical.
+  const noise = ctx.createBufferSource();
+  noise.buffer = getNoiseBuffer(ctx);
+  noise.playbackRate.value = 0.6 + Math.random() * 0.6;
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(2700 + Math.random() * 700, time);
+  lp.frequency.exponentialRampToValueAtTime(650, time + dur);
+  lp.Q.value = 7; // resonance = crunch
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(0.0001, time);
+  ng.gain.exponentialRampToValueAtTime(0.5, time + 0.002);
+  ng.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  noise.connect(lp).connect(ng).connect(shaper);
+  noise.start(time);
+  noise.stop(time + dur + 0.02);
+  nodes.push(noise);
+
+  // Body — a low square dropping in pitch, gritty through the same shaper.
+  const o = ctx.createOscillator();
+  o.type = 'square';
+  o.frequency.setValueAtTime(150 + Math.random() * 50, time);
+  o.frequency.exponentialRampToValueAtTime(80, time + dur);
+  const og = ctx.createGain();
+  og.gain.setValueAtTime(0.0001, time);
+  og.gain.exponentialRampToValueAtTime(0.35, time + 0.003);
+  og.gain.exponentialRampToValueAtTime(0.0001, time + dur * 0.85);
+  o.connect(og).connect(shaper);
+  o.start(time);
+  o.stop(time + dur + 0.02);
+  nodes.push(o);
+
+  return nodes;
+}
+
+// A tick generator bound to one chosen sound, resolved ONCE per sound (not per
+// tick) — so firing a tick is just a call, with no branching or table lookup.
+// Returns every node created (fire/zap make several) so callers can track them.
+type TickFn = (ctx: AudioContext, time: number) => AudioScheduledSourceNode[];
+function resolveTickFn(tickSound: string): TickFn {
+  if (tickSound === 'click') {
+    return (ctx, time) => {
+      if (!sharedClickBuffer) return [];
+      const src = ctx.createBufferSource();
+      src.buffer = sharedClickBuffer;
+      src.connect(ctx.destination);
+      src.start(time);
+      return [src];
+    };
+  }
+  if (tickSound === 'fire') return synthFireAt;
+  if (tickSound === 'zap') return synthZapAt;
+  const spec = TICK_SPECS[tickSound] ?? TICK_SPECS.blip; // table lookup ONCE, here
+  return (ctx, time) => [synthTickAt(ctx, time, spec)];
+}
+
+// Fire one inline tick now (drag / decay) with the already-resolved generator.
+function playTickInline(fn: TickFn): void {
   const ctx = sharedAudioCtx;
-  const buf = sharedClickBuffer;
-  if (!ctx || !buf) return;
-  // AudioContext starts suspended on most browsers until a user gesture
-  // resumes it; the spin button tap qualifies, so by the time we're ticking
-  // through segments the context is running.
+  if (!ctx) return;
   if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(ctx.destination);
-  src.start(0);
+  fn(ctx, ctx.currentTime);
+}
+
+// Win arpeggio — a short rising triangle chord (Spinly). Only the synth pack
+// plays a win sound; the sampled pack keeps just the visual flash.
+function playWinChord(): void {
+  const ctx = sharedAudioCtx;
+  if (!ctx) return;
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  const t = ctx.currentTime;
+  const notes = [523.25, 659.25, 783.99, 1046.5];
+  for (let i = 0; i < notes.length; i++) {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'triangle';
+    o.frequency.value = notes[i];
+    const st = t + i * 0.085;
+    g.gain.setValueAtTime(0.0001, st);
+    g.gain.exponentialRampToValueAtTime(0.15, st + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, st + 0.5);
+    o.connect(g).connect(ctx.destination);
+    o.start(st);
+    o.stop(st + 0.55);
+  }
 }
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
@@ -154,6 +355,9 @@ export interface SpinningWheelProps {
   markerDiameter?: number;
   markerPeek?: number;
   markerBaseColor?: string;
+  // Tick sound: 'click' = sampled click.mp3 (default); the rest are synthesized
+  // voices. The win arpeggio plays regardless of this choice.
+  tickSound?: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
   spinIntensity?: number;
   isRandomIntensity?: boolean;
   headerTextColor?: string;
@@ -203,6 +407,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     markerDiameter = 60,
     markerPeek = 4,
     markerBaseColor = '#FFFFFF',
+    tickSound = 'click',
     spinIntensity = 0.5,
     isRandomIntensity = true,
     headerTextColor = '#FFFFFF',
@@ -233,6 +438,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const gpuSpinActiveRef = useRef(false);
   const spinStartPerfRef = useRef<number>(0);
   const [isSpinning, setIsSpinning] = useState(false);
+  // The tick generator is resolved ONCE whenever the sound changes (not per
+  // tick), so firing a tick is a plain call with no branching/table lookup.
+  const tickSoundRef = useRef<string>('click');
+  const tickFnRef = useRef<TickFn>(resolveTickFn('click'));
+  if (tickSoundRef.current !== tickSound) {
+    tickSoundRef.current = tickSound;
+    tickFnRef.current = resolveTickFn(tickSound);
+  }
   const [currentSegment, setCurrentSegment] = useState('');
   // Header text element — written directly (no React re-render) during a live
   // finger drag, where a setState per segment crossing would saturate the main
@@ -256,7 +469,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // sample-accurate scheduler now — no per-frame click trigger needed.)
   // Tracks every scheduled-but-not-yet-fired click source for the active
   // spin so reset() can stop them mid-flight if the user interrupts.
-  const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const scheduledSourcesRef = useRef<AudioScheduledSourceNode[]>([]);
 
   // Pure helper — returns the segment text under the marker for a given
   // rotation, no side effects. Lets the rAF loop diff against the previous
@@ -564,6 +777,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   }, [paint]);
 
   const playWinOverlay = useCallback((idx: number) => {
+    playWinChord();
     cancelAnimationFrame(winAnimRef.current);
     if (winHoldTimerRef.current) {
       clearTimeout(winHoldTimerRef.current);
@@ -706,10 +920,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     }
     scheduledSourcesRef.current = [];
     const ctx = sharedAudioCtx;
-    const buf = sharedClickBuffer;
+    const tick = tickSoundRef.current;
     const scheduleStartPerf = performance.now();
     const doScheduleClicks = () => {
-      if (!ctx || !buf) return;
+      if (!ctx || (tick === 'click' && !sharedClickBuffer)) return;
       const resumeDelayMs = performance.now() - scheduleStartPerf;
       const audioBaseTime = ctx.currentTime - resumeDelayMs / 1000;
       const samples = 600;
@@ -725,18 +939,15 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           const scheduledTime = audioBaseTime + tMs / 1000;
           if (scheduledTime > ctx.currentTime - 0.005
               && scheduledTime - lastScheduledClickTime >= MIN_CLICK_GAP_SEC) {
-            const src = ctx.createBufferSource();
-            src.buffer = buf;
-            src.connect(ctx.destination);
-            src.start(Math.max(scheduledTime, ctx.currentTime));
-            scheduledSourcesRef.current.push(src);
+            const nodes = tickFnRef.current(ctx, Math.max(scheduledTime, ctx.currentTime));
+            scheduledSourcesRef.current.push(...nodes);
             lastScheduledClickTime = scheduledTime;
           }
           prevSeg = seg;
         }
       }
     };
-    if (ctx && buf) {
+    if (ctx && (tick !== 'click' || sharedClickBuffer)) {
       if (ctx.state === 'running') doScheduleClicks();
       else ctx.resume().then(doScheduleClicks).catch(() => {});
     }
@@ -1005,7 +1216,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       drag.lastRenderedSegment = seg;
       lastRenderedSegmentRef.current = seg;
       if (headerTextRef.current) headerTextRef.current.textContent = seg;
-      playClickInline();
+      playTickInline(tickFnRef.current);
     }
 
     // Keep the last ~80ms of samples for release-velocity computation.
@@ -1163,7 +1374,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         lastSegment = seg;
         lastRenderedSegmentRef.current = seg;
         setCurrentSegment(seg);
-        playClickInline();
+        playTickInline(tickFnRef.current);
       }
       if (elapsed < decayDurationMs && !decayInterruptedRef.current) {
         headerRafRef.current = requestAnimationFrame(decayTick);

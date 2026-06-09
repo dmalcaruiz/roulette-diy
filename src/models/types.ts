@@ -44,6 +44,9 @@ export interface WheelConfig {
   // 'cards' = expandable cards with full per-segment controls (former
   //           'complex'). Default for new wheels.
   segmentsMode?: 'list' | 'cards';
+  // Tick sound: 'click' = sampled click.mp3 (default); the rest are synthesized
+  // voices. The win arpeggio plays regardless of this choice.
+  tickSound?: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
 }
 
 export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfig {

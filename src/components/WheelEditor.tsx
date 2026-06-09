@@ -7,7 +7,7 @@ import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } fro
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CopyPlus, ClipboardPaste, MoreHorizontal, Circle, Settings,
-  Type, Heading, PieChart, Disc, MapPin, WrapText,
+  Type, Heading, PieChart, Disc, MapPin, WrapText, Volume2,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
@@ -43,6 +43,8 @@ export interface EditorState {
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   segmentsMode: 'list' | 'cards';
+  // Tick sound — 'click' (sampled) or a synth voice. Win arpeggio always plays.
+  tickSound: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
   // Wheel id this state was initialized FROM (via buildInitialState). Used
   // by the [state, onPreview, configId] useEffect to detect the brief
   // mid-switch race where state still carries the previous wheel's data
@@ -218,6 +220,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     segmentsMode: ((config?.segmentsMode as unknown) === 'simple' ? 'list'
       : (config?.segmentsMode as unknown) === 'complex' ? 'cards'
       : config?.segmentsMode ?? 'cards'),
+    tickSound: config?.tickSound ?? 'click',
     // Use the BLOCK id (which is unique per wheel-in-flow), NOT the
     // wheelConfig.id — in some data setups multiple blocks reference
     // the same wheelConfig id, so the wheelConfig id can't distinguish
@@ -255,6 +258,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     innerCornerStyle: state.innerCornerStyle,
     centerInset: state.centerInset,
     segmentsMode: state.segmentsMode,
+    tickSound: state.tickSound,
   };
 }
 
@@ -1990,6 +1994,37 @@ export default function WheelEditor({
           snapPoint={15}
           onChange={v => patch({ markerPeek: v })} onChangeEnd={commit} />
         {/* Colour lives in Wheel › Base Color — the marker shares it. */}
+      </StyleSection>
+
+      {/* ── Sound — the tick the wheel makes as it passes segments. The win
+          arpeggio always plays regardless of this choice. ────────────────── */}
+      <StyleSection title="Sound" icon={<Volume2 size={13} />}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '4px' }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>Tick</span>
+          <div style={{ flex: 1 }} />
+          <select
+            value={state.tickSound}
+            onChange={e => set({ ...state, tickSound: e.target.value as EditorState['tickSound'] })}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 10,
+              border: `1.5px solid ${BORDER}`,
+              backgroundColor: SURFACE_ELEVATED,
+              color: ON_SURFACE,
+              fontWeight: 600,
+              fontSize: 14,
+              fontFamily: 'inherit',
+              outline: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            <option value="click">Click</option>
+            <option value="blip">Blip</option>
+            <option value="fire">Fire</option>
+            <option value="ding">Bell</option>
+            <option value="zap">Zap</option>
+          </select>
+        </div>
       </StyleSection>
 
       <div style={{ height: 32 }} />
