@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, readableTextColor } from '../utils/colorUtils';
@@ -6,8 +6,9 @@ import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
-  Copy, CopyPlus, ClipboardPaste, MoreHorizontal, Circle, Settings,
+  Copy, CopyPlus, ClipboardPaste, Circle, Settings,
   Type, Heading, PieChart, Disc, MapPin, WrapText, Volume2, PartyPopper,
+  LayoutGrid, List,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
@@ -1755,13 +1756,6 @@ export default function WheelEditor({
         openTrailingTrigger={autoOpenSpec.id === segment.id ? autoOpenSpec.tick : 0}
         trailingActions={[
           {
-            // Grey "more" button — opens the full segment actions sheet
-            // (same one the long-press-without-drag opens).
-            color: '#38383E',
-            icon: <MoreHorizontal size={26} />,
-            onTap: () => setSegmentActionsIndex(index),
-          },
-          {
             color: PRIMARY,
             icon: <Copy size={26} />,
             onTap: () => duplicateSegment(index),
@@ -1819,17 +1813,17 @@ export default function WheelEditor({
     }
   };
 
-  // Fill the sheet: size the textarea from the sheet's current height
-  // (minus the chrome above/below it — handle, mode toggle, hint, paddings)
-  // so it GROWS when the sheet is dragged to a taller snap. Floored at the
-  // midSnap fill height so it never shrinks below its midSnap size as the
-  // sheet is dragged down toward/below midSnap — grow-only. Falls back to a
-  // fixed height when there's no sheet (desktop sidebar).
-  const LIST_CHROME = 146;
-  const MIDSNAP_FILL = 400 - LIST_CHROME; // sheet opens at the fixed 400px midSnap
-  const listTextareaHeight = sheetHeight && sheetHeight > 0
-    ? Math.max(MIDSNAP_FILL, Math.round(sheetHeight - LIST_CHROME))
-    : 244;
+  // The list-mode textarea auto-grows to fit its CONTENT (one row per line)
+  // instead of the sheet height, so the field tracks the actual lines and the
+  // sheet scrolls for long lists. Re-sized on content change and when the
+  // segments tab becomes visible (a hidden textarea reports scrollHeight 0).
+  useLayoutEffect(() => {
+    if (selectedTab !== 0 || segmentsMode !== 'list' || !renderRows) return;
+    const el = simpleTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [selectedTab, segmentsMode, simpleDraft, renderRows]);
   const renderSimpleMode = () => (
     <div>
       <textarea
@@ -1843,7 +1837,7 @@ export default function WheelEditor({
         placeholder="One segment per line..."
         style={{
           width: '100%',
-          height: listTextareaHeight,
+          minHeight: 56,
           padding: '14px 16px',
           borderRadius: 14,
           border: `1.5px solid ${BORDER}`,
@@ -1853,12 +1847,12 @@ export default function WheelEditor({
           fontFamily: 'inherit',
           color: ON_SURFACE,
           outline: 'none',
-          // Sized to the sheet (see listTextareaHeight) and scrolls
-          // internally for long lists instead of pushing itself past the
-          // sheet's bottom edge. `resize:none` stops the user dragging the
-          // grip handle to extend it past the sheet.
+          // Auto-grown to its content by the layout effect above (height set
+          // imperatively to scrollHeight), so it fits the actual line count and
+          // the SHEET scrolls for long lists — no internal scroll of its own.
+          // `resize:none` stops the user dragging the grip to override it.
           resize: 'none',
-          overflowY: 'auto',
+          overflow: 'hidden',
           boxSizing: 'border-box',
           lineHeight: 1.5,
         }}
@@ -2080,7 +2074,38 @@ export default function WheelEditor({
       </div>
       <div style={{ display: selectedTab === 0 ? 'block' : 'none' }}>
         <>
-          <SegmentsModeToggle value={segmentsMode} onChange={setSegmentsMode} />
+          {/* Section header: title + a chip that toggles Cards ↔ List. */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 14,
+            paddingLeft: 2,
+          }}>
+            <span style={{ fontWeight: 700, fontSize: 16, color: ON_SURFACE }}>Segments</span>
+            <button
+              onClick={() => setSegmentsMode(segmentsMode === 'cards' ? 'list' : 'cards')}
+              aria-label={`Segment view: ${segmentsMode}. Tap to switch.`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 12px',
+                borderRadius: 999,
+                border: `1.5px solid ${BORDER}`,
+                backgroundColor: SURFACE_ELEVATED,
+                color: ON_SURFACE,
+                fontSize: 13,
+                fontWeight: 700,
+                fontFamily: 'inherit',
+                textTransform: 'capitalize',
+                cursor: 'pointer',
+              }}
+            >
+              {segmentsMode === 'cards' ? <LayoutGrid size={15} /> : <List size={15} />}
+              {segmentsMode}
+            </button>
+          </div>
           {/* Heavy segment list is gated on renderRows: while the sheet is
               closed (renderRows=false) we render a cheap spacer instead of
               the N segment rows, so switching wheels costs nothing. The
@@ -2295,47 +2320,6 @@ function SegActionRow({ icon, label, onTap, danger }: {
 
 // Two-mode toggle pill for Segments: "List" (textarea) vs "Cards"
 // (expandable per-segment cards). 'cards' is the default for new wheels.
-function SegmentsModeToggle({ value, onChange }: { value: 'list' | 'cards'; onChange: (v: 'list' | 'cards') => void }) {
-  return (
-    <div style={{
-      display: 'flex',
-      backgroundColor: SURFACE_ELEVATED,
-      borderRadius: 14,
-      padding: 3,
-      marginBottom: 14,
-    }}>
-      {(['cards', 'list'] as const).map(mode => {
-        const isActive = value === mode;
-        return (
-          <button
-            key={mode}
-            onClick={() => onChange(mode)}
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 12,
-              border: 'none',
-              // Active pill = light surface (ON_SURFACE), dark text (BG).
-              // Inactive = transparent on the dark track, dimmed light text.
-              backgroundColor: isActive ? ON_SURFACE : 'transparent',
-              color: isActive ? BG : withAlpha(ON_SURFACE, 0.55),
-              fontSize: 14,
-              fontWeight: 700,
-              fontFamily: 'inherit',
-              textTransform: 'capitalize',
-              cursor: 'pointer',
-              boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-              transition: 'all 0.15s',
-            }}
-          >
-            {mode}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Row wrapper that owns the long-press → reorder activation ────────────
 // Mirrors BlockRow in BlocksList: 300ms long-press anywhere on the card,
 // 8px movement during the press cancels the timer (preserving normal
