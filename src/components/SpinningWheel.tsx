@@ -452,10 +452,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     bakedRotationRef.current = rotationRef.current;
     paintImplRef.current();
     const c = canvasRef.current;
-    // Clear any spin transition so this commit applies the new transform
-    // instantly instead of animating toward it. translateZ(0) forces a
-    // persistent GPU layer so element transforms stay compositor-only.
-    if (c) { c.style.transition = 'none'; c.style.transform = 'rotate(0rad) translateZ(0)'; }
+    // Clear any spin transition + transform so the just-baked bitmap shows at
+    // identity. NO translateZ/will-change here: the live drag repaints the
+    // bitmap every move, and forcing the canvas onto its own GPU layer makes
+    // each repaint re-upload the whole texture (that was the drag stutter). The
+    // tap/decay CSS transitions self-promote a layer via the translateZ(0) in
+    // THEIR transforms, only while they run.
+    if (c) { c.style.transition = 'none'; c.style.transform = 'none'; }
   }, []);
 
   // Initial paint and repaint on prop changes — useLayoutEffect (not
@@ -1255,9 +1258,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       >
         <canvas
           ref={canvasRef}
-          // will-change promotes the canvas to its own compositor layer so the
-          // tap-spin's transform animation runs on the GPU thread.
-          style={{ width: size, height: size, display: 'block', willChange: 'transform' }}
+          // No persistent will-change: the live drag repaints the bitmap each
+          // move, and a forced compositor layer would re-upload the texture
+          // every frame. The tap/decay CSS transitions promote a layer on their
+          // own (via translateZ(0) in their transforms) only while animating.
+          style={{ width: size, height: size, display: 'block' }}
         />
         {/* Center marker */}
         <div style={{
