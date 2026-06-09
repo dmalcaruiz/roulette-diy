@@ -1632,9 +1632,7 @@ export default function RouletteScreen({
                 touchAction: grabbedIndex !== null ? 'none' : undefined,
                 // Setting overflow-x to anything but visible forces overflow-y
                 // to clip per CSS spec — that crops the grabbed tile's scale
-                // halo + shadow AND the pagepointer.svg hovering above the
-                // selected tile. Top padding must clear both: ~28px for the
-                // pointer's `top: -28` overhang plus a small buffer.
+                // halo + shadow during reorder. Top padding clears that halo.
                 padding: '34px 14px 13px 14px',
                 cursor: 'grab',
               }}
@@ -2814,9 +2812,7 @@ function PreviewTile({
     >
       {/* Active tiles use PRIMARY (the same light-blue as the Add
           segment button) so the selection reads colour-first; inactive
-          tiles stay on SURFACE_ELEVATED. The pagepointer.svg above the
-          tile (rendered below) still marks the selection on top of the
-          colour change. */}
+          tiles stay on SURFACE_ELEVATED. */}
       {(() => {
         const surfaces = deriveCardSurfaces(active ? PRIMARY : SURFACE_ELEVATED);
         return (
@@ -2850,24 +2846,8 @@ function PreviewTile({
           </>
         );
       })()}
-      {/* Selection indicator — page-pointer SVG hovering above the
-          selected tile. Pointer-events off so it can't catch taps. */}
-      {active && (
-        <img
-          src="/images/pagepointer.svg"
-          alt=""
-          aria-hidden
-          style={{
-            position: 'absolute',
-            top: -16,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 32,
-            height: 26,
-            pointerEvents: 'none',
-          }}
-        />
-      )}
+      {/* Selection is indicated by the active tile's PRIMARY colour fill
+          (above) — no floating pointer above the tile. */}
     </div>
   );
 }

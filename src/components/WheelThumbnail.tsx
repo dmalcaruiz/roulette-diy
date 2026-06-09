@@ -13,6 +13,25 @@ const WHEEL_REF = 700; // matches WheelCanvas WHEEL_REFERENCE_SIZE
 // marker reads too small otherwise (same idea as the stroke/corner boosts).
 const THUMB_MARKER_BOOST = 1.18;
 
+// Shadow built from crisp silhouette copies painted BEHIND the wheel (no blur).
+// Each is a faithful copy of the wheel's outline (paintWheelThumbnail's
+// monochrome mode) painted a touch LARGER than the wheel — so its FILL shows as
+// a halo around the wheel instead of hiding directly behind it. Concentric with
+// the wheel. Ordered back-to-front: a wide light halo, then a tighter darker one.
+//
+// Painted in OPAQUE black, then faded uniformly via the canvas element's CSS
+// `opacity`. Painting in a translucent colour would let the per-segment fills,
+// dividers, and overlapping edges stack alpha — the strokes would show through.
+// Opaque fill + layer opacity keeps each silhouette dead flat.
+//   spreadFrac = how far it extends past the wheel, per side (frac of size)
+//   offsetFrac = downward bias (frac of size); 0 = centred on the wheel
+//   opacity    = the whole flat silhouette's strength
+const SHADOW_FILL = '#000';
+const SHADOW_LAYERS = [
+  { opacity: 0.10, spreadFrac: 0.05, offsetFrac: 0 },
+  { opacity: 0.20, spreadFrac: 0.012, offsetFrac: 0 },
+];
+
 interface WheelThumbnailProps {
   items: WheelItem[];
   size?: number;
@@ -27,6 +46,7 @@ interface WheelThumbnailProps {
 
 export default function WheelThumbnail({ items, size = 40, style, debugLabel }: WheelThumbnailProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const shadowRefs = useRef<(HTMLCanvasElement | null)[]>([]);
 
   // Stable JSON of style so the effect doesn't re-run when an inline
   // object identity changes but the values didn't.
@@ -56,6 +76,22 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
     paintWheelThumbnail(ctx, size, size, items, style);
+
+    // Shadow silhouettes — each a faithful copy of the wheel's outline painted
+    // a bit LARGER (in its own bigger canvas) in one flat tone, so its fill
+    // shows as a halo around the wheel. Reusing paintWheelThumbnail means they
+    // follow the true outline (flower shapes, rounded corners, outer stroke).
+    SHADOW_LAYERS.forEach((layer, i) => {
+      const c = shadowRefs.current[i];
+      if (!c) return;
+      const cctx = c.getContext('2d');
+      if (!cctx) return;
+      const big = size + size * layer.spreadFrac * 2;
+      c.width = big * dpr;
+      c.height = big * dpr;
+      cctx.scale(dpr, dpr);
+      paintWheelThumbnail(cctx, big, big, items, style, SHADOW_FILL);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, size, styleKey]);
 
@@ -67,9 +103,34 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
 
   return (
     <div style={{ position: 'relative', width: size, height: size }}>
+      {/* Shadow silhouettes behind the wheel — painted larger (see SHADOW_LAYERS)
+          so their fill reads as a halo following the wheel's TRUE outline. Each
+          is offset -spread to stay centred (+ optional downward offsetFrac). */}
+      {SHADOW_LAYERS.map((layer, i) => {
+        const spread = size * layer.spreadFrac;
+        const big = size + spread * 2;
+        return (
+          <canvas
+            key={i}
+            ref={el => { shadowRefs.current[i] = el; }}
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: -spread,
+              top: -spread + size * layer.offsetFrac,
+              zIndex: i,
+              width: big,
+              height: big,
+              opacity: layer.opacity,
+              display: 'block',
+              pointerEvents: 'none',
+            }}
+          />
+        );
+      })}
       <canvas
         ref={canvasRef}
-        style={{ width: size, height: size, display: 'block' }}
+        style={{ position: 'relative', zIndex: SHADOW_LAYERS.length, width: size, height: size, display: 'block' }}
       />
       {/* Center marker overlay — rendered at MARKER_DESIGN then scaled down. */}
       <div style={{
@@ -79,6 +140,7 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
         transform: `translate(-50%, -50%) scale(${markerScale})`,
         width: MARKER_DESIGN,
         height: MARKER_DESIGN,
+        zIndex: SHADOW_LAYERS.length + 1,
         pointerEvents: 'none',
       }}>
         <CustomMarker

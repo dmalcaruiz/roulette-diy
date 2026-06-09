@@ -566,6 +566,12 @@ export function paintWheelThumbnail(
   height: number,
   items: WheelItem[],
   style?: WheelThumbnailStyle,
+  // When set, EVERYTHING (back circle, segment fills, dividers, outer ring) is
+  // painted in this one colour — producing a flat silhouette of the wheel's
+  // exact outline. Used by WheelThumbnail to render a silhouette copy behind
+  // the wheel that follows the true shape (flower outlines when the background
+  // circle is off, rounded corners, outer stroke), not a plain circle.
+  monochrome?: string,
 ): void {
   const center = { x: width / 2, y: height / 2 };
   const canvasR = Math.min(width, height) / 2;
@@ -621,8 +627,8 @@ export function paintWheelThumbnail(
     // base-colour band between the pie and the edge widens by the outer stroke.
     ctx.arc(center.x, center.y, canvasR * backCircleScale, 0, Math.PI * 2);
     // 50% grey in the no-stroke / no-round edge case (mirrors paintWheel);
-    // white otherwise.
-    ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
+    // white otherwise. Silhouette mode overrides with the one mono colour.
+    ctx.fillStyle = monochrome ?? (noStrokeNoRound ? '#808080' : wheelBaseColor);
     ctx.fill();
   }
 
@@ -649,16 +655,16 @@ export function paintWheelThumbnail(
     ctx.translate(center.x, center.y);
     ctx.scale(f, f);
     ctx.translate(-center.x, -center.y);
-    ctx.fillStyle = wheelBaseColor;
+    ctx.fillStyle = monochrome ?? wheelBaseColor;
     for (const p of thumbPaths) ctx.fill(p);
     ctx.restore();
   }
 
   ctx.lineWidth = strokeW;
-  ctx.strokeStyle = wheelBaseColor;
+  ctx.strokeStyle = monochrome ?? wheelBaseColor;
   ctx.lineJoin = 'round';
   for (let i = 0; i < thumbPaths.length; i++) {
-    ctx.fillStyle = items[i].color;
+    ctx.fillStyle = monochrome ?? items[i].color;
     ctx.fill(thumbPaths[i]);
     if (strokeW > 0) ctx.stroke(thumbPaths[i]);
   }
