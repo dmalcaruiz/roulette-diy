@@ -64,7 +64,7 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     items: [],
     textSize: 1.0,
     headerTextSize: 1.0,
-    imageSize: 60,
+    imageSize: 110,
     cornerRadius: 0,
     imageCornerRadius: 0,
     strokeWidth: 7.7,
@@ -72,6 +72,7 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     innerCornerStyle: 'none',
     centerInset: 50,
     segmentsMode: 'cards',
+    resultDialog: true,
     ...overrides,
   };
 }

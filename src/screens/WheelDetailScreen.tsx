@@ -143,7 +143,7 @@ export default function WheelDetailScreen() {
           size={Math.min(window.innerWidth - 40, 560)}
           textSizeMultiplier={wheel.wheelConfig?.textSize ?? 1}
           headerTextSizeMultiplier={wheel.wheelConfig?.headerTextSize ?? 1}
-          imageSize={wheel.wheelConfig?.imageSize ?? 60}
+          imageSize={wheel.wheelConfig?.imageSize ?? 110}
           cornerRadius={wheel.wheelConfig?.cornerRadius ?? 8}
           innerCornerStyle={wheel.wheelConfig?.innerCornerStyle ?? 'none'}
           centerInset={wheel.wheelConfig?.centerInset ?? 50}

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, createElement, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, readableTextColor } from '../utils/colorUtils';
@@ -13,6 +13,9 @@ import {
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
 import { OUTER_DOTS_MIN_STROKE, OUTER_DOTS_MAX_CORNER, SEGMENT_TEXTURES } from './WheelCanvas';
+import { uploadImage } from '../services/uploadService';
+import { LUCIDE_ICON_NAMES } from '../utils/iconMap';
+import { ICON_NODES } from '../utils/iconNodes';
 import { HistoryControls } from '../hooks/useHistory';
 
 interface SegmentData {
@@ -208,6 +211,18 @@ function texturePreviewStyle(texture: string, color: string): React.CSSPropertie
   }
 }
 
+// Inline SVG for a lucide segment icon, rendered from the same extracted node
+// data the wheel canvas uses (so the picker matches the wheel exactly).
+function SegmentIcon({ name, size = 22, color = 'currentColor' }: { name: string; size?: number; color?: string }) {
+  const node = ICON_NODES[name];
+  if (!node) return null;
+  return createElement(
+    'svg',
+    { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 2.25, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    node.map(([tag, attrs], i) => createElement(tag, { key: i, ...attrs })),
+  );
+}
+
 export function buildInitialState(config?: WheelConfig | null, wheelId?: string): EditorState {
   const segments: SegmentData[] = config
     ? config.items.map(item => ({
@@ -229,7 +244,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     name: config?.name ?? 'New Wheel',
     textSize: config?.textSize ?? 1,
     headerTextSize: config?.headerTextSize ?? 1,
-    imageSize: config?.imageSize ?? 60,
+    imageSize: config?.imageSize ?? 110,
     cornerRadius: config?.cornerRadius ?? 30,
     strokeWidth: config?.strokeWidth ?? 7.7,
     outerStrokeWidth: config?.outerStrokeWidth ?? 0,
@@ -248,7 +263,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
       : (config?.segmentsMode as unknown) === 'complex' ? 'cards'
       : config?.segmentsMode ?? 'cards'),
     tickSound: config?.tickSound ?? 'click',
-    resultDialog: config?.resultDialog ?? false,
+    resultDialog: config?.resultDialog ?? true,
     // Use the BLOCK id (which is unique per wheel-in-flow), NOT the
     // wheelConfig.id — in some data setups multiple blocks reference
     // the same wheelConfig id, so the wheelConfig id can't distinguish
@@ -359,6 +374,8 @@ export default function WheelEditor({
   };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [texturePickerSegment, setTexturePickerSegment] = useState<number | null>(null);
+  const [imagePickerSegment, setImagePickerSegment] = useState<number | null>(null);
+  const [uploadingSegment, setUploadingSegment] = useState<number | null>(null);
   // Weight slider thumb grows only while directly touched/dragged (only one
   // card is expanded at a time, so a single flag covers it). No grow/glide
   // tied to the +/- buttons.
@@ -807,6 +824,25 @@ export default function WheelEditor({
   const patchSegment = (index: number, updates: Partial<SegmentData>) => {
     const newSegs = state.segments.map((s, i) => i === index ? { ...s, ...updates } : s);
     patch({ segments: newSegs });
+  };
+
+  // Upload a custom image for a segment → R2 (reuses uploadService's
+  // 'wheel-segment' purpose) → store the returned URL in imagePath (clearing any
+  // icon). Applied by segment id against the freshest state, since the await
+  // could outlive a reorder; one discrete history entry.
+  const handleSegmentImageUpload = async (index: number, file: File) => {
+    const segId = stateRef.current.segments[index]?.id;
+    if (!segId) return;
+    setUploadingSegment(index);
+    try {
+      const url = await uploadImage({ purpose: 'wheel-segment', source: file, wheelId: configId, segmentId: segId });
+      const cur = stateRef.current;
+      set({ ...cur, segments: cur.segments.map(s => s.id === segId ? { ...s, imagePath: url, iconName: null } : s) });
+    } catch (e) {
+      console.error('Segment image upload failed', e);
+    } finally {
+      setUploadingSegment(null);
+    }
   };
 
   // --- Drag reorder (two-phase release) ---
@@ -1646,12 +1682,12 @@ export default function WheelEditor({
                   </div>
                 </div>
 
-                {/* Color + image buttons */}
+                {/* Color · Texture · Image buttons */}
                 <div style={{ display: 'flex', gap: 10 }}>
                   {/* Color — a single base-layer chip (the +/- button's lower
                       layer) filled with the SEGMENT colour. */}
                   <button
-                    onClick={() => { setColorPickerSegment(colorPickerSegment === index ? null : index); setTexturePickerSegment(null); }}
+                    onClick={() => { setColorPickerSegment(colorPickerSegment === index ? null : index); setTexturePickerSegment(null); setImagePickerSegment(null); }}
                     aria-label="Segment colour"
                     style={{
                       flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
@@ -1664,7 +1700,7 @@ export default function WheelEditor({
                   </button>
                   {/* Texture — opens the preset-pattern picker. */}
                   <button
-                    onClick={() => { setTexturePickerSegment(texturePickerSegment === index ? null : index); setColorPickerSegment(null); }}
+                    onClick={() => { setTexturePickerSegment(texturePickerSegment === index ? null : index); setColorPickerSegment(null); setImagePickerSegment(null); }}
                     aria-label="Segment texture"
                     style={{
                       flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
@@ -1677,18 +1713,23 @@ export default function WheelEditor({
                     <LayoutGrid size={17} color={withAlpha('#1E1E2C', 0.6)} />
                     Texture
                   </button>
-                  {/* Image — picker lands in the next pass; styled in now. */}
+                  {/* Image — opens the icon grid / custom-image picker. */}
                   <button
-                    aria-label="Segment image (coming soon)"
+                    onClick={() => { setImagePickerSegment(imagePickerSegment === index ? null : index); setColorPickerSegment(null); setTexturePickerSegment(null); }}
+                    aria-label="Segment image or icon"
                     style={{
-                      flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'not-allowed',
+                      flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
                       backgroundColor: '#F8F8F9',
                       boxShadow: `0 0 0 3.5px ${deriveCardSurfaces('#F8F8F9').halo}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                      fontSize: 13, fontWeight: 700, color: withAlpha('#1E1E2C', 0.45),
+                      fontSize: 13, fontWeight: 700, color: '#1E1E2C',
                     }}
                   >
-                    <Image size={17} color={withAlpha('#1E1E2C', 0.45)} />
+                    {segment.iconName
+                      ? <SegmentIcon name={segment.iconName} size={18} color={PRIMARY} />
+                      : segment.imagePath
+                        ? <img src={segment.imagePath} alt="" style={{ width: 20, height: 20, borderRadius: 5, objectFit: 'cover' }} />
+                        : <Image size={17} color={withAlpha('#1E1E2C', 0.6)} />}
                     Image
                   </button>
                 </div>
@@ -1714,6 +1755,62 @@ export default function WheelEditor({
                         />
                       );
                     })}
+                  </div>
+                )}
+
+                {/* Inline image/icon picker — upload a custom image or pick a lucide icon. */}
+                {imagePickerSegment === index && (
+                  <div onPointerDown={(e) => e.stopPropagation()} style={{ marginTop: 12 }}>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                      <label style={{
+                        flex: 1, height: 40, borderRadius: 10, cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                        backgroundColor: '#F8F8F9', border: `1.5px solid ${withAlpha('#1E1E2C', 0.15)}`,
+                        fontSize: 13, fontWeight: 700, color: '#1E1E2C',
+                      }}>
+                        <Image size={16} color={withAlpha('#1E1E2C', 0.6)} />
+                        {uploadingSegment === index ? 'Uploading…' : (segment.imagePath ? 'Change image' : 'Upload image')}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: 'none' }}
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSegmentImageUpload(index, f); e.target.value = ''; }}
+                        />
+                      </label>
+                      {(segment.imagePath || segment.iconName) && (
+                        <button
+                          onClick={() => { patchSegment(index, { imagePath: null, iconName: null }); commit(); }}
+                          style={{
+                            height: 40, padding: '0 14px', borderRadius: 10, cursor: 'pointer',
+                            backgroundColor: '#FEECEC', border: '1.5px solid #F4B4B4', color: '#D8473A',
+                            fontSize: 13, fontWeight: 700,
+                          }}
+                        >Remove</button>
+                      )}
+                    </div>
+                    <div style={{
+                      display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6,
+                      maxHeight: 184, overflowY: 'auto', padding: 2,
+                    }}>
+                      {LUCIDE_ICON_NAMES.map((nm) => {
+                        const active = segment.iconName === nm;
+                        return (
+                          <button
+                            key={nm}
+                            onClick={() => { patchSegment(index, { iconName: nm, imagePath: null }); commit(); }}
+                            aria-label={nm}
+                            style={{
+                              aspectRatio: 1, borderRadius: 10, cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              backgroundColor: active ? withAlpha(PRIMARY, 0.14) : '#F8F8F9',
+                              border: active ? `1.5px solid ${PRIMARY}` : `1.5px solid ${withAlpha('#1E1E2C', 0.1)}`,
+                            }}
+                          >
+                            <SegmentIcon name={nm} size={20} color={active ? PRIMARY : '#1E1E2C'} />
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 

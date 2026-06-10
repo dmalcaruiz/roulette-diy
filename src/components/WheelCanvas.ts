@@ -1,5 +1,6 @@
 import { WheelItem } from '../models/types';
 import { hexToRgba, lerpColor, withAlpha, oklchShade, readableTextColor } from '../utils/colorUtils';
+import { drawIconNode, getSegmentImage, drawSegmentImageCover } from './segmentVisuals';
 
 // Preset segment textures — a repeating pattern overlaid on the fill colour.
 // 'none' = solid colour. Shared with the editor's texture picker.
@@ -61,6 +62,38 @@ function drawSegmentTexture(
     }
   }
   ctx.restore();
+}
+
+// Draw a segment's visual (custom image or lucide icon) at the slice's outer
+// edge. Called inside the per-segment rotated frame (slice centre = +X), so its
+// right edge aligns with `textX` (= radius − 20·scale) — matching the space
+// computeFittedText reserves. Skips when there's none, or shows a faint
+// placeholder while a custom image is still decoding (it pops in on load).
+function drawSegmentVisual(
+  ctx: CanvasRenderingContext2D, item: WheelItem,
+  textX: number, imageSize: number, scale: number, fill: string,
+): void {
+  if (!item.imagePath && !item.iconName) return;
+  const vis = imageSize * scale;
+  if (vis <= 0) return;
+  const cx = textX - vis / 2;
+  if (item.imagePath) {
+    const img = getSegmentImage(item.imagePath);
+    const r = Math.min(vis * 0.16, vis / 2);
+    if (img) {
+      drawSegmentImageCover(ctx, img, cx - vis / 2, -vis / 2, vis, vis, r);
+    } else {
+      ctx.save();
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') ctx.roundRect(cx - vis / 2, -vis / 2, vis, vis, r);
+      else ctx.rect(cx - vis / 2, -vis / 2, vis, vis);
+      ctx.fillStyle = withAlpha(readableTextColor(fill), 0.14);
+      ctx.fill();
+      ctx.restore();
+    }
+  } else if (item.iconName) {
+    drawIconNode(ctx, item.iconName, cx, 0, vis * 0.9, withAlpha(readableTextColor(fill), 0.92));
+  }
 }
 
 // Minimum combined (strokeWidth + outerStrokeWidth) for the decorative outer
@@ -182,7 +215,7 @@ interface CachedLayout {
 }
 
 // Per-segment fitted label: the size it renders at and the line(s) to draw.
-interface FittedText { fontSize: number; lines: string[]; }
+interface FittedText { fontSize: number; lines: string[]; textX: number; }
 
 // Break a label into (up to) two balanced lines at the space nearest the
 // middle. Returns [text] when there's no usable space.
@@ -244,11 +277,14 @@ function computeFittedText(
   centerInset: number,
   markerRadius: number,
   wrap: boolean,
+  imageSize: number,
 ): FittedText[] {
   const total = items.reduce((s, it) => s + it.weight, 0) || 1;
   // Text must clear both the donut inset AND the centre marker's circle.
   const innerLimit = Math.max(centerInset, markerRadius, 0);
-  const avail = Math.max(0, textX - innerLimit);
+  // A segment carrying a visual (image/icon) reserves space for it at the outer
+  // edge, so that label's right edge moves inward by the visual box + a gap.
+  const visBox = imageSize * scale;
   const floorPx = Math.max(targetFont * TEXT_FIT_FLOOR, 6 * scale);
   // Separate, higher floor for LENGTH-driven shrinking: a too-long label only
   // shrinks ~this far before we ellipsize instead of shrinking on to the Min
@@ -267,6 +303,11 @@ function computeFittedText(
     const half = Math.min(((2 * Math.PI * it.weight) / total) / 2, Math.PI / 2);
     const sinHalf = Math.sin(half);
 
+    // Pull this label's right edge in when it carries a visual (image/icon).
+    const reserve = (it.iconName || it.imagePath) ? visBox + 10 * scale : 0;
+    const itemTextX = textX - reserve;
+    const avail = Math.max(0, itemTextX - innerLimit);
+
     // Best font size for a given set of lines: shrink until both the radial
     // (length) and angular (thickness at the text's inner end) limits hold.
     const fitLines = (lines: string[]): number => {
@@ -279,7 +320,7 @@ function computeFittedText(
       let f = targetFont;
       for (let k = 0; k < 24; k++) {
         const textW = (wTarget * f) / targetFont;
-        const rInner = textX - textW;
+        const rInner = itemTextX - textW;
         const thickness = 2 * Math.max(rInner, innerLimit) * sinHalf;
         const angularOK = f * lineFactor + ANG_MARGIN <= thickness;
         const radialOK = rInner >= innerLimit;
@@ -306,7 +347,7 @@ function computeFittedText(
       }
     }
     lines = lines.map((ln) => ellipsize(ctx, ln, targetFont, f, avail));
-    return { fontSize: f, lines };
+    return { fontSize: f, lines, textX: itemTextX };
   });
 }
 
@@ -395,10 +436,10 @@ export function paintWheel(
     // (box = size·250/700, circle = box·markerDiameter/100), centred.
     const markerDiameter = config.markerDiameter ?? 0;
     const markerRadius = (width * (250 / 700) * (markerDiameter / 100)) / 2;
-    const key = `${width}|${strokeWidth}|${outerStrokeWidth}|${centerInset}|${markerDiameter}|${config.fontSize}|${textWrap ? 1 : 0}|`
-      + items.map((it) => `${it.text}${it.weight}`).join('');
+    const key = `${width}|${strokeWidth}|${outerStrokeWidth}|${centerInset}|${markerDiameter}|${config.fontSize}|${textWrap ? 1 : 0}|${imageSize}|`
+      + items.map((it) => `${it.text}${it.weight}${(it.iconName || it.imagePath) ? 'V' : '_'}`).join('');
     if (key !== _ftKey) {
-      _ftVal = computeFittedText(ctx, items, config.fontSize, textX, scale, centerInset, markerRadius, textWrap);
+      _ftVal = computeFittedText(ctx, items, config.fontSize, textX, scale, centerInset, markerRadius, textWrap, imageSize);
       _ftKey = key;
     }
   }
@@ -516,11 +557,13 @@ export function paintWheel(
       ctx.textBaseline = 'middle';
 
       const ft = _ftVal[i];
+      // Per-segment visual (image/icon) at the outer edge; text sits inboard.
+      drawSegmentVisual(ctx, item, textX, imageSize, scale, effectiveColor);
       ctx.font = `600 ${ft.fontSize}px Inter, sans-serif`;
       const lineH = ft.fontSize * 1.05;
       const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
       for (let li = 0; li < ft.lines.length; li++) {
-        ctx.fillText(ft.lines[li], textX, y0 + li * lineH);
+        ctx.fillText(ft.lines[li], ft.textX, y0 + li * lineH);
       }
 
       ctx.restore();
@@ -607,11 +650,12 @@ export function paintWheel(
       ctx.textBaseline = 'middle';
       // Same fitted size + lines as the wheel, so the win overlay matches.
       const wft = _ftVal[winningIndex];
+      drawSegmentVisual(ctx, winItem, textX, imageSize, scale, winItem.color);
       ctx.font = `600 ${wft.fontSize}px Inter, sans-serif`;
       const wLineH = wft.fontSize * 1.05;
       const wy0 = -textVerticalOffset - ((wft.lines.length - 1) * wLineH) / 2;
       for (let li = 0; li < wft.lines.length; li++) {
-        ctx.fillText(wft.lines[li], textX, wy0 + li * wLineH);
+        ctx.fillText(wft.lines[li], wft.textX, wy0 + li * wLineH);
       }
 
       ctx.restore();

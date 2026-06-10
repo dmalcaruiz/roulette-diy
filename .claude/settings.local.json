@@ -17,7 +17,14 @@
       "WebFetch(domain:roulette-diy.web.app)",
       "Bash(node c:/tmp/render-ticks.mjs)",
       "Bash(node -e ' *)",
-      "PowerShell($ErrorActionPreference='SilentlyContinue'; gh repo list --limit 200 | Select-String -Pattern 'wheel' -SimpleMatch; Write-Output '--- gh available? ---'; \\(Get-Command gh\\).Source)"
+      "PowerShell($ErrorActionPreference='SilentlyContinue'; gh repo list --limit 200 | Select-String -Pattern 'wheel' -SimpleMatch; Write-Output '--- gh available? ---'; \\(Get-Command gh\\).Source)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\({...p.dependencies, ...p.devDependencies}, null, 1\\)\\)\")",
+      "Bash(grep -v \"^\\\\s*\\\\*\\\\|^/\\\\*\\\\|^\\\\s*$\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\('it.weight'\\); console.log\\(JSON.stringify\\(s.slice\\(i-20, i+40\\)\\)\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\('it.text'\\); console.log\\(JSON.stringify\\(s.slice\\(i-30, i+60\\)\\)\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\(\\\\\"join\\(''\\)\\\\\"\\); console.log\\(JSON.stringify\\(s.slice\\(i-70, i+12\\)\\)\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\('.join'\\); console.log\\('idx',i\\); console.log\\(JSON.stringify\\(s.slice\\(i-78, i+15\\)\\)\\);\")",
+      "Bash(git check-ignore *)"
     ]
   }
 }

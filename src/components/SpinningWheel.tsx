@@ -327,6 +327,7 @@ function playWinChord(): void {
 }
 import { WheelItem } from '../models/types';
 import { paintWheel, WheelPainterConfig } from './WheelCanvas';
+import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
 import DotCelebration, { DotCelebrationHandle } from './DotCelebration';
 
@@ -441,7 +442,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     size = 300,
     textSizeMultiplier = 1,
     headerTextSizeMultiplier = 1,
-    imageSize = 60,
+    imageSize = 110,
     cornerRadius = 8,
     innerCornerStyle = 'none',
     centerInset = 50,
@@ -449,7 +450,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     textWrap = false,
     outerStrokeWidth = 0,
     outerStrokeDots = false,
-    resultDialog = false,
+    resultDialog = true,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
     markerDiameter = 60,
@@ -759,6 +760,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const id = requestAnimationFrame(() => paint());
     return () => cancelAnimationFrame(id);
   }, [paint, paintImpl]);
+
+  // Repaint when a segment's custom image finishes decoding. The painter skips
+  // not-yet-loaded images (showing a faint placeholder); this brings them in.
+  useEffect(() => onVisualLoaded(() => paint()), [paint]);
 
   // Update segment on mount
   useEffect(() => {
