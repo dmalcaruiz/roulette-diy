@@ -184,31 +184,48 @@ function drawOuterDots(
     ? sweeps.map((s) => Math.min(cornerRadius / radius, s / 2))
     : null;
   const dotAngR = dotR / dotRing;
+  // Per-divider cull: divider i sits between segments (i−1) and i; once BOTH
+  // sides' corners have undercut it by DIVIDER_CORNER_CULL dot-radii it floats
+  // over the notch → drop. Precomputed so a segment can also tell when BOTH of
+  // its own dividers are gone (→ it keeps a central dot, below).
+  const dividerCulled = cornerArcs
+    ? dividerAngles.map((_, i) => {
+        const prev = (i - 1 + n) % n;
+        return Math.min(cornerArcs[prev], cornerArcs[i]) >= dotAngR * DIVIDER_CORNER_CULL;
+      })
+    : null;
 
   for (let i = 0; i < n; i++) {
     const prev = (i - 1 + n) % n;
+    const next = (i + 1) % n;
     // 'segment' mode: a divider dot blends its two neighbours; interior/slim dots
     // take the slice colour. Otherwise every dot shares the one `dotColor`.
     const divColor = segmentColors ? oklchMix(segmentColors[prev], segmentColors[i]) : dotColor;
     const segColor = segmentColors ? segmentColors[i] : dotColor;
     // Shared divider dot — suppressed if either adjacent segment is super-slim
-    // (collapse into the central dot), or once BOTH sides' corners have rounded
-    // past it by DIVIDER_CORNER_CULL dot-radii (no-bg-circle cull → it floats).
-    const divCulled = cornerArcs
-      ? Math.min(cornerArcs[prev], cornerArcs[i]) >= dotAngR * DIVIDER_CORNER_CULL
-      : false;
-    if (!slim[i] && !slim[prev] && !divCulled) dot(dividerAngles[i], divColor);
+    // (collapse into the central dot), or once the corners have culled it.
+    if (!slim[i] && !slim[prev] && !(dividerCulled && dividerCulled[i])) dot(dividerAngles[i], divColor);
     if (slim[i]) {
       dot(dividerAngles[i] + sweeps[i] / 2, segColor); // one central dot on the slim segment
     } else {
       const interior = Math.max(0, Math.min(40, Math.round(sweeps[i] / targetGap) - 1));
       const ca = cornerArcs ? cornerArcs[i] : 0;
+      let drew = 0;
       for (let j = 1; j <= interior; j++) {
         const off = sweeps[i] * (j / (interior + 1));
         // Drop in-between dots whose centre has fallen into the rounded-away
         // region near either end — peels them off the ends inward as corner grows.
         if (off < ca || off > sweeps[i] - ca) continue;
         dot(dividerAngles[i] + off, segColor);
+        drew++;
+      }
+      // The CENTRE dot is sacred. Once a segment has lost both its divider
+      // (intersection) dots AND every in-between dot to the cull, it would go
+      // completely bare — so keep one central dot instead. (Odd in-between counts
+      // already carry a centre dot, which the cull never touches, so this only
+      // fires for the even / no-in-between segments.)
+      if (dividerCulled && drew === 0 && dividerCulled[i] && dividerCulled[next]) {
+        dot(dividerAngles[i] + sweeps[i] / 2, segColor);
       }
     }
   }
