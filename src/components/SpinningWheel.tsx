@@ -696,7 +696,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       wheelBaseColor,
       imageSize,
       overlayColor,
-      textVerticalOffset: displaySize / 700 * 2,
+      // Nudge labels DOWN a touch — the 'middle' baseline sits a hair high in
+      // the wedge. (Drawn as -textVerticalOffset, so negative = downward.)
+      textVerticalOffset: displaySize / 700 * -1,
       innerCornerStyle,
       centerInset,
       overlayOpacity: overlayOpacityRef.current,

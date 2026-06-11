@@ -22,7 +22,7 @@ const BUFFER = 6;
 const ORDER_KEY = 'wheelVibeOrder';
 // Active = the halo simply turns white; nothing else.
 const HALO_REST = '0 0 0 3.5px rgba(0,0,0,0.36)';
-const HALO_ACTIVE = '0 0 0 3.5px rgba(255,255,255,0.92)';
+const HALO_ACTIVE = '0 0 0 3.5px rgba(255,255,255,0.7)';
 
 const byKey = new Map(SLICE_VIBES.map(v => [v.key, v]));
 

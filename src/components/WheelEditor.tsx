@@ -2287,7 +2287,9 @@ export default function WheelEditor({
             marginBottom: 14,
             paddingLeft: 2,
           }}>
-            <span style={{ fontWeight: 800, fontSize: 20, color: ON_SURFACE }}>Slices</span>
+            <span style={{ fontWeight: 800, fontSize: 20, color: ON_SURFACE }}>
+              Slices <span style={{ fontSize: 16, fontWeight: 700, color: withAlpha(ON_SURFACE, 0.4) }}>{segments.length}</span>
+            </span>
             <button
               onClick={() => setSegmentsMode(segmentsMode === 'cards' ? 'list' : 'cards')}
               aria-label={`Slice view: ${segmentsMode}. Tap to switch.`}

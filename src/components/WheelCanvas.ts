@@ -282,7 +282,7 @@ function computeFittedText(
   const total = items.reduce((s, it) => s + it.weight, 0) || 1;
   // Text must clear both the donut inset AND the centre marker's circle — with a
   // small gap past the marker so the label doesn't kiss its edge.
-  const markerGap = markerRadius > 0 ? 18 * scale : 0;
+  const markerGap = markerRadius > 0 ? 24 * scale : 0;
   const innerLimit = Math.max(centerInset, markerRadius + markerGap, 0);
   // A segment carrying a visual (image/icon) reserves space for it at the outer
   // edge, so that label's right edge moves inward by the visual box + a gap.
@@ -345,17 +345,26 @@ function computeFittedText(
 
     let lines = [it.text];
     let f = fitLines(lines);
-    // Wrap if the single line would overflow (i.e. it's about to be ellipsized)
-    // and a 2-line split renders at least as large — preferred over chopping.
+    // Comfortable minimum: rather than shrink a single line below this (or chop
+    // it with "…"), prefer wrapping to two lines that DO render this big — first
+    // line whole, second line ellipsised only if it must. We fall back to a small
+    // single ellipsised line ONLY when even two lines can't reach a comfortable
+    // size (a thin / low-weight wedge with a long label).
+    const comfortablePx = targetFont * 0.6;
     const singleOverflows = (ctx.measureText(it.text).width * f) / targetFont > avail;
-    if (wrap && singleOverflows) {
+    if (wrap && (singleOverflows || f < comfortablePx)) {
       const split = splitTwoLines(it.text);
       if (split.length === 2) {
         const f2 = fitLines(split);
-        if (f2 >= f) { lines = split; f = f2; }
+        // Take the wrap only when it's comfortable, no smaller than the single
+        // line, and its FIRST line fits whole (so only the 2nd line ellipsises).
+        const line1Fits = (ctx.measureText(split[0]).width * f2) / targetFont <= avail;
+        if (f2 >= comfortablePx && f2 >= f && line1Fits) { lines = split; f = f2; }
       }
     }
-    lines = lines.map((ln) => ellipsize(ctx, ln, targetFont, f, avail));
+    // Ellipsise ONLY the last line — a lone single line, or the 2nd line of a
+    // wrap (the wrapped first line always stays whole).
+    lines = lines.map((ln, i) => i === lines.length - 1 ? ellipsize(ctx, ln, targetFont, f, avail) : ln);
     return { fontSize: f, lines, textX: itemTextX };
   });
 }
