@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
-import { OUTER_DOTS_MIN_STROKE, OUTER_DOTS_MAX_CORNER, SEGMENT_TEXTURES } from './WheelCanvas';
+import { OUTER_DOTS_MIN_STROKE, SEGMENT_TEXTURES } from './WheelCanvas';
 import { uploadImage } from '../services/uploadService';
 import { LUCIDE_ICON_NAMES } from '../utils/iconMap';
 import { ICON_NODES } from '../utils/iconNodes';
@@ -311,11 +311,12 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     imageCornerRadius: state.cornerRadius,
     strokeWidth: state.strokeWidth,
     outerStrokeWidth: state.outerStrokeWidth,
-    // Gate on the same conditions as the toggle's visibility, so changing the
-    // stroke/corners hides the dots (without losing the user's on/off choice).
+    // Gate on the same condition as the toggle's visibility — enough chrome band
+    // to host dots. Corner radius no longer gates the flag: the painter culls
+    // dots per-corner instead (only when there's no bg circle), so the user's
+    // on/off choice survives even at large corners.
     outerStrokeDots: state.outerStrokeDots
-      && (state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE)
-      && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle),
+      && (state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE),
     bezelDotsColorMode: state.bezelDotsColorMode,
     bezelDotsCustomColor: state.bezelDotsCustomColor,
     textWrap: true, // locked on (the Wrap toggle is no longer exposed)
@@ -2111,11 +2112,12 @@ export default function WheelEditor({
         <SettingSlider label="Outer Stroke" value={state.outerStrokeWidth} min={0} max={30} step={0.1}
           onChange={v => patch({ outerStrokeWidth: v })} onChangeEnd={commit} />
 
-        {/* Decorative bezel dots — unlocked only once the combined stroke band
+        {/* Decorative bezel dots — unlocked once the combined stroke band
             (divider + outer) is wide enough to host them. The two add up, so
-            either slider alone can reach the threshold. */}
-        {state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE
-          && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle) && (
+            either slider alone can reach the threshold. Corner radius no longer
+            gates this: at large corners (and no bg circle) the painter culls the
+            dots that would float, rather than hiding the whole option. */}
+        {state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE && (
           <>
             <SettingToggleRow
               icon={<Circle size={20} />}

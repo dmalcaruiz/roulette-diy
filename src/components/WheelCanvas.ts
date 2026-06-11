@@ -100,9 +100,11 @@ function drawSegmentVisual(
 // dots to be available/drawn — below this there isn't enough chrome band to
 // host them. Shared with the editor so the toggle unlocks at the same point.
 export const OUTER_DOTS_MIN_STROKE = 12;
-// Past this corner radius the wheel reads as a flower/blob and a clean bezel
-// ring of dots stops looking right — so the option is disabled above it.
-export const OUTER_DOTS_MAX_CORNER = 20;
+// No-bg-circle corner cull (see drawOuterDots): a DIVIDER dot is dropped once
+// the rounded corners on both sides have undercut it by this many dot-radii of
+// arc. Lower = dots vanish at a gentler corner radius. In-between dots have no
+// such grace factor — they drop the instant their centre leaves solid fill.
+const DIVIDER_CORNER_CULL = 0.75;
 
 // Default bezel-dot colour: black at 40% over a light base, white at 40% over a
 // dark one — soft beads that read on the chrome either way (20% washed out).
@@ -133,6 +135,14 @@ function drawOuterDots(
   // When given, dots are tinted per-slice ('segment' mode): a divider dot mixes
   // its two neighbours; interior + slim dots take the slice colour.
   segmentColors?: string[],
+  // Corner culling — ONLY when there's no background circle to back the dots
+  // (`cullAtCorners`). `cornerRadius` (render px) is the segment corner rounding;
+  // where a rounded corner pulls the segment fill inward, a dot would float over
+  // the bare notch. So as the corner grows: divider dots drop first (once the
+  // rounding undercuts them), then in-between dots peel off from the ends inward.
+  // With a bg circle the notches are filled, so this is off and every dot draws.
+  cornerRadius = 0,
+  cullAtCorners = false,
 ): void {
   // Full chrome band: the divider stroke STRADDLES `radius` (±strokeWidth/2) and
   // the outer stroke sits beyond it → union centred at radius+osw/2; the dots
@@ -166,21 +176,39 @@ function drawOuterDots(
   const slimArc = (2.5 * dotR) / dotRing;
   const slim = sweeps.map((s) => s < slimArc);
 
+  // Corner cull (no-bg-circle only): the arc rounded away at each segment end,
+  // clamped to sweep/2 to mirror buildSegmentPath. The solid outer fill of
+  // segment i then spans [cornerArc, sweep − cornerArc]; anything outside floats.
+  // `dotAngR` is a dot's angular half-width, the yardstick for the divider grace.
+  const cornerArcs = cullAtCorners && cornerRadius > 0
+    ? sweeps.map((s) => Math.min(cornerRadius / radius, s / 2))
+    : null;
+  const dotAngR = dotR / dotRing;
+
   for (let i = 0; i < n; i++) {
     const prev = (i - 1 + n) % n;
     // 'segment' mode: a divider dot blends its two neighbours; interior/slim dots
     // take the slice colour. Otherwise every dot shares the one `dotColor`.
     const divColor = segmentColors ? oklchMix(segmentColors[prev], segmentColors[i]) : dotColor;
     const segColor = segmentColors ? segmentColors[i] : dotColor;
-    // Shared divider dot — suppressed if either adjacent segment is super-slim,
-    // so the slim segment's crowded edges collapse into its central dot.
-    if (!slim[i] && !slim[prev]) dot(dividerAngles[i], divColor);
+    // Shared divider dot — suppressed if either adjacent segment is super-slim
+    // (collapse into the central dot), or once BOTH sides' corners have rounded
+    // past it by DIVIDER_CORNER_CULL dot-radii (no-bg-circle cull → it floats).
+    const divCulled = cornerArcs
+      ? Math.min(cornerArcs[prev], cornerArcs[i]) >= dotAngR * DIVIDER_CORNER_CULL
+      : false;
+    if (!slim[i] && !slim[prev] && !divCulled) dot(dividerAngles[i], divColor);
     if (slim[i]) {
       dot(dividerAngles[i] + sweeps[i] / 2, segColor); // one central dot on the slim segment
     } else {
       const interior = Math.max(0, Math.min(40, Math.round(sweeps[i] / targetGap) - 1));
+      const ca = cornerArcs ? cornerArcs[i] : 0;
       for (let j = 1; j <= interior; j++) {
-        dot(dividerAngles[i] + sweeps[i] * (j / (interior + 1)), segColor);
+        const off = sweeps[i] * (j / (interior + 1));
+        // Drop in-between dots whose centre has fallen into the rounded-away
+        // region near either end — peels them off the ends inward as corner grows.
+        if (off < ca || off > sweeps[i] - ca) continue;
+        dot(dividerAngles[i] + off, segColor);
       }
     }
   }
@@ -684,7 +712,8 @@ export function paintWheel(
     drawOuterDots(ctx, center.x, center.y, radius, strokeWidth, outerStrokeWidth,
       bezelDotColor(dotMode, wheelBaseColor, config.bezelDotsCustomColor),
       layout.startAngles, layout.segmentSizes, 1,
-      dotMode === 'segment' ? items.map(it => it.color) : undefined);
+      dotMode === 'segment' ? items.map(it => it.color) : undefined,
+      cornerRadius, !showBackgroundCircle);
     ctx.restore();
   }
 
@@ -984,7 +1013,8 @@ export function paintWheelThumbnail(
     drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW,
       bezelDotColor(dotMode, wheelBaseColor, style?.bezelDotsCustomColor),
       thumbDividers, thumbSweeps, 1 / 1.15,
-      dotMode === 'segment' ? items.map(it => it.color) : undefined);
+      dotMode === 'segment' ? items.map(it => it.color) : undefined,
+      cornerR, !showRing);
   }
 
   // The centre marker is drawn as an HTML overlay (CustomMarker) by
