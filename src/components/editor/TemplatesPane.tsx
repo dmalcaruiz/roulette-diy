@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { withAlpha, oklchShadow, readableTextColor } from '../../utils/colorUtils';
-import { ON_SURFACE, BORDER, SURFACE_ELEVATED } from '../../utils/constants';
+import { ON_SURFACE, SURFACE_ELEVATED } from '../../utils/constants';
 import { PushDownButton } from '../PushDownButton';
-import { SLICE_VIBES, isVibeActive, type SliceVibe } from './vibes';
+import { type SliceVibe } from './vibes';
+import { VibeRow } from './VibeRow';
 import { randomIdea, randomTitle, type WheelIdea } from './ideas';
 
 // Editor "Templates" pane — presentational. Wheel title + vibe (palette) picker
@@ -16,6 +17,7 @@ interface TemplatesPaneProps {
   sliceColors: string[];
   onApplyVibe: (vibe: SliceVibe) => void;
   onApplyIdea: (idea: WheelIdea) => void;
+  onReorderActiveChange?: (active: boolean) => void;
 }
 
 const LABEL: React.CSSProperties = {
@@ -23,14 +25,14 @@ const LABEL: React.CSSProperties = {
   color: withAlpha(ON_SURFACE, 0.5), paddingLeft: 2,
 };
 
-export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, onApplyVibe, onApplyIdea }: TemplatesPaneProps) {
+export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, onApplyVibe, onApplyIdea, onReorderActiveChange }: TemplatesPaneProps) {
   const [lastIdea, setLastIdea] = useState<WheelIdea | null>(null);
   return (
     <div style={{ padding: '0 20px 32px' }}>
       {/* Title — the wheel's name (same value as the top-bar pill). The
           sparkles button drops in a random fun name. */}
       <div style={{ marginTop: 4, marginBottom: 22 }}>
-        <div style={{ ...LABEL, marginBottom: 8 }}>TITLE</div>
+        <div style={{ ...LABEL, marginBottom: 8 }}>NAME</div>
         <div style={{ position: 'relative' }}>
           <input
             type="text"
@@ -62,31 +64,11 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
           </button>
         </div>
       </div>
-      {/* Vibe — recolours all slices by cycling the chosen palette. */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ ...LABEL, marginBottom: 10 }}>VIBE</div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          {SLICE_VIBES.map(v => {
-            const active = isVibeActive(v, sliceColors);
-            return (
-              <button
-                key={v.key}
-                aria-label={`Vibe: ${v.key}`}
-                onClick={() => onApplyVibe(v)}
-                style={{
-                  flex: 1, height: 52, borderRadius: 14, padding: 3, cursor: 'pointer',
-                  background: active ? withAlpha(ON_SURFACE, 0.1) : SURFACE_ELEVATED,
-                  border: active ? `2px solid ${ON_SURFACE}` : `1.5px solid ${BORDER}`,
-                  boxShadow: active ? `0 0 0 3px ${withAlpha(ON_SURFACE, 0.15)}` : 'none',
-                }}
-              >
-                <div style={{ display: 'flex', width: '100%', height: '100%', borderRadius: 10, overflow: 'hidden' }}>
-                  {v.cols.map((c, i) => <span key={i} style={{ flex: 1, background: c }} />)}
-                </div>
-              </button>
-            );
-          })}
-        </div>
+      {/* Vibe — a reorderable, scrollable row of slice-card-style palette tiles.
+          Tap one to recolour all slices; long-press to reorder. */}
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ ...LABEL, marginBottom: 6 }}>VIBE</div>
+        <VibeRow sliceColors={sliceColors} onApplyVibe={onApplyVibe} onReorderActiveChange={onReorderActiveChange} />
       </div>
       {/* Ideas — fill the whole wheel with a random themed starter set. */}
       <div>

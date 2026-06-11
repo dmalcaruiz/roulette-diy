@@ -1973,6 +1973,7 @@ export default function RouletteScreen({
                     }));
                     wrappedEditorHistory.set({ ...editorHistory.state, name: idea.title, segments: segs });
                   }}
+                  onReorderActiveChange={handleEditorReorderingChange}
                 />
               </section>
               {/* Slices + Style render stacked inside WheelEditor; it tags those
@@ -2622,6 +2623,8 @@ function PreviewTile({
   // For flow tiles the parent also passes `grabbed`, which wins; for
   // standalone tiles (no parent state), this is the only source.
   const [isGrabbedLocal, setIsGrabbedLocal] = useState(false);
+  // Tap press — the top face dips onto the peek + lights up (PushDownButton feel).
+  const [pressed, setPressed] = useState(false);
   // Mount / unmount tracing — distinguishes "React preserved the instance
   // and re-rendered" (no log) from "React unmounted the old and mounted a
   // new" (UNMOUNT then MOUNT log).
@@ -2667,10 +2670,12 @@ function PreviewTile({
         if (e.button === 2) return;
         didLongPressRef.current = false;
         primedForContextRef.current = false;
+        setPressed(true);
         startPosRef.current = { x: e.clientX, y: e.clientY };
         longPressTimerRef.current = setTimeout(() => {
           didLongPressRef.current = true;
           longPressTimerRef.current = null;
+          setPressed(false); // hand off to the lift/scale grab visual
           // Only fire onClick on activation for NON-active tiles — there it
           // means "switch to this wheel" before entering reorder. For the
           // already-active tile, onClick = "open context menu," which we
@@ -2695,10 +2700,11 @@ function PreviewTile({
         if (!startPosRef.current) return;
         const dx = e.clientX - startPosRef.current.x;
         const dy = e.clientY - startPosRef.current.y;
-        if (Math.hypot(dx, dy) > 8) clearLongPress();
+        if (Math.hypot(dx, dy) > 8) { clearLongPress(); setPressed(false); }
       }) : undefined}
       onPointerUp={(onGrabStart || onContextOpen) ? (() => {
         clearLongPress();
+        setPressed(false);
         setIsGrabbedLocal(false);
         if (primedForContextRef.current) {
           primedForContextRef.current = false;
@@ -2707,6 +2713,7 @@ function PreviewTile({
       }) : undefined}
       onPointerCancel={(onGrabStart || onContextOpen) ? (() => {
         clearLongPress();
+        setPressed(false);
         setIsGrabbedLocal(false);
         primedForContextRef.current = false;
       }) : undefined}
@@ -2771,7 +2778,9 @@ function PreviewTile({
               backgroundColor: surfaces.bottom,
               boxShadow: `0 0 0 3.5px ${surfaces.halo}`,
             }} />
-            {/* Top layer — the face. */}
+            {/* Top layer — the face. Presses DOWN onto the peek + lights up on
+                tap; drops 2px of the 4px peek so a sliver of the lower layer
+                stays and the tile keeps reading as solid. */}
             <div style={{
               position: 'relative',
               height: 88,
@@ -2783,6 +2792,9 @@ function PreviewTile({
               alignItems: 'center',
               justifyContent: 'center',
               boxSizing: 'border-box',
+              transform: pressed ? 'translateY(2px)' : 'translateY(0)',
+              filter: pressed ? 'brightness(1.12)' : undefined,
+              transition: 'transform 0.1s ease, filter 0.1s ease',
             }}>
               {children}
             </div>

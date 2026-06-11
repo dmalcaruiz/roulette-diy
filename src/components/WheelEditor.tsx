@@ -4,6 +4,7 @@ import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, readableTextColor } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
+import { activeVibe } from './editor/vibes';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CopyPlus, ClipboardPaste, Circle, Settings,
@@ -187,19 +188,21 @@ function measureTextWidth(text: string, font: string): number {
   return ctx.measureText(text).width;
 }
 
-// Pick the palette colour that comes *next after* the last segment's
-// colour in SEGMENT_COLORS, so successive add-segment clicks walk through
-// the palette in order even when earlier segments have been recoloured /
-// reordered. Falls back to a count-based pick when the wheel is empty or
-// the last segment uses a custom (non-palette) colour.
+// Pick the palette colour that comes *next after* the last segment's colour in
+// the ACTIVE vibe's palette (the vibe the current colours belong to, defaulting
+// to the first vibe), so successive add-segment clicks walk through the selected
+// vibe in order even when earlier segments have been recoloured / reordered.
+// Falls back to a count-based pick when the wheel is empty or the last segment
+// uses a custom (non-palette) colour.
 function getNextColor(segments: SegmentData[]): string {
-  if (segments.length === 0) return SEGMENT_COLORS[0];
+  const palette = activeVibe(segments.map(s => s.color)).palette;
+  if (segments.length === 0) return palette[0];
   const lastColor = segments[segments.length - 1].color;
-  const lastIdx = SEGMENT_COLORS.indexOf(lastColor);
+  const lastIdx = palette.indexOf(lastColor);
   if (lastIdx === -1) {
-    return SEGMENT_COLORS[segments.length % SEGMENT_COLORS.length];
+    return palette[segments.length % palette.length];
   }
-  return SEGMENT_COLORS[(lastIdx + 1) % SEGMENT_COLORS.length];
+  return palette[(lastIdx + 1) % palette.length];
 }
 
 // CSS background pattern previewing a segment texture over its colour, for the
@@ -1969,6 +1972,9 @@ export default function WheelEditor({
   const commitSimpleDraft = (value: string) => {
     const lines = value.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const prev = stateRef.current.segments;
+    // New lines draw from the active vibe's palette so list-mode additions keep
+    // the selected vibe, same as the cards-mode add button.
+    const palette = activeVibe(prev.map(s => s.color)).palette;
     const nextSegments: SegmentData[] = lines.map((text, i) => {
       const existing = prev[i];
       if (existing) {
@@ -1978,7 +1984,11 @@ export default function WheelEditor({
       return {
         id: `${segmentIdCounter++}`,
         text,
-        color: SEGMENT_COLORS[(prev.length + i) % SEGMENT_COLORS.length],
+        // Colour by final POSITION (i), matching recolorWithVibe + the cards-mode
+        // add. The old `prev.length + i` resolved to 2·prev.length for each
+        // appended line — always even — so additions only ever hit half the
+        // palette (the "4-colour" bug).
+        color: palette[i % palette.length],
         weight: 1,
       };
     });
