@@ -598,6 +598,9 @@ export default function WheelEditor({
         }
         return;
       }
+      // Cards mode: open (expand) the long-pressed segment's card so the user
+      // lands directly in its editor, then scroll it into view.
+      setExpandedIndex(idx);
       // Arithmetic target — the row may be virtualized out of the DOM, so we
       // can't measure it. Its top within the list is idx * rowH (uniform).
       // The spacers reserve the full scroll height, so scrollHeight is right

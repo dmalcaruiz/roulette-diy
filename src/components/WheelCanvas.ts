@@ -292,7 +292,7 @@ function computeFittedText(
   // far before we ellipsize instead of going all the way to the Min Size floor.
   // (Thin-wedge / angular shrinking still goes all the way to floorPx.) Lower →
   // labels stay whole (just smaller) much longer before the "…" kicks in.
-  const lengthFloorPx = Math.max(targetFont * 0.6, floorPx);
+  const lengthFloorPx = Math.max(targetFont * 0.45, floorPx);
   const ANG_MARGIN = 1 * scale;
   // Visual glyph height as a fraction of font size (Inter, centred baseline).
   // Using the full font size over-shrinks labels that actually fit; 0.82 keeps
