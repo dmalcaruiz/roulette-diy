@@ -1545,6 +1545,8 @@ export default function RouletteScreen({
               strokeWidth={activeConfig.strokeWidth * staticScale}
               outerStrokeWidth={(activeConfig.outerStrokeWidth ?? 0) * staticScale}
               outerStrokeDots={activeConfig.outerStrokeDots}
+              bezelDotsColorMode={activeConfig.bezelDotsColorMode}
+              bezelDotsCustomColor={activeConfig.bezelDotsCustomColor}
               textWrap={activeConfig.textWrap}
               showBackgroundCircle={activeConfig.showBackgroundCircle}
               wheelBaseColor={activeConfig.wheelBaseColor}

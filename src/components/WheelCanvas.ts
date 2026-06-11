@@ -1,5 +1,5 @@
 import { WheelItem } from '../models/types';
-import { hexToRgba, lerpColor, withAlpha, oklchShade, readableTextColor } from '../utils/colorUtils';
+import { hexToRgba, lerpColor, withAlpha, oklchShade, oklchMix, readableTextColor } from '../utils/colorUtils';
 import { drawIconNode, getSegmentImage, drawSegmentImageCover } from './segmentVisuals';
 
 // Preset segment textures — a repeating pattern overlaid on the fill colour.
@@ -104,12 +104,20 @@ export const OUTER_DOTS_MIN_STROKE = 12;
 // ring of dots stops looking right — so the option is disabled above it.
 export const OUTER_DOTS_MAX_CORNER = 20;
 
-// A colour that reads against the (usually light) chrome stroke — darken a
-// light base, lighten a dark one — so the dots look like beads/rivets on it.
-function dotsContrastColor(baseColor: string): string {
+// Default bezel-dot colour: black at 40% over a light base, white at 40% over a
+// dark one — soft beads that read on the chrome either way (20% washed out).
+function defaultDotColor(baseColor: string): string {
   const { r, g, b } = hexToRgba(baseColor);
   const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return oklchShade(baseColor, lum > 0.5 ? 0.42 : -0.5);
+  return lum > 0.5 ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)';
+}
+
+// Resolve the bezel-dot fill for the non-'segment' modes (segment mode tints
+// per-dot inside drawOuterDots).
+function bezelDotColor(mode: 'default' | 'custom' | 'segment' | undefined,
+                       baseColor: string, customColor?: string): string {
+  if (mode === 'custom') return customColor || '#FFFFFF';
+  return defaultDotColor(baseColor); // 'default' (and a safe fill for 'segment')
 }
 
 // Decorative carnival-bulb bezel: a dot on each segment divider plus evenly-
@@ -122,6 +130,9 @@ function drawOuterDots(
   ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number,
   strokeWidth: number, outerStrokeWidth: number, dotColor: string,
   dividerAngles: number[], sweeps: number[], dotRadiusScale = 1,
+  // When given, dots are tinted per-slice ('segment' mode): a divider dot mixes
+  // its two neighbours; interior + slim dots take the slice colour.
+  segmentColors?: string[],
 ): void {
   // Full chrome band: the divider stroke STRADDLES `radius` (±strokeWidth/2) and
   // the outer stroke sits beyond it → union centred at radius+osw/2; the dots
@@ -138,12 +149,12 @@ function drawOuterDots(
   // preview tiles instead of clamping to 1px (the full wheel never hits it —
   // its dots are always ≥~4px once the option is unlocked).
   const dotR = Math.max(0.5, Math.min(bandWidth * 0.34, radius * 0.08) * dotRadiusScale);
-  const dot = (a: number) => {
+  const dot = (a: number, color: string) => {
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, dotR, 0, Math.PI * 2);
     ctx.fill();
   };
-  ctx.fillStyle = dotColor;
   const n = dividerAngles.length;
 
   // Spacing relative to the dot size: ~7.5 diameters (= 15·dotR) of arc between
@@ -157,15 +168,19 @@ function drawOuterDots(
 
   for (let i = 0; i < n; i++) {
     const prev = (i - 1 + n) % n;
+    // 'segment' mode: a divider dot blends its two neighbours; interior/slim dots
+    // take the slice colour. Otherwise every dot shares the one `dotColor`.
+    const divColor = segmentColors ? oklchMix(segmentColors[prev], segmentColors[i]) : dotColor;
+    const segColor = segmentColors ? segmentColors[i] : dotColor;
     // Shared divider dot — suppressed if either adjacent segment is super-slim,
     // so the slim segment's crowded edges collapse into its central dot.
-    if (!slim[i] && !slim[prev]) dot(dividerAngles[i]);
+    if (!slim[i] && !slim[prev]) dot(dividerAngles[i], divColor);
     if (slim[i]) {
-      dot(dividerAngles[i] + sweeps[i] / 2); // one central dot on the slim segment
+      dot(dividerAngles[i] + sweeps[i] / 2, segColor); // one central dot on the slim segment
     } else {
       const interior = Math.max(0, Math.min(40, Math.round(sweeps[i] / targetGap) - 1));
       for (let j = 1; j <= interior; j++) {
-        dot(dividerAngles[i] + sweeps[i] * (j / (interior + 1)));
+        dot(dividerAngles[i] + sweeps[i] * (j / (interior + 1)), segColor);
       }
     }
   }
@@ -189,6 +204,8 @@ export interface WheelPainterConfig {
   outerStrokeWidth?: number;
   // Decorative dots/beads around the outer stroke band (carnival-bulb bezel).
   outerStrokeDots?: boolean;
+  bezelDotsColorMode?: 'default' | 'custom' | 'segment';
+  bezelDotsCustomColor?: string;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white. (The 3D base is a
@@ -236,9 +253,23 @@ function splitTwoLines(text: string): string[] {
 function ellipsize(ctx: CanvasRenderingContext2D, line: string, targetFont: number, fontSize: number, avail: number): string {
   const k = fontSize / targetFont;
   if (ctx.measureText(line).width * k <= avail) return line;
-  // Once we have to truncate, aim for a fraction of the available width so a
-  // few extra characters are dropped — leaves breathing room and keeps the
-  // head/tail clearly legible instead of crammed to the edge.
+  // Prefer to drop an interior CONNECTOR (a 1–2 char glue word: y, o, de, of, to,
+  // …) and bridge with "…", so the meaningful words on each side survive instead
+  // of being chopped mid-character. Try the connector nearest the middle first.
+  const words = line.split(/\s+/);
+  if (words.length >= 3) {
+    const mid = (words.length - 1) / 2;
+    const conns: number[] = [];
+    for (let i = 1; i < words.length - 1; i++) if (words[i].length <= 2) conns.push(i);
+    conns.sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
+    for (const i of conns) {
+      const cand = `${words.slice(0, i).join(' ')}…${words.slice(i + 1).join(' ')}`;
+      if (ctx.measureText(cand).width * k <= avail) return cand;
+    }
+  }
+  // Otherwise fall back to a character-level cut. Aim for a fraction of the
+  // available width so a few extra characters are dropped — leaves breathing
+  // room and keeps the head/tail clearly legible instead of crammed to the edge.
   const target = avail * 0.82;
   // `keep` = total characters retained, split head/tail around the ellipsis.
   const build = (keep: number) => {
@@ -649,7 +680,11 @@ export function paintWheel(
     ctx.translate(center.x, center.y);
     ctx.rotate(rotation);
     ctx.translate(-center.x, -center.y);
-    drawOuterDots(ctx, center.x, center.y, radius, strokeWidth, outerStrokeWidth, dotsContrastColor(wheelBaseColor), layout.startAngles, layout.segmentSizes);
+    const dotMode = config.bezelDotsColorMode ?? 'default';
+    drawOuterDots(ctx, center.x, center.y, radius, strokeWidth, outerStrokeWidth,
+      bezelDotColor(dotMode, wheelBaseColor, config.bezelDotsCustomColor),
+      layout.startAngles, layout.segmentSizes, 1,
+      dotMode === 'segment' ? items.map(it => it.color) : undefined);
     ctx.restore();
   }
 
@@ -811,6 +846,8 @@ export interface WheelThumbnailStyle {
   strokeWidth?: number;                                          // default 7.7
   outerStrokeWidth?: number;                                     // default 0 — extra outer ring
   outerStrokeDots?: boolean;                                     // decorative bezel dots
+  bezelDotsColorMode?: 'default' | 'custom' | 'segment';
+  bezelDotsCustomColor?: string;
   showBackgroundCircle?: boolean;                                // default true
   wheelBaseColor?: string;                                       // default white — divider/ring + bg circle colour
   cornerRadius?: number;                                         // default 30 — segment corner rounding
@@ -943,7 +980,11 @@ export function paintWheelThumbnail(
   // Decorative outer dots (carnival-bulb bezel) — geometry in scaled thumbnail
   // px. Skipped in silhouette (mono) mode. Flag is gated at config-save time.
   if (!monochrome && (style?.outerStrokeDots ?? false)) {
-    drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW, dotsContrastColor(wheelBaseColor), thumbDividers, thumbSweeps, 1 / 1.15);
+    const dotMode = style?.bezelDotsColorMode ?? 'default';
+    drawOuterDots(ctx, center.x, center.y, pieR, strokeW, outerStrokeW,
+      bezelDotColor(dotMode, wheelBaseColor, style?.bezelDotsCustomColor),
+      thumbDividers, thumbSweeps, 1 / 1.15,
+      dotMode === 'segment' ? items.map(it => it.color) : undefined);
   }
 
   // The centre marker is drawn as an HTML overlay (CustomMarker) by

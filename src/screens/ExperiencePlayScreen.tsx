@@ -263,6 +263,8 @@ export default function ExperiencePlayScreen({ onUseAsTemplate }: ExperiencePlay
             strokeWidth={cfg.strokeWidth}
             outerStrokeWidth={cfg.outerStrokeWidth}
             outerStrokeDots={cfg.outerStrokeDots}
+            bezelDotsColorMode={cfg.bezelDotsColorMode}
+            bezelDotsCustomColor={cfg.bezelDotsCustomColor}
             textWrap={cfg.textWrap}
             showBackgroundCircle={cfg.showBackgroundCircle}
             wheelBaseColor={cfg.wheelBaseColor}

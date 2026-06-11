@@ -33,6 +33,11 @@ export interface WheelConfig {
   // Decorative dots/beads around the outer stroke band (carnival-bulb bezel).
   // Only renders once strokeWidth + outerStrokeWidth is wide enough.
   outerStrokeDots?: boolean;
+  // Bezel-dot colour. 'default' = black/white at 40% over the base; 'custom' = a
+  // fixed user colour; 'segment' = each dot takes its slice colour, and a divider
+  // dot mixes the two slices it sits between. Defaults to 'default'.
+  bezelDotsColorMode?: 'default' | 'custom' | 'segment';
+  bezelDotsCustomColor?: string;
   showBackgroundCircle: boolean;
   // Colour of the wheel's "white" parts — segment dividers + outer ring
   // stroke and the background circle. Defaults to white.
@@ -65,9 +70,12 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     textSize: 1.0,
     headerTextSize: 1.0,
     imageSize: 110,
-    cornerRadius: 0,
-    imageCornerRadius: 0,
-    strokeWidth: 7.7,
+    cornerRadius: 20,
+    imageCornerRadius: 20,
+    strokeWidth: 8,
+    outerStrokeWidth: 13,
+    outerStrokeDots: true,
+    bezelDotsColorMode: 'default',
     showBackgroundCircle: true,
     innerCornerStyle: 'none',
     centerInset: 50,

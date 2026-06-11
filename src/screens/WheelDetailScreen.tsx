@@ -150,6 +150,8 @@ export default function WheelDetailScreen() {
           strokeWidth={wheel.wheelConfig?.strokeWidth ?? 3}
           outerStrokeWidth={wheel.wheelConfig?.outerStrokeWidth ?? 0}
           outerStrokeDots={wheel.wheelConfig?.outerStrokeDots}
+          bezelDotsColorMode={wheel.wheelConfig?.bezelDotsColorMode}
+          bezelDotsCustomColor={wheel.wheelConfig?.bezelDotsCustomColor}
           textWrap={wheel.wheelConfig?.textWrap}
           showBackgroundCircle={wheel.wheelConfig?.showBackgroundCircle ?? true}
           wheelBaseColor={wheel.wheelConfig?.wheelBaseColor}

@@ -8,7 +8,7 @@ import { activeVibe } from './editor/vibes';
 import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CopyPlus, ClipboardPaste, Circle, Settings,
-  Type, Heading, PieChart, Disc, MapPin, WrapText, Volume2, PartyPopper,
+  PieChart, Disc, MapPin, Volume2, PartyPopper,
   LayoutGrid, List,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
@@ -39,6 +39,8 @@ export interface EditorState {
   strokeWidth: number;
   outerStrokeWidth: number;
   outerStrokeDots: boolean;
+  bezelDotsColorMode: 'default' | 'custom' | 'segment';
+  bezelDotsCustomColor: string;
   textWrap: boolean;
   showBackgroundCircle: boolean;
   // One base colour for all wheel chrome — it tints the ring/dividers/bg
@@ -260,10 +262,12 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     textSize: config?.textSize ?? 1,
     headerTextSize: config?.headerTextSize ?? 1,
     imageSize: config?.imageSize ?? 110,
-    cornerRadius: config?.cornerRadius ?? 30,
+    cornerRadius: config?.cornerRadius ?? 20,
     strokeWidth: config?.strokeWidth ?? 7.7,
     outerStrokeWidth: config?.outerStrokeWidth ?? 0,
     outerStrokeDots: config?.outerStrokeDots ?? false,
+    bezelDotsColorMode: config?.bezelDotsColorMode ?? 'default',
+    bezelDotsCustomColor: config?.bezelDotsCustomColor ?? '#FFFFFF',
     textWrap: config?.textWrap ?? false,
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
@@ -312,7 +316,9 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     outerStrokeDots: state.outerStrokeDots
       && (state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE)
       && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle),
-    textWrap: state.textWrap,
+    bezelDotsColorMode: state.bezelDotsColorMode,
+    bezelDotsCustomColor: state.bezelDotsCustomColor,
+    textWrap: true, // locked on (the Wrap toggle is no longer exposed)
     showBackgroundCircle: state.showBackgroundCircle,
     wheelBaseColor: state.wheelBaseColor,
     markerDiameter: state.markerDiameter,
@@ -331,7 +337,7 @@ export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, layout = 'tabs', registerSection, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
-  isMobile = false, showSegmentHeader, onToggleSegmentHeader,
+  isMobile = false,
 }: WheelEditorProps) {
   const stacked = layout === 'stacked';
   // Stable per-section ref callbacks (no-op when registerSection is absent, e.g.
@@ -1811,6 +1817,22 @@ export default function WheelEditor({
                         >Remove</button>
                       )}
                     </div>
+                    {/* Image Size — the (global) visual size, surfaced here only
+                        when this slice has an actual image. Moved off the Style
+                        tab so it lives next to the image it sizes. */}
+                    {segment.imagePath && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '0 2px' }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#1E1E2C', whiteSpace: 'nowrap' }}>Image Size</span>
+                        <input
+                          type="range" min={20} max={150} step={1}
+                          value={state.imageSize}
+                          onChange={e => patch({ imageSize: parseInt(e.target.value, 10) })}
+                          onPointerUp={() => commit()}
+                          style={{ flex: 1, accentColor: PRIMARY }}
+                        />
+                        <span style={{ width: 30, textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#1E1E2C' }}>{state.imageSize}</span>
+                      </div>
+                    )}
                     <div style={{
                       display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6,
                       maxHeight: 184, overflowY: 'auto', padding: 2,
@@ -2068,98 +2090,21 @@ export default function WheelEditor({
   // header).
   const renderStyleTab = () => (
     <div style={{ paddingTop: 16 }}>
-      {/* ── Text & Images — everything overlaid on a wedge ──────────────── */}
-      <StyleSection title="Text & Images" icon={<Type size={13} />} first>
-        <SettingSlider label="Slice Text" value={state.textSize} min={0.1} max={1.9} step={0.05}
-          snapPoint={1}
-          onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
+      {/* Slice Text size, Wrap, and Header are locked (text 1.0, wrap on, header
+          off — wrap forced in the painted config); Image Size lives on the slice
+          card now (shown only when a slice has an image). Inner Corners + Center
+          Inset are no longer exposed (locked to their config / 'none' default). */}
 
-        {/* Auto-fit (shrink-to-fit + middle "…") is always on. This just lets a
-            long label wrap onto 2 lines when that renders larger. */}
-        <SettingToggleRow
-          icon={<WrapText size={20} />}
-          label="Wrap (2 lines)"
-          value={state.textWrap}
-          onChange={v => set({ ...state, textWrap: v })}
-        />
-
-        {/* Header on/off + its size, co-located. The on/off was a separate
-            Settings row that activated the header; without it the "Header
-            Text" size slider did nothing. Now the size only appears once the
-            header is on, so an off header leaves no dead control. When the
-            host doesn't wire onToggleSegmentHeader (desktop/legacy), fall
-            back to always showing the size. */}
-        {onToggleSegmentHeader ? (
-          <>
-            <SettingToggleRow
-              icon={<Heading size={20} />}
-              label="Header"
-              value={!!showSegmentHeader}
-              onChange={onToggleSegmentHeader}
-            />
-            {showSegmentHeader && (
-              <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
-                snapPoint={1}
-                onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
-            )}
-          </>
-        ) : (
-          <SettingSlider label="Header Text" value={state.headerTextSize} min={0.05} max={2} step={0.01}
-            snapPoint={1}
-            onChange={v => patch({ headerTextSize: v })} onChangeEnd={commit} />
-        )}
-
-        <SettingSlider label="Image Size" value={state.imageSize} min={20} max={150} step={1}
-          snapPoint={60}
-          onChange={v => patch({ imageSize: v })} onChangeEnd={commit} />
-      </StyleSection>
-
-      {/* ── Segments — the wedge shape ──────────────────────────────────── */}
-      <StyleSection title="Slices" icon={<PieChart size={13} />}>
+      {/* ── Slices — the wedge shape ───────────────────────────────────── */}
+      <StyleSection title="Slices" icon={<PieChart size={13} />} first>
         <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
-          snapPoint={30}
+          snapPoint={20}
           onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
-
-        {/* Inner corners — native select (a solid touch target on mobile),
-            with the label restyled to match the slider rows above. */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '4px', marginBottom: 12 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: ON_SURFACE }}>Inner Corners</span>
-          <div style={{ flex: 1 }} />
-          <select
-            value={state.innerCornerStyle}
-            onChange={e => set({ ...state, innerCornerStyle: e.target.value as EditorState['innerCornerStyle'] })}
-            style={{
-              padding: '6px 12px',
-              borderRadius: 10,
-              border: `1.5px solid ${BORDER}`,
-              backgroundColor: SURFACE_ELEVATED,
-              color: ON_SURFACE,
-              fontWeight: 600,
-              fontSize: 14,
-              fontFamily: 'inherit',
-              outline: 'none',
-              cursor: 'pointer',
-            }}
-          >
-            <option value="none">None</option>
-            <option value="circular">Circular</option>
-            <option value="rounded">Rounded</option>
-            <option value="straight">Straight</option>
-          </select>
-        </div>
-
-        {/* Center Inset only applies once the wedge has shaped inner corners
-            — progressive disclosure, unchanged. */}
-        {state.innerCornerStyle !== 'none' && (
-          <SettingSlider label="Center Inset" value={state.centerInset} min={0} max={150} step={1.5}
-            snapPoint={50}
-            onChange={v => patch({ centerInset: v })} onChangeEnd={commit} />
-        )}
       </StyleSection>
 
       {/* ── Wheel — the disc itself (stroke drives ring + dividers) ─────── */}
       <StyleSection title="Wheel" icon={<Disc size={13} />}>
-        <SettingSlider label="Stroke Width" value={state.strokeWidth} min={0} max={20} step={0.1}
+        <SettingSlider label="Inner Stroke" value={state.strokeWidth} min={0} max={20} step={0.1}
           snapPoint={7.7}
           onChange={v => patch({ strokeWidth: v })} onChangeEnd={commit} />
         {/* Extra outer border, independent of the divider stroke above. */}
@@ -2171,12 +2116,61 @@ export default function WheelEditor({
             either slider alone can reach the threshold. */}
         {state.strokeWidth + state.outerStrokeWidth >= OUTER_DOTS_MIN_STROKE
           && (state.cornerRadius <= OUTER_DOTS_MAX_CORNER || state.showBackgroundCircle) && (
-          <SettingToggleRow
-            icon={<Circle size={20} />}
-            label="Bezel Dots"
-            value={state.outerStrokeDots}
-            onChange={v => set({ ...state, outerStrokeDots: v })}
-          />
+          <>
+            <SettingToggleRow
+              icon={<Circle size={20} />}
+              label="Bezel Dots"
+              value={state.outerStrokeDots}
+              onChange={v => set({ ...state, outerStrokeDots: v })}
+            />
+            {/* Dot colour. Default = soft black/white tint on the base; Custom =
+                a fixed colour; Segment = each dot takes its slice's colour and a
+                divider dot blends its two neighbours. Swatch only for Custom. */}
+            {state.outerStrokeDots && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 800, letterSpacing: 0.4, paddingLeft: 4,
+                  marginBottom: 8, color: withAlpha(ON_SURFACE, 0.45), textTransform: 'uppercase',
+                }}>
+                  Dot Color
+                </div>
+                <div style={{
+                  display: 'flex', gap: 5, padding: 4, borderRadius: 12,
+                  backgroundColor: SURFACE_ELEVATED, border: `1.5px solid ${BORDER}`,
+                }}>
+                  {(['default', 'custom', 'segment'] as const).map(m => {
+                    const active = state.bezelDotsColorMode === m;
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => set({ ...state, bezelDotsColorMode: m })}
+                        style={{
+                          flex: 1, padding: '8px 0', borderRadius: 9, border: 'none',
+                          cursor: 'pointer', fontWeight: 700, fontSize: 12.5,
+                          fontFamily: 'inherit', textTransform: 'capitalize',
+                          backgroundColor: active ? PRIMARY : 'transparent',
+                          color: active ? '#FFFFFF' : withAlpha(ON_SURFACE, 0.6),
+                          transition: 'background-color 0.15s, color 0.15s',
+                        }}
+                      >
+                        {m}
+                      </button>
+                    );
+                  })}
+                </div>
+                {state.bezelDotsColorMode === 'custom' && (
+                  <div style={{ marginTop: 10 }}>
+                    <ColorSwatchRow
+                      label="Dot Color"
+                      color={state.bezelDotsCustomColor}
+                      onChange={c => patch({ bezelDotsCustomColor: c })}
+                      onCommit={commit}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
 
         <SettingToggleRow
@@ -2202,10 +2196,8 @@ export default function WheelEditor({
         <SettingSlider label="Diameter" value={state.markerDiameter} min={10} max={90} step={1}
           snapPoint={50}
           onChange={v => patch({ markerDiameter: v })} onChangeEnd={commit} />
-        <SettingSlider label="Peek" value={state.markerPeek} min={0} max={15} step={1}
-          snapPoint={15}
-          onChange={v => patch({ markerPeek: v })} onChangeEnd={commit} />
-        {/* Colour lives in Wheel › Base Color — the marker shares it. */}
+        {/* Peek is no longer exposed (locked to its config / default). Colour
+            lives in Wheel › Base Color — the marker shares it. */}
       </StyleSection>
 
       {/* ── Sound — the tick the wheel makes as it passes segments. The win

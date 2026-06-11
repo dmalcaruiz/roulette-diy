@@ -181,6 +181,71 @@ export function oklchHighlight(hexColor: string, delta = 0.05, darkBoost = 1): s
   return rgbaToHex(rFinal, gFinal, bFinal, a);
 }
 
+// Perceptual blend of two hex colours in OKLCh space: lightness + chroma
+// interpolate linearly and HUE travels the shortest arc — so red+yellow lands on
+// a vivid orange instead of the muddy mid-grey a straight RGB (or even OKLab)
+// average yields when the two hues pull apart. `t` = 0 → c1, 1 → c2 (default 0.5,
+// an even mix). If a colour is achromatic (chroma ≈ 0) its hue is undefined, so
+// the other's hue is carried rather than rotating toward an arbitrary 0° (CSS
+// colour-mix does the same). Alpha follows c1.
+export function oklchMix(c1: string, c2: string, t = 0.5): string {
+  const toLch = (hex: string) => {
+    const { r, g, b } = hexToRgba(hex);
+    const lr = gammaExpansion(r / 255);
+    const lg = gammaExpansion(g / 255);
+    const lb = gammaExpansion(b / 255);
+    const lCone = cubeRoot(0.412221469470763 * lr + 0.5363325372617348 * lg + 0.0514459932675022 * lb);
+    const mCone = cubeRoot(0.2119034958178252 * lr + 0.6806995506452344 * lg + 0.1073969535369406 * lb);
+    const sCone = cubeRoot(0.0883024591900564 * lr + 0.2817188391361215 * lg + 0.6299787016738222 * lb);
+    const L = 0.210454268309314 * lCone + 0.7936177747023054 * mCone - 0.0040720430116193 * sCone;
+    const A = 1.9779985324311684 * lCone - 2.4285922420485799 * mCone + 0.450593709617411 * sCone;
+    const B = 0.0259040424655478 * lCone + 0.7827717124575296 * mCone - 0.8086757549230774 * sCone;
+    return { L, C: Math.sqrt(A * A + B * B), h: Math.atan2(B, A) };
+  };
+
+  const { a } = hexToRgba(c1);
+  const o1 = toLch(c1);
+  const o2 = toLch(c2);
+
+  const L = o1.L + (o2.L - o1.L) * t;
+  const C = o1.C + (o2.C - o1.C) * t;
+
+  // Hue: shortest arc, but carry the defined side when one colour is achromatic.
+  const ACHROMA = 1e-4;
+  let h: number;
+  if (o1.C < ACHROMA && o2.C < ACHROMA) h = 0;
+  else if (o1.C < ACHROMA) h = o2.h;
+  else if (o2.C < ACHROMA) h = o1.h;
+  else {
+    let dh = o2.h - o1.h;
+    if (dh > Math.PI) dh -= 2 * Math.PI;
+    else if (dh < -Math.PI) dh += 2 * Math.PI;
+    h = o1.h + dh * t;
+  }
+
+  const newA = C * Math.cos(h);
+  const newB = C * Math.sin(h);
+
+  const l2 = L + 0.3963377773761749 * newA + 0.2158037573099136 * newB;
+  const m2 = L - 0.1055613458156586 * newA - 0.0638541728258133 * newB;
+  const s2 = L - 0.0894841775298119 * newA - 1.2914855480194092 * newB;
+
+  const l3 = l2 * l2 * l2;
+  const m3 = m2 * m2 * m2;
+  const s3 = s2 * s2 * s2;
+
+  const rOut = 4.0767416360759574 * l3 - 3.3077115392580616 * m3 + 0.2309699031821044 * s3;
+  const gOut = -1.2684379732850317 * l3 + 2.6097573492876887 * m3 - 0.3413193760026573 * s3;
+  const bOut = -0.0041960761386756 * l3 - 0.7034186179359362 * m3 + 1.7076146940746117 * s3;
+
+  return rgbaToHex(
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(rOut))) * 255),
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(gOut))) * 255),
+    Math.round(Math.max(0, Math.min(1, gammaCorrection(bOut))) * 255),
+    a,
+  );
+}
+
 // ── Card-surface derivation ─────────────────────────────────────────────
 // A single base color drives every surface on a 3D card (top face, bottom
 // face, halo ring, inner stroke). Each derived shade is an OKLCh

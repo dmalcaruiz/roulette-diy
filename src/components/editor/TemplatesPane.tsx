@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { withAlpha, oklchShadow, readableTextColor } from '../../utils/colorUtils';
-import { ON_SURFACE, SURFACE_ELEVATED } from '../../utils/constants';
+import { ON_SURFACE, SURFACE } from '../../utils/constants';
 import { PushDownButton } from '../PushDownButton';
 import { type SliceVibe } from './vibes';
 import { VibeRow } from './VibeRow';
@@ -27,6 +27,9 @@ const LABEL: React.CSSProperties = {
 
 export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, onApplyVibe, onApplyIdea, onReorderActiveChange }: TemplatesPaneProps) {
   const [lastIdea, setLastIdea] = useState<WheelIdea | null>(null);
+  // Name field sits slightly DARKER than the sheet surface (a recessed look),
+  // not lighter.
+  const nameFieldBg = oklchShadow(SURFACE, 0.035);
   return (
     <div style={{ padding: '0 20px 32px' }}>
       {/* Title — the wheel's name (same value as the top-bar pill). The
@@ -40,14 +43,13 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
             onChange={e => onNameChange(e.target.value)}
             onBlur={onNameCommit}
             placeholder="Wheel name"
-            // Same inset slice-card field look, but colours DERIVE from the
-            // sheet surface (bg + a shaded border + readable text) so it adapts
-            // to the background instead of being a hardcoded light box. Height
-            // pinned to the previous field; right padding clears the sparkles.
+            // Recessed field: a touch DARKER than the sheet surface, with a
+            // darker edge + readable text derived from it. Height pinned to the
+            // previous field; right padding clears the sparkles.
             style={{
               width: '100%', height: 46, boxSizing: 'border-box', padding: '0 44px 0 14px',
-              border: `2.5px solid ${oklchShadow(SURFACE_ELEVATED, 0.06)}`, borderRadius: 14,
-              backgroundColor: SURFACE_ELEVATED, color: readableTextColor(SURFACE_ELEVATED),
+              border: `2.5px solid ${oklchShadow(SURFACE, 0.065)}`, borderRadius: 14,
+              backgroundColor: nameFieldBg, color: readableTextColor(nameFieldBg),
               fontSize: 17, fontWeight: 600, fontFamily: 'inherit', outline: 'none',
             }}
           />

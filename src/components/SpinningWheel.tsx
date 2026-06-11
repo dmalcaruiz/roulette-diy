@@ -400,6 +400,8 @@ export interface SpinningWheelProps {
   outerStrokeWidth?: number;
   // Decorative dots around the outer stroke band (carnival-bulb bezel).
   outerStrokeDots?: boolean;
+  bezelDotsColorMode?: 'default' | 'custom' | 'segment';
+  bezelDotsCustomColor?: string;
   // Show a result dialog + dot celebration as the win overlay fades out.
   resultDialog?: boolean;
   showBackgroundCircle?: boolean;
@@ -460,6 +462,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     textWrap = false,
     outerStrokeWidth = 0,
     outerStrokeDots = false,
+    bezelDotsColorMode = 'default',
+    bezelDotsCustomColor,
     resultDialog = true,
     showBackgroundCircle = true,
     wheelBaseColor = '#FFFFFF',
@@ -692,6 +696,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       markerDiameter,
       outerStrokeWidth,
       outerStrokeDots,
+      bezelDotsColorMode,
+      bezelDotsCustomColor,
       showBackgroundCircle,
       wheelBaseColor,
       imageSize,
@@ -711,7 +717,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config);
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
-      textWrap, markerDiameter,
+      bezelDotsColorMode, bezelDotsCustomColor, textWrap, markerDiameter,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
       wheelBaseColor]);
 
