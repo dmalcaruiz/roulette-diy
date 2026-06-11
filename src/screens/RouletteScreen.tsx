@@ -1315,11 +1315,12 @@ export default function RouletteScreen({
           right: 0,
           display: 'flex',
           alignItems: 'center',
-          padding: '12px 8px',
+          padding: '0 10px',
           zIndex: 10,
           height: 54,
         }}>
-          <button
+          <CircleIconButton
+            ariaLabel="Close editor"
             onClick={() => {
               if (isClosing) return; // ignore double-taps during the exit animation
               flushAutoSave();
@@ -1336,11 +1337,10 @@ export default function RouletteScreen({
                 }
               }, 260);
             }}
-            style={{ padding: 8, background: 'none', border: 'none', cursor: 'pointer' }}
-            aria-label="Close editor"
           >
-            <X size={32} color="#FFFFFF" strokeWidth={2.5} />
-          </button>
+            <X size={22} color="#FFFFFF" strokeWidth={2.5} />
+          </CircleIconButton>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0, padding: '0 6px' }}>
           <AppBarTitleInput
             value={flowExperience ? flowExperience.name : editorHistory.state.name}
             placeholder={flowExperience ? 'Flow name' : 'Wheel name'}
@@ -1372,25 +1372,17 @@ export default function RouletteScreen({
               }
             }}
           />
-          <div style={{ display: 'flex', gap: 4 }}>
+          </div>
+          <div style={{ display: 'flex', gap: 8, minWidth: 44, justifyContent: 'flex-end' }}>
             {isPlayMode && (
-              <button onClick={() => setIsPlayMode(false)} style={{ padding: 8 }} aria-label="Stop">
-                <Square size={26} color="#FFFFFF" fill="#FFFFFF" strokeWidth={2.5} />
-              </button>
+              <CircleIconButton ariaLabel="Stop" onClick={() => setIsPlayMode(false)}>
+                <Square size={20} color="#FFFFFF" fill="#FFFFFF" strokeWidth={2.5} />
+              </CircleIconButton>
             )}
             {!isPlayMode && onRequestPublish && (
-              <button
-                onClick={() => { flushAutoSave(); onRequestPublish(); }}
-                style={{
-                  padding: 8,
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
-                aria-label="Publish & settings"
-              >
-                <Share2 size={28} color="#FFFFFF" strokeWidth={2.5} />
-              </button>
+              <CircleIconButton ariaLabel="Publish & settings" onClick={() => { flushAutoSave(); onRequestPublish(); }}>
+                <Share2 size={22} color="#FFFFFF" strokeWidth={2.5} />
+              </CircleIconButton>
             )}
           </div>
         </div>
@@ -2264,22 +2256,57 @@ function AppBarTitleInput({
       onChange={e => onChange(e.target.value)}
       onBlur={onCommit}
       placeholder={placeholder}
+      // `size` tracks the text length so the pill hugs its content (capped by
+      // maxWidth so a long name can't shove the side buttons off the bar).
+      size={Math.max((draft || placeholder).length, 4)}
       style={{
-        flex: 1,
+        maxWidth: '100%',
         minWidth: 0,
-        margin: '0 4px',
-        padding: '4px 6px',
-        fontSize: 20,
+        boxSizing: 'border-box',
+        padding: '7px 16px',
+        fontSize: 16,
         fontWeight: 800,
         fontFamily: 'inherit',
         textAlign: 'center',
         color: '#FFFFFF',
-        background: 'transparent',
-        border: 'none',
+        background: 'rgba(255,255,255,0.06)',
+        border: '1.5px solid rgba(255,255,255,0.22)',
+        borderRadius: 999,
         outline: 'none',
         cursor: 'text',
       }}
     />
+  );
+}
+
+// Circular outlined icon button for the top app bar (close / stop / share),
+// matching the reference's bezel-circle look.
+function CircleIconButton({ onClick, ariaLabel, children }: {
+  onClick?: () => void;
+  ariaLabel: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={ariaLabel}
+      style={{
+        width: 44,
+        height: 44,
+        borderRadius: '50%',
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 0,
+        background: 'rgba(255,255,255,0.06)',
+        border: '1.5px solid rgba(255,255,255,0.22)',
+        cursor: 'pointer',
+        WebkitTapHighlightColor: 'transparent',
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
