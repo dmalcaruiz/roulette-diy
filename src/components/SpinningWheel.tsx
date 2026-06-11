@@ -367,6 +367,16 @@ function makeCubicBezier(x1: number, y1: number, x2: number, y2: number): (x: nu
 const SPIN_EASE_CSS = 'cubic-bezier(0.12, 0.78, 0.16, 1)';
 const SPIN_EASE_FN = makeCubicBezier(0.12, 0.78, 0.16, 1);
 
+// Drag-RELEASE momentum decay uses a gentler curve. SPIN_EASE's initial slope
+// (~6.5) makes the coast start at ~6.5× its average speed — far above the
+// finger's actual release velocity, so the wheel visibly lurches faster the
+// instant it's let go ("jumpy after release"). This curve's initial slope (~3)
+// is in the range of the exponential-friction release velocity, so the hand-off
+// from finger to coast is continuous. (Tap-spin keeps SPIN_EASE — it launches
+// from rest, where a steep start reads as punchy, not jumpy.)
+const DECAY_EASE_CSS = 'cubic-bezier(0.22, 0.66, 0.4, 1)';
+const DECAY_EASE_FN = makeCubicBezier(0.22, 0.66, 0.4, 1);
+
 // Wind-up curve — a quick ease-in-out reverse before the spin launches.
 const PULLBACK_EASE_CSS = 'cubic-bezier(0.45, 0, 0.55, 1)';
 const PULLBACK_EASE_FN = makeCubicBezier(0.45, 0, 0.55, 1);
@@ -1376,20 +1386,20 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         if (dt > 0) dragVelocity = (last.rotation - first.rotation) / dt;
       }
     }
-    // RELEASE_BOOST is applied ONLY to the new drag input — the carried
-    // velocity from a re-grabbed decay is preserved at face value. Old
-    // formula `(dragVelocity + carriedVelocity) * BOOST` doubled the
-    // carry too, which at lower drag speeds made a gentle nudge feel
-    // like a hard re-flick (the wheel jumped ahead because the carry
-    // got boosted, not the user's input). Same-direction nudges still
-    // accumulate; opposite-direction nudges still subtract / reverse.
+    // RELEASE_BOOST is applied ONLY to the new drag input; the carried velocity
+    // from a re-grabbed decay is added at face value.
     //
-    // If `dragVelocity` is exactly 0 (stale-sample guard above triggered:
-    // the user wasn't moving on release), they grabbed to stop or slow
-    // the wheel rather than to re-flick — discard the carry entirely so
-    // the wheel actually halts instead of resuming its pre-grab speed.
+    // Carry the pre-grab momentum ONLY when the release drag continues in the
+    // SAME direction (a re-flick that accumulates / winds the wheel up). When the
+    // drag goes the OPPOSITE way the user is braking or reversing — but a small
+    // reverse nudge's `dragVelocity * BOOST` can't outweigh a large carry, so the
+    // carry wins and the wheel springs back to its original direction (the "small
+    // backward swipe bounces back" bug). Dropping the carry there lets even a tiny
+    // reverse drag register. A zero drag (grabbed and held still on release) drops
+    // it too — that's a grab-to-stop.
     const RELEASE_BOOST = 2;
-    const carried = dragVelocity === 0 ? 0 : drag.carriedVelocity;
+    const sameDirection = dragVelocity !== 0 && Math.sign(dragVelocity) === Math.sign(drag.carriedVelocity);
+    const carried = sameDirection ? drag.carriedVelocity : 0;
     let velocity = dragVelocity * RELEASE_BOOST + carried;
     if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
     else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
@@ -1434,7 +1444,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       void decayCanvas.offsetWidth;   // commit the transform:0 start state
       requestAnimationFrame(() => {
         if (!gpuSpinActiveRef.current) return; // grabbed/cancelled before it began
-        decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${SPIN_EASE_CSS}`;
+        decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${DECAY_EASE_CSS}`;
         decayCanvas.style.transform = `rotate(${decayDelta}rad) translateZ(0)`;
       });
     }
@@ -1461,11 +1471,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const decayTick = () => {
       const elapsed = performance.now() - spinStartPerfRef.current;
       const p = Math.min(1, elapsed / decayDurationMs);
-      rotationRef.current = decayStartRotation + decayDelta * SPIN_EASE_FN(p);
+      rotationRef.current = decayStartRotation + decayDelta * DECAY_EASE_FN(p);
       // Momentum carry for re-grab: numeric derivative of the curve (rad/ms).
       const epsMs = 8;
       const pPrev = Math.max(0, (elapsed - epsMs) / decayDurationMs);
-      momentumVelocityRef.current = (decayDelta * (SPIN_EASE_FN(p) - SPIN_EASE_FN(pPrev))) / epsMs;
+      momentumVelocityRef.current = (decayDelta * (DECAY_EASE_FN(p) - DECAY_EASE_FN(pPrev))) / epsMs;
       const seg = segmentAtRotation(rotationRef.current);
       if (seg !== lastSegment) {
         lastSegment = seg;
