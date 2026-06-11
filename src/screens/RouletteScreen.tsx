@@ -5,8 +5,8 @@ import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel'
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED, SEGMENT_COLORS } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
@@ -19,7 +19,7 @@ import {
 } from '../services/flowService';
 import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
-import { recolorWithVibe } from '../components/editor/vibes';
+import { recolorWithVibe, activeVibe } from '../components/editor/vibes';
 import { SettingsPane } from '../components/editor/SettingsPane';
 import { TemplatesPane } from '../components/editor/TemplatesPane';
 import { useScrollSpy } from '../hooks/useScrollSpy';
@@ -799,6 +799,28 @@ export default function RouletteScreen({
   flowExperienceRef.current = flowExperience;
   flowStepsRef.current = flowSteps;
 
+  // A flow shows its own title only when it has MORE than one wheel. With a
+  // single wheel, the wheel's title doubles as the flow title (the top bar edits
+  // the wheel name, below).
+  const titleIsFlow = !!(flowExperience && flowSteps && flowSteps.length > 1);
+  // One-wheel flow: mirror the wheel name onto the experience doc (debounced) so
+  // the profile / feed match. One-directional — the top bar edits the wheel name
+  // for a one-step flow, so this never fights a flow-name edit. `patch` keeps
+  // flow-history's working state correct for any later flow op; `onBlockUpdated`
+  // persists the experience + propagates to other views.
+  useEffect(() => {
+    if (!flowExperience || !flowSteps || flowSteps.length !== 1) return;
+    const wheelName = editorHistory.state.name;
+    if (flowExperience.name === wheelName) return;
+    const exp = flowExperience;
+    const t = setTimeout(() => {
+      flowHistory.patch({ experience: { ...exp, name: wheelName } });
+      onBlockUpdated?.({ ...exp, name: wheelName });
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorHistory.state.name, flowExperience, flowSteps]);
+
   // (Removed: an old reorder-pop-animation effect that fired el.animate()
   // on tiles whose array index changed. It started keyframes at scale(0.6),
   // which was the source of the post-commit bounce. The new two-phase
@@ -1338,22 +1360,24 @@ export default function RouletteScreen({
           </CircleIconButton>
           <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0, padding: '0 6px' }}>
           <AppBarTitleInput
-            value={flowExperience ? flowExperience.name : editorHistory.state.name}
-            placeholder={flowExperience ? 'Flow name' : 'Wheel name'}
+            value={titleIsFlow ? flowExperience!.name : editorHistory.state.name}
+            placeholder={titleIsFlow ? 'Flow name' : 'Wheel name'}
             onLiveChange={(name) => {
-              if (flowExperience) {
-                // Patch the experience through flow history so other views
-                // (profile, preview tiles) re-render this frame.
-                flowHistory.patch({ experience: { ...flowExperience, name } });
+              if (titleIsFlow) {
+                // Multi-wheel flow: patch the experience through flow history so
+                // other views (profile, preview tiles) re-render this frame.
+                flowHistory.patch({ experience: { ...flowExperience!, name } });
                 flowDirtyRef.current = true;
               } else {
+                // Standalone OR one-wheel flow: the wheel name IS the title (the
+                // sync effect mirrors it onto a one-step flow's experience).
                 editorHistory.patch({ name });
                 editorDirtyRef.current = true;
               }
               syncOpFlags();
             }}
             onCommit={() => {
-              if (flowExperience) {
+              if (titleIsFlow) {
                 flowHistory.commit();
                 if (flowDirtyRef.current) {
                   flowDirtyRef.current = false;
@@ -1964,11 +1988,13 @@ export default function RouletteScreen({
                   }}
                   onApplyIdea={(idea) => {
                     // Replace the whole wheel with the idea's themed set (title +
-                    // slices), colours cycling the default palette.
+                    // slices), colouring the new slices with the ACTIVE vibe so
+                    // Surprise me keeps whatever vibe is defined (not reset to classic).
+                    const cols = recolorWithVibe(activeVibe(editorHistory.state.segments.map(s => s.color)), idea.options.length);
                     const segs = idea.options.map((text, i) => ({
                       id: crypto.randomUUID(),
                       text,
-                      color: SEGMENT_COLORS[i % SEGMENT_COLORS.length],
+                      color: cols[i],
                       weight: 1,
                     }));
                     wrappedEditorHistory.set({ ...editorHistory.state, name: idea.title, segments: segs });
@@ -2021,13 +2047,8 @@ export default function RouletteScreen({
               label="Edit wheel"
               onTap={() => {
                 setCtxMenuIndex(null);
-                openSheetTo('segments');
+                openSheetTo('templates');
               }}
-            />
-            <CtxRow
-              icon={<Type size={20} />}
-              label="Rename wheel"
-              onTap={() => { const i = ctxMenuIndex; setCtxMenuIndex(null); openRenameSheet(i); }}
             />
             <CtxRow
               icon={<Copy size={20} />}

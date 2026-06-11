@@ -280,19 +280,20 @@ function computeFittedText(
   imageSize: number,
 ): FittedText[] {
   const total = items.reduce((s, it) => s + it.weight, 0) || 1;
-  // Text must clear both the donut inset AND the centre marker's circle.
-  const innerLimit = Math.max(centerInset, markerRadius, 0);
+  // Text must clear both the donut inset AND the centre marker's circle — with a
+  // small gap past the marker so the label doesn't kiss its edge.
+  const markerGap = markerRadius > 0 ? 18 * scale : 0;
+  const innerLimit = Math.max(centerInset, markerRadius + markerGap, 0);
   // A segment carrying a visual (image/icon) reserves space for it at the outer
   // edge, so that label's right edge moves inward by the visual box + a gap.
   const visBox = imageSize * scale;
   const floorPx = Math.max(targetFont * TEXT_FIT_FLOOR, 6 * scale);
-  // Separate, higher floor for LENGTH-driven shrinking: a too-long label only
-  // shrinks ~this far before we ellipsize instead of shrinking on to the Min
-  // Size floor. (Thin-wedge / angular shrinking still goes all the way to
-  // floorPx.) Higher → ellipsis kicks in sooner at a larger size.
-  const lengthFloorPx = Math.max(targetFont * 0.9, floorPx);
+  // Separate floor for LENGTH-driven shrinking: a too-long label shrinks this
+  // far before we ellipsize instead of going all the way to the Min Size floor.
+  // (Thin-wedge / angular shrinking still goes all the way to floorPx.) Lower →
+  // labels stay whole (just smaller) much longer before the "…" kicks in.
+  const lengthFloorPx = Math.max(targetFont * 0.6, floorPx);
   const ANG_MARGIN = 1 * scale;
-  const SHRINK = 0.92;
   // Visual glyph height as a fraction of font size (Inter, centred baseline).
   // Using the full font size over-shrinks labels that actually fit; 0.82 keeps
   // uniform wheels at the target while the wedge clip still catches any sliver.
@@ -308,8 +309,8 @@ function computeFittedText(
     const itemTextX = textX - reserve;
     const avail = Math.max(0, itemTextX - innerLimit);
 
-    // Best font size for a given set of lines: shrink until both the radial
-    // (length) and angular (thickness at the text's inner end) limits hold.
+    // Best font size for a given set of lines: the largest size that clears both
+    // the radial (length / centre-marker) and angular (wedge thickness) limits.
     const fitLines = (lines: string[]): number => {
       let wTarget = 0;
       for (const ln of lines) wTarget = Math.max(wTarget, ctx.measureText(ln).width);
@@ -317,21 +318,29 @@ function computeFittedText(
       // Single line → just the glyph height; two lines → a line of spacing
       // plus a glyph height on top.
       const lineFactor = nLines > 1 ? (nLines - 1) * 1.05 + GLYPH_H : GLYPH_H;
-      let f = targetFont;
-      for (let k = 0; k < 24; k++) {
+      // Fit predicate: does size `f` clear the wedge thickness AND fit radially
+      // (or sit below the length floor, past which we ellipsize)? This is
+      // monotonic — true while small, false once too big — so we BINARY-SEARCH
+      // the largest fitting size. The old fixed-factor step quantised the size,
+      // so a growing centre marker left the text untouched until a step boundary
+      // then jumped it (the "wiggle room then push"); the search makes the text
+      // track the marker diameter CONTINUOUSLY.
+      const fits = (f: number): boolean => {
         const textW = (wTarget * f) / targetFont;
         const rInner = itemTextX - textW;
         const thickness = 2 * Math.max(rInner, innerLimit) * sinHalf;
         const angularOK = f * lineFactor + ANG_MARGIN <= thickness;
         const radialOK = rInner >= innerLimit;
-        // Stop once it fits the wedge thickness AND either the whole label fits
-        // radially or we've shrunk to the length floor (past which we ellipsize
-        // rather than keep shrinking).
-        if (angularOK && (radialOK || f <= lengthFloorPx)) break;
-        f *= SHRINK;
-        if (f <= floorPx) { f = floorPx; break; }
+        return angularOK && (radialOK || f <= lengthFloorPx);
+      };
+      if (fits(targetFont)) return targetFont;
+      if (!fits(floorPx)) return floorPx;
+      let lo = floorPx, hi = targetFont;
+      for (let k = 0; k < 20; k++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) lo = mid; else hi = mid;
       }
-      return f;
+      return lo;
     };
 
     let lines = [it.text];

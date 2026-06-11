@@ -635,13 +635,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const tick = (now: number) => {
       const tLin = Math.min(1, (now - start) / duration);
       transitionRef.current = ease(tLin);
-      paint();
+      repaint();
       if (tLin < 1) {
         transitionAnimRef.current = requestAnimationFrame(tick);
       } else {
         fromItemsRef.current = null;
         transitionRef.current = 1;
-        paint();
+        repaint();
       }
     };
     transitionAnimRef.current = requestAnimationFrame(tick);
@@ -745,6 +745,17 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (c) { c.style.transition = 'none'; c.style.transform = 'none'; }
   }, []);
 
+  // Like paint(), but safe to call WHILE a GPU tap-spin is animating. paint() is
+  // guarded mid-spin (it would re-bake at the estimated rotation and reset the
+  // element transform — stopping the spin). Here we instead redraw only the
+  // CONTENT at the already-baked rotation and leave the transform running, so an
+  // items / colour swap (Surprise me, vibe, a late-loading image) updates the
+  // wheel live, mid-spin, without stopping it.
+  const repaint = useCallback(() => {
+    if (gpuSpinActiveRef.current) paintImplRef.current();
+    else paint();
+  }, [paint]);
+
   // Initial paint and repaint on prop changes — useLayoutEffect (not
   // useEffect) so the canvas is drawn synchronously after layout BEFORE the
   // browser paints the frame. With useEffect there's a one-frame gap where
@@ -767,13 +778,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Depends on paintImpl (the actual implementation) so it re-fires on
   // size/items/etc changes; the public `paint` is intentionally stable.
   useEffect(() => {
-    const id = requestAnimationFrame(() => paint());
+    const id = requestAnimationFrame(() => repaint());
     return () => cancelAnimationFrame(id);
-  }, [paint, paintImpl]);
+  }, [repaint, paintImpl]);
 
   // Repaint when a segment's custom image finishes decoding. The painter skips
   // not-yet-loaded images (showing a faint placeholder); this brings them in.
-  useEffect(() => onVisualLoaded(() => paint()), [paint]);
+  useEffect(() => onVisualLoaded(() => repaint()), [repaint]);
 
   // Update segment on mount
   useEffect(() => {
