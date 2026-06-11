@@ -311,7 +311,7 @@ function computeFittedText(
 
     // Best font size for a given set of lines: the largest size that clears both
     // the radial (length / centre-marker) and angular (wedge thickness) limits.
-    const fitLines = (lines: string[]): number => {
+    const fitLines = (lines: string[], cap: number): number => {
       let wTarget = 0;
       for (const ln of lines) wTarget = Math.max(wTarget, ctx.measureText(ln).width);
       const nLines = lines.length;
@@ -333,9 +333,9 @@ function computeFittedText(
         const radialOK = rInner >= innerLimit;
         return angularOK && (radialOK || f <= lengthFloorPx);
       };
-      if (fits(targetFont)) return targetFont;
+      if (fits(cap)) return cap;
       if (!fits(floorPx)) return floorPx;
-      let lo = floorPx, hi = targetFont;
+      let lo = floorPx, hi = cap;
       for (let k = 0; k < 20; k++) {
         const mid = (lo + hi) / 2;
         if (fits(mid)) lo = mid; else hi = mid;
@@ -343,8 +343,14 @@ function computeFittedText(
       return lo;
     };
 
+    // Single words can't wrap, so they're the only labels bottlenecked by the
+    // size cap — give them a slightly higher one so short ones grow into the
+    // spare room near the rim. Phrases keep the target cap; a word already
+    // filling the wedge (touching the centre) stays put, since the radial limit
+    // caps it below the boost regardless.
+    const maxFont = it.text.trim().includes(' ') ? targetFont : targetFont * 1.15;
     let lines = [it.text];
-    let f = fitLines(lines);
+    let f = fitLines(lines, maxFont);
     // Comfortable minimum: rather than shrink a single line below this (or chop
     // it with "…"), prefer wrapping to two lines that DO render this big — first
     // line whole, second line ellipsised only if it must. We fall back to a small
@@ -355,7 +361,7 @@ function computeFittedText(
     if (wrap && (singleOverflows || f < comfortablePx)) {
       const split = splitTwoLines(it.text);
       if (split.length === 2) {
-        const f2 = fitLines(split);
+        const f2 = fitLines(split, targetFont);
         // Take the wrap only when it's comfortable, no smaller than the single
         // line, and its FIRST line fits whole (so only the 2nd line ellipsises).
         const line1Fits = (ctx.measureText(split[0]).width * f2) / targetFont <= avail;
