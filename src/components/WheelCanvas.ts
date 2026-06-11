@@ -351,26 +351,48 @@ function computeFittedText(
     const maxFont = it.text.trim().includes(' ') ? targetFont : targetFont * 1.15;
     let lines = [it.text];
     let f = fitLines(lines, maxFont);
-    // Comfortable minimum: rather than shrink a single line below this (or chop
-    // it with "…"), prefer wrapping to two lines that DO render this big — first
-    // line whole, second line ellipsised only if it must. We fall back to a small
-    // single ellipsised line ONLY when even two lines can't reach a comfortable
-    // size (a thin / low-weight wedge with a long label).
+    // Prefer wrapping a too-long (or uncomfortably small) single line into two
+    // lines — first line whole, second ellipsised only if it must — and pick
+    // whichever of the two layouts renders LARGER. `comfortablePx` is only the
+    // TRIGGER to attempt a wrap on a single line that fits but came out small;
+    // the choice itself is "bigger wins", so the tiny single-ellipsised fallback
+    // happens only when two lines are genuinely smaller (a thin/low-weight wedge)
+    // — not because the wrap dipped below an absolute comfort threshold.
     const comfortablePx = targetFont * 0.6;
     const singleOverflows = (ctx.measureText(it.text).width * f) / targetFont > avail;
-    if (wrap && (singleOverflows || f < comfortablePx)) {
+    // Below ~3% of the wheel the wedge is too thin for two lines to ever help, so
+    // don't even consider wrapping — commit straight to a single (ellipsised)
+    // line instead of flip-flopping in and out of a two-line layout.
+    const wrapAllowed = wrap && it.weight / total >= 0.03;
+    if (wrapAllowed && (singleOverflows || f < comfortablePx)) {
       const split = splitTwoLines(it.text);
       if (split.length === 2) {
         const f2 = fitLines(split, targetFont);
-        // Take the wrap only when it's comfortable, no smaller than the single
-        // line, and its FIRST line fits whole (so only the 2nd line ellipsises).
-        const line1Fits = (ctx.measureText(split[0]).width * f2) / targetFont <= avail;
-        if (f2 >= comfortablePx && f2 >= f && line1Fits) { lines = split; f = f2; }
+        // Take the wrap whenever two lines render at least as big as the single
+        // line — i.e. the wedge has the vertical room for two. Two lines at a
+        // comfortable size beat collapsing to a smaller single line, even if a
+        // line has to ellipsise.
+        if (f2 >= f) {
+          // Keep the SECOND line as the one that ellipsises: shift whole words
+          // off line one until it fits at f2, pushing the overflow (and so the
+          // truncation) onto line two. Only an unsplittable long first word can
+          // still force line one to trim.
+          let [l1, l2] = split;
+          const maxW = (avail * targetFont) / f2;
+          while (l1.includes(' ') && ctx.measureText(l1).width > maxW) {
+            const sp = l1.lastIndexOf(' ');
+            l2 = `${l1.slice(sp + 1)} ${l2}`;
+            l1 = l1.slice(0, sp);
+          }
+          lines = [l1, l2];
+          f = f2;
+        }
       }
     }
-    // Ellipsise ONLY the last line — a lone single line, or the 2nd line of a
-    // wrap (the wrapped first line always stays whole).
-    lines = lines.map((ln, i) => i === lines.length - 1 ? ellipsize(ctx, ln, targetFont, f, avail) : ln);
+    // Ellipsise each line that overflows. In the usual wrap the first line fits
+    // whole and only the second truncates; if the first genuinely can't fit it
+    // truncates too — still better than dropping to a tiny single line.
+    lines = lines.map((ln) => ellipsize(ctx, ln, targetFont, f, avail));
     return { fontSize: f, lines, textX: itemTextX };
   });
 }
