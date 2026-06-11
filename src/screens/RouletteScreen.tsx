@@ -5,7 +5,7 @@ import SpinningWheel, { SpinningWheelHandle } from '../components/SpinningWheel'
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
+import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED, SEGMENT_COLORS } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Type, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
@@ -19,6 +19,17 @@ import {
 } from '../services/flowService';
 import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
+
+// Slice colour "vibes" — tapping one recolours every slice by cycling its
+// palette. `classic` mirrors the SEGMENT_COLORS the editor assigns to new
+// slices (the default look); the rest are brighter Spinly-style sets. `cols` is
+// the 4-stripe swatch shown on the chip.
+const SLICE_VIBES: { key: string; cols: string[]; palette: string[] }[] = [
+  { key: 'classic', cols: [SEGMENT_COLORS[0], SEGMENT_COLORS[2], SEGMENT_COLORS[3], SEGMENT_COLORS[5]], palette: SEGMENT_COLORS },
+  { key: 'candy',   cols: ['#FF3D77', '#FFD23D', '#3DD6D0', '#9B6DFF'], palette: ['#FF3D77', '#FF8A3D', '#FFD23D', '#5BD96A', '#3DD6D0', '#4DA3FF', '#9B6DFF', '#FF6DC4'] },
+  { key: 'sunset',  cols: ['#FF4D6D', '#FF914D', '#FFD93D', '#C44DFF'], palette: ['#FF4D6D', '#FF7A45', '#FFB23D', '#FFD93D', '#FF5DA8', '#C44DFF', '#7A4DFF', '#FF914D'] },
+  { key: 'ocean',   cols: ['#3DD6D0', '#3DA5FF', '#6D5BFF', '#3DE0A8'], palette: ['#3DD6D0', '#3DA5FF', '#5B7BFF', '#6D5BFF', '#3DE0A8', '#4DD6FF', '#5BE0C4', '#7A6DFF'] },
+];
 
 interface RouletteScreenProps {
   block: Block;
@@ -2039,10 +2050,56 @@ export default function RouletteScreen({
               </div>
             )}
             {sheetTab === 'templates' && (
-              <div style={{ padding: '0 20px 32px', textAlign: 'center' }}>
-                <p style={{ fontSize: 14, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.55), margin: '12px 20px' }}>
-                  Prebuilt wheels are coming soon. You'll be able to pick a
-                  starter here and customize from there.
+              <div style={{ padding: '0 20px 32px' }}>
+                {/* Title — the wheel's name (same value as the top-bar pill). */}
+                <div style={{ marginTop: 4, marginBottom: 22 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.4, color: withAlpha(ON_SURFACE, 0.5), marginBottom: 8, paddingLeft: 2 }}>TITLE</div>
+                  <input
+                    type="text"
+                    value={editorHistory.state.name}
+                    onChange={e => wrappedEditorHistory.patch({ name: e.target.value })}
+                    onBlur={() => wrappedEditorHistory.commit()}
+                    placeholder="Wheel name"
+                    style={{
+                      width: '100%', boxSizing: 'border-box', padding: '12px 14px', borderRadius: 14,
+                      border: `1.5px solid ${BORDER}`, backgroundColor: SURFACE_ELEVATED,
+                      fontSize: 16, fontWeight: 700, fontFamily: 'inherit', color: ON_SURFACE, outline: 'none',
+                    }}
+                  />
+                </div>
+                {/* Vibe — recolours all slices by cycling the chosen palette. */}
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.4, color: withAlpha(ON_SURFACE, 0.5), marginBottom: 10, paddingLeft: 2 }}>VIBE</div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {SLICE_VIBES.map(v => {
+                      const segs = editorHistory.state.segments;
+                      const palLower = v.palette.map(c => c.toLowerCase());
+                      const active = segs.length > 0 && segs.every(s => palLower.includes(s.color.toLowerCase()));
+                      return (
+                        <button
+                          key={v.key}
+                          aria-label={`Vibe: ${v.key}`}
+                          onClick={() => {
+                            const recolored = editorHistory.state.segments.map((s, i) => ({ ...s, color: v.palette[i % v.palette.length] }));
+                            wrappedEditorHistory.set({ ...editorHistory.state, segments: recolored });
+                          }}
+                          style={{
+                            flex: 1, height: 52, borderRadius: 14, padding: 3, cursor: 'pointer',
+                            background: active ? withAlpha(ON_SURFACE, 0.1) : SURFACE_ELEVATED,
+                            border: active ? `2px solid ${ON_SURFACE}` : `1.5px solid ${BORDER}`,
+                            boxShadow: active ? `0 0 0 3px ${withAlpha(ON_SURFACE, 0.15)}` : 'none',
+                          }}
+                        >
+                          <div style={{ display: 'flex', width: '100%', height: '100%', borderRadius: 10, overflow: 'hidden' }}>
+                            {v.cols.map((c, i) => <span key={i} style={{ flex: 1, background: c }} />)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p style={{ fontSize: 13, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.45), margin: '4px 8px 0', textAlign: 'center' }}>
+                  Prebuilt wheels are coming soon — pick a starter here and customize from there.
                 </p>
               </div>
             )}

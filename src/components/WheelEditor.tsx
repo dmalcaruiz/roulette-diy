@@ -234,10 +234,12 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
         iconName: item.iconName,
         texture: item.texture,
       }))
-    : [
-        { id: `${segmentIdCounter++}`, text: 'Option 1', color: SEGMENT_COLORS[9], weight: 1 },
-        { id: `${segmentIdCounter++}`, text: 'Option 2', color: SEGMENT_COLORS[0], weight: 1 },
-      ];
+    : Array.from({ length: 8 }, (_, i) => ({
+        id: `${segmentIdCounter++}`,
+        text: `Option ${i + 1}`,
+        color: SEGMENT_COLORS[i % SEGMENT_COLORS.length],
+        weight: 1,
+      }));
 
   return {
     segments,

@@ -132,9 +132,16 @@ export function newRouletteBlock(): Block {
     wheelConfig: defaultWheelConfig({
       id,
       name: 'New Roulette',
+      // 8 slices cycling the palette, starting on red (not black).
       items: [
-        { text: 'Option 1', color: '#322d2a', weight: 1 },
-        { text: 'Option 2', color: '#fb2d29', weight: 1 },
+        { text: 'Option 1', color: '#fb2d29', weight: 1 },
+        { text: 'Option 2', color: '#fb9000', weight: 1 },
+        { text: 'Option 3', color: '#ffd500', weight: 1 },
+        { text: 'Option 4', color: '#88d515', weight: 1 },
+        { text: 'Option 5', color: '#00c485', weight: 1 },
+        { text: 'Option 6', color: '#00ace7', weight: 1 },
+        { text: 'Option 7', color: '#303dcb', weight: 1 },
+        { text: 'Option 8', color: '#c827d4', weight: 1 },
       ],
     }),
   };
