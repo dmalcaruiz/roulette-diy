@@ -187,7 +187,7 @@ export function getBlockItemCount(block: Block): number {
 
 export function getBlockItemCountLabel(block: Block): string {
   switch (block.type) {
-    case 'roulette': return `${getBlockItemCount(block)} segments`;
+    case 'roulette': return `${getBlockItemCount(block)} slices`;
     case 'listRandomizer': return `${getBlockItemCount(block)} categories`;
     case 'experience': return `${getBlockItemCount(block)} steps`;
   }

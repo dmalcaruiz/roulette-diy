@@ -1688,7 +1688,7 @@ export default function WheelEditor({
                       layer) filled with the SEGMENT colour. */}
                   <button
                     onClick={() => { setColorPickerSegment(colorPickerSegment === index ? null : index); setTexturePickerSegment(null); setImagePickerSegment(null); }}
-                    aria-label="Segment colour"
+                    aria-label="Slice colour"
                     style={{
                       flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
                       backgroundColor: segment.color,
@@ -1701,7 +1701,7 @@ export default function WheelEditor({
                   {/* Texture — opens the preset-pattern picker. */}
                   <button
                     onClick={() => { setTexturePickerSegment(texturePickerSegment === index ? null : index); setColorPickerSegment(null); setImagePickerSegment(null); }}
-                    aria-label="Segment texture"
+                    aria-label="Slice texture"
                     style={{
                       flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
                       backgroundColor: '#F8F8F9',
@@ -1716,7 +1716,7 @@ export default function WheelEditor({
                   {/* Image — opens the icon grid / custom-image picker. */}
                   <button
                     onClick={() => { setImagePickerSegment(imagePickerSegment === index ? null : index); setColorPickerSegment(null); setTexturePickerSegment(null); }}
-                    aria-label="Segment image or icon"
+                    aria-label="Slice image or icon"
                     style={{
                       flex: 1, height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
                       backgroundColor: '#F8F8F9',
@@ -1995,7 +1995,7 @@ export default function WheelEditor({
           commitSimpleDraft(e.target.value);
         }}
         onBlur={() => commitSimpleDraft(simpleDraft)}
-        placeholder="One segment per line..."
+        placeholder="One slice per line..."
         style={{
           width: '100%',
           minHeight: 56,
@@ -2038,7 +2038,7 @@ export default function WheelEditor({
     <div style={{ paddingTop: 16 }}>
       {/* ── Text & Images — everything overlaid on a wedge ──────────────── */}
       <StyleSection title="Text & Images" icon={<Type size={13} />} first>
-        <SettingSlider label="Segment Text" value={state.textSize} min={0.1} max={1.9} step={0.05}
+        <SettingSlider label="Slice Text" value={state.textSize} min={0.1} max={1.9} step={0.05}
           snapPoint={1}
           onChange={v => patch({ textSize: v })} onChangeEnd={commit} />
 
@@ -2083,7 +2083,7 @@ export default function WheelEditor({
       </StyleSection>
 
       {/* ── Segments — the wedge shape ──────────────────────────────────── */}
-      <StyleSection title="Segments" icon={<PieChart size={13} />}>
+      <StyleSection title="Slices" icon={<PieChart size={13} />}>
         <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
           snapPoint={30}
           onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
@@ -2243,10 +2243,10 @@ export default function WheelEditor({
             marginBottom: 14,
             paddingLeft: 2,
           }}>
-            <span style={{ fontWeight: 700, fontSize: 16, color: ON_SURFACE }}>Segments</span>
+            <span style={{ fontWeight: 800, fontSize: 20, color: ON_SURFACE }}>Slices</span>
             <button
               onClick={() => setSegmentsMode(segmentsMode === 'cards' ? 'list' : 'cards')}
-              aria-label={`Segment view: ${segmentsMode}. Tap to switch.`}
+              aria-label={`Slice view: ${segmentsMode}. Tap to switch.`}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -2404,7 +2404,7 @@ export default function WheelEditor({
                       maskSize: 'contain',
                       maskPosition: 'center',
                     }} />
-                    <span style={{ fontWeight: 700, fontSize: 16 }}>Add Segment</span>
+                    <span style={{ fontWeight: 700, fontSize: 16 }}>Add Slice</span>
                   </div>
                 </PushDownButton>
               </div>
@@ -2424,24 +2424,24 @@ export default function WheelEditor({
             </h3>
             <SegActionRow
               icon={<Copy size={20} />}
-              label="Copy segment"
+              label="Copy slice"
               onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); copySegment(i); }}
             />
             {canPasteSegment && (
               <SegActionRow
                 icon={<ClipboardPaste size={20} />}
-                label="Paste segment"
+                label="Paste slice"
                 onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); pasteSegment(i); }}
               />
             )}
             <SegActionRow
               icon={<CopyPlus size={20} />}
-              label="Duplicate segment"
+              label="Duplicate slice"
               onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); duplicateSegment(i); }}
             />
             <SegActionRow
               icon={<Trash2 size={20} />}
-              label="Delete segment"
+              label="Delete slice"
               danger
               onTap={() => { const i = segmentActionsIndex; setSegmentActionsIndex(null); removeSegment(i); }}
             />

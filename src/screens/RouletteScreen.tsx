@@ -1155,7 +1155,11 @@ export default function RouletteScreen({
   // CSS-transition targets.
   const wheelStateAt = (h: number) => {
     const sp = isMobile ? Math.min(h / midSnap, 1) : 0;
-    const appBarPad = APP_BAR_PAD * (1 - 0.4 * sp);
+    // Top reserve shrinks as the sheet opens (a 54px constant would dominate the
+    // compressed area), but only GENTLY — the old 0.4 factor shrank it so far
+    // below the 54px bar that the wheel rode up under it. 0.2 keeps the midSnap
+    // wheel a touch smaller in exchange for breathing room above it.
+    const appBarPad = APP_BAR_PAD * (1 - 0.1 * sp);
     const spinH = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - sp);
     const bottomCover = isPlayMode ? 0 : Math.max(RED_BASE, h);
     const hProg = (isMobile ? Math.max(0, 1 - sp) : 1) * (showSegmentHeader ? 1 : 0);
@@ -1171,7 +1175,9 @@ export default function RouletteScreen({
     const opacity = isMobile && h > midSnap
       ? Math.max(0, 1 - 2 * (h - midSnap) / (upperSnap - midSnap))
       : 1;
-    const paddingTop = APP_BAR_PAD * (1 - 0.3 * sp);
+    // Lands a hair above appBarPad (as before) so the wheel clears the bar; 0.1
+    // (was 0.3) keeps it from sliding up under the app bar at midSnap.
+    const paddingTop = APP_BAR_PAD * (1 - 0.0 * sp);
     const topSpacerFlex = (1.0 + 0.5 * sp) * (1 - hProg);
     return { size, scale: size / effectiveWheelSize, margin, opacity, paddingTop, topSpacerFlex };
   };
@@ -2263,8 +2269,9 @@ function AppBarTitleInput({
         maxWidth: '100%',
         minWidth: 0,
         boxSizing: 'border-box',
-        padding: '7px 16px',
-        fontSize: 16,
+        height: 44,
+        padding: '0 18px',
+        fontSize: 17,
         fontWeight: 800,
         fontFamily: 'inherit',
         textAlign: 'center',
@@ -2341,7 +2348,7 @@ function PinnedChipBar({
   // can be tinted any colour — supports the active/inactive chip colours.
   const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; iconSrc: string }[] = [
     { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
-    { key: 'segments', label: 'Segments', iconSrc: '/images/segments.svg' },
+    { key: 'segments', label: 'Slices', iconSrc: '/images/segments.svg' },
     { key: 'style', label: 'Style', iconSrc: '/images/style.svg' },
     { key: 'settings', label: 'Settings', iconSrc: '/images/settings.svg' },
   ];
