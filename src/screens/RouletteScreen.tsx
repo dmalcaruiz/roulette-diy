@@ -19,17 +19,15 @@ import {
 } from '../services/flowService';
 import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
+import { recolorWithVibe } from '../components/editor/vibes';
+import { SettingsPane } from '../components/editor/SettingsPane';
+import { TemplatesPane } from '../components/editor/TemplatesPane';
+import { useScrollSpy } from '../hooks/useScrollSpy';
 
-// Slice colour "vibes" — tapping one recolours every slice by cycling its
-// palette. `classic` mirrors the SEGMENT_COLORS the editor assigns to new
-// slices (the default look); the rest are brighter Spinly-style sets. `cols` is
-// the 4-stripe swatch shown on the chip.
-const SLICE_VIBES: { key: string; cols: string[]; palette: string[] }[] = [
-  { key: 'classic', cols: [SEGMENT_COLORS[0], SEGMENT_COLORS[2], SEGMENT_COLORS[3], SEGMENT_COLORS[5]], palette: SEGMENT_COLORS },
-  { key: 'candy',   cols: ['#FF3D77', '#FFD23D', '#3DD6D0', '#9B6DFF'], palette: ['#FF3D77', '#FF8A3D', '#FFD23D', '#5BD96A', '#3DD6D0', '#4DA3FF', '#9B6DFF', '#FF6DC4'] },
-  { key: 'sunset',  cols: ['#FF4D6D', '#FF914D', '#FFD93D', '#C44DFF'], palette: ['#FF4D6D', '#FF7A45', '#FFB23D', '#FFD93D', '#FF5DA8', '#C44DFF', '#7A4DFF', '#FF914D'] },
-  { key: 'ocean',   cols: ['#3DD6D0', '#3DA5FF', '#6D5BFF', '#3DE0A8'], palette: ['#3DD6D0', '#3DA5FF', '#5B7BFF', '#6D5BFF', '#3DE0A8', '#4DD6FF', '#5BE0C4', '#7A6DFF'] },
-];
+// The four editor sections, top-to-bottom in the continuous sheet (= chip
+// order). The scroll-spy highlights whichever section is in view.
+const SECTION_KEYS = ['templates', 'segments', 'style', 'settings'] as const;
+type Section = (typeof SECTION_KEYS)[number];
 
 interface RouletteScreenProps {
   block: Block;
@@ -143,68 +141,49 @@ export default function RouletteScreen({
   // Inner editor sheet starts closed. The user reveals it by tapping a chip
   // (Segments / Style / Settings) in the red footer. This keeps the overlay's
   // opening uncluttered — you see the wheel first, then choose to edit.
-  // Unified sheet — all four panes (segments, style, settings, templates)
-  // share the same SnappingSheet and are switched by a chip header at the
-  // top. null = sheet closed.
-  type SheetTab = 'segments' | 'style' | 'settings' | 'templates';
-  const SHEET_TAB_ORDER: SheetTab[] = ['segments', 'style', 'settings', 'templates'];
-  const [sheetTab, setSheetTab] = useState<SheetTab | null>(null);
-  // Pending "scroll to this segment when the editor opens" request. Set
-  // by a long-press on the wheel canvas; consumed by WheelEditor's
+  // Continuous scroll-spy sheet — all four sections stack in one scroll column
+  // inside the SnappingSheet. `sheetOpen` is the visibility flag; the scroll-spy
+  // reports `currentSection` (the chip highlight); tapping a chip scrolls to it.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [currentSection, setCurrentSection] = useState<Section>('segments');
+  const spy = useScrollSpy<Section>(SECTION_KEYS, { onActiveChange: setCurrentSection, resetKey: block.id });
+  // Desktop sidebar keeps the legacy two-tab toggle (Slices/Style) — it has no
+  // scroll container, so the continuous model doesn't apply there.
+  const [desktopTab, setDesktopTab] = useState<0 | 1>(0);
+  // Pending "scroll to this segment when the editor opens" request. Set by a
+  // long-press on the wheel canvas; consumed by WheelEditor's
   // scrollToSegmentIndex effect (which clears it via onConsumed).
   const [pendingScrollSegment, setPendingScrollSegment] = useState<number | null>(null);
-  // Direction of the most recent tab change — drives the slide-in animation
-  // for the sheet body so chip switches feel like sideways navigation.
-  const [tabSlideDir, setTabSlideDir] = useState<'left' | 'right' | null>(null);
-  const prevSheetTabRef = useRef<SheetTab | null>(null);
-  // Set for one frame on a chip-press dismiss (close) — toggles the
-  // SnappingSheet's height transition off so the sheet snaps shut
-  // instantly instead of animating. rAF resets it the next frame.
+  // Set for one frame on a close — toggles the SnappingSheet's height transition
+  // off so the sheet snaps shut instantly. rAF resets it the next frame.
   const [skipSheetOpenAnim, setSkipSheetOpenAnim] = useState(false);
-  // Safety reset whenever the active wheel changes, so a transient skip
-  // flag can't carry across a wheel switch.
+  // Safety reset whenever the active wheel changes.
   useEffect(() => {
     setSkipSheetOpenAnim(false);
   }, [block.id]);
-  const setSheetTabAnimated = useCallback((next: SheetTab | null) => {
-    const prev = prevSheetTabRef.current;
-    // Skip the sheet's height transition for chip-press dismiss (ALWAYS
-    // — any wheel size). The X-button close has its own internal
-    // `instantClose` flag inside SnappingSheet.
-    const opening = next !== null && prev === null;
-    const closing = next === null && prev !== null;
-    if (closing) {
-      setSkipSheetOpenAnim(true);
-      requestAnimationFrame(() => setSkipSheetOpenAnim(false));
+  // Tap a chip → open the sheet at that section (instant jump on a fresh open so
+  // "Slices" lands on the list without painting Templates first), or smooth-
+  // scroll to it if already open. Snap target + height are seeded in the same
+  // commit as setSheetOpen so the chip-tap is a single React commit.
+  const openSheetTo = useCallback((key: Section) => {
+    setCurrentSection(key);
+    if (sheetOpen) {
+      spy.scrollTo(key);
+      return;
     }
-    if (next && prev && next !== prev) {
-      const prevIdx = SHEET_TAB_ORDER.indexOf(prev);
-      const nextIdx = SHEET_TAB_ORDER.indexOf(next);
-      setTabSlideDir(nextIdx > prevIdx ? 'right' : 'left');
-    } else {
-      setTabSlideDir(null);
-    }
-    prevSheetTabRef.current = next;
-    setSheetTab(next);
-    // Set the snap target + sheetHeight in the SAME batch as setSheetTab
-    // so the chip-tap produces a single React commit. Without this,
-    // SnappingSheet's `onSnapTargetChange` would fire from useLayoutEffect
-    // on the next render and trigger a SECOND parent commit — doubling
-    // the reconciliation work at the moment the user is waiting for the
-    // animation to start. We know the target ahead of time: opening
-    // always lands at midSnap (initialSnap=1 → snapPositions[1] = 400);
-    // closing always lands at 0. The callback still fires on the next
-    // render but lands on idempotent state updates.
-    if (opening) {
-      // Mobile mid snap is 20px shorter than desktop (see midSnap / snapPositions).
-      const openH = window.innerWidth < 900 ? 380 : 400;
-      setSheetSnapTargetH(openH);
-      setSheetHeight(openH);
-    } else if (closing) {
-      setSheetSnapTargetH(0);
-      setSheetHeight(0);
-    }
-  }, [block.wheelConfig]);
+    setSheetOpen(true);
+    const openH = window.innerWidth < 900 ? 380 : 400;
+    setSheetSnapTargetH(openH);
+    setSheetHeight(openH);
+    requestAnimationFrame(() => spy.scrollTo(key, { instant: true }));
+  }, [sheetOpen, spy]);
+  const closeSheet = useCallback(() => {
+    setSkipSheetOpenAnim(true);
+    requestAnimationFrame(() => setSkipSheetOpenAnim(false));
+    setSheetOpen(false);
+    setSheetSnapTargetH(0);
+    setSheetHeight(0);
+  }, []);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -1306,8 +1285,8 @@ export default function RouletteScreen({
               wheelId={block.id}
               history={wrappedEditorHistory}
               onPreview={handleWheelPreview}
-              selectedTab={sheetTab === 'style' ? 1 : 0}
-              onTabChange={t => setSheetTabAnimated(t === 0 ? 'segments' : 'style')}
+              selectedTab={desktopTab}
+              onTabChange={t => setDesktopTab(t === 0 ? 0 : 1)}
               showSegmentHeader={showSegmentHeader}
               onToggleSegmentHeader={setShowSegmentHeader}
             />
@@ -1564,7 +1543,7 @@ export default function RouletteScreen({
                 // tapped segment. WheelEditor's effect picks up the
                 // index, scrolls there, and clears the pending state.
                 setPendingScrollSegment(idx);
-                setSheetTabAnimated('segments');
+                openSheetTo('segments');
               }}
             />
             </div>
@@ -1914,8 +1893,8 @@ export default function RouletteScreen({
             The sheet (bottomOffset: 48) snaps to its top edge. */}
         {isMobile && !isPlayMode && (
           <PinnedChipBar
-            activeTab={sheetTab}
-            onChange={setSheetTabAnimated}
+            activeTab={sheetOpen ? currentSection : null}
+            onChange={(key) => { if (sheetOpen && currentSection === key) closeSheet(); else openSheetTo(key); }}
             canUndo={editorHistory.canUndo || opCanUndo}
             canRedo={editorHistory.canRedo || opCanRedo}
             onUndo={unifiedUndo}
@@ -1931,17 +1910,11 @@ export default function RouletteScreen({
         {isMobile && (
           <SnappingSheet
             bottomOffset={56}
-            visible={sheetTab !== null}
+            visible={sheetOpen}
             snapPositions={[0, isMobile ? 380 : 400, screenHeight - 105]}
             initialSnap={1}
             onCollapsed={() => {
-              // Sync prevSheetTabRef so the next chip-open correctly
-              // sees prev === null and triggers the skip-animation
-              // check for many-segment wheels. Without this, X-button
-              // and drag-collapse leave the ref stuck at the previous
-              // tab, making chip-press skipping inconsistent.
-              prevSheetTabRef.current = null;
-              setSheetTab(null);
+              setSheetOpen(false);
               setSheetHeight(0);
             }}
             onHeightChange={handleSheetHeightChange}
@@ -1974,136 +1947,61 @@ export default function RouletteScreen({
           >
             {/* overflow-x: hidden clips the off-screen slide so the parent
                 doesn't briefly horizontal-scroll during the animation. */}
+            {/* Continuous scroll-spy column: Templates → (Slices + Style, stacked
+                INSIDE WheelEditor) → Settings. Each section is tagged via the
+                spy so the chips follow the scroll; tapping a chip scrolls here.
+                overflow-x:hidden clips the off-screen slide of nested sheets. */}
             <div style={{ overflowX: 'hidden' }}>
-            {/* WheelEditor stays mounted across close/open and across
-                segments↔style tab switches — both are toggled via the
-                surrounding `display`. The keyed wrapper below still
-                remounts for the other tabs (settings/templates) so the
-                slide-in animation only re-fires for those. */}
-            <div style={{ display: (sheetTab === 'segments' || sheetTab === 'style') ? 'block' : 'none' }}>
+              <section ref={spy.register('templates')}>
+                <TemplatesPane
+                  name={editorHistory.state.name}
+                  onNameChange={(name) => wrappedEditorHistory.patch({ name })}
+                  onNameCommit={() => wrappedEditorHistory.commit()}
+                  sliceColors={editorHistory.state.segments.map(s => s.color)}
+                  onApplyVibe={(v) => {
+                    const cols = recolorWithVibe(v, editorHistory.state.segments.length);
+                    wrappedEditorHistory.set({ ...editorHistory.state, segments: editorHistory.state.segments.map((s, i) => ({ ...s, color: cols[i] })) });
+                  }}
+                  onApplyIdea={(idea) => {
+                    // Replace the whole wheel with the idea's themed set (title +
+                    // slices), colours cycling the default palette.
+                    const segs = idea.options.map((text, i) => ({
+                      id: crypto.randomUUID(),
+                      text,
+                      color: SEGMENT_COLORS[i % SEGMENT_COLORS.length],
+                      weight: 1,
+                    }));
+                    wrappedEditorHistory.set({ ...editorHistory.state, name: idea.title, segments: segs });
+                  }}
+                />
+              </section>
+              {/* Slices + Style render stacked inside WheelEditor; it tags those
+                  two section anchors via registerSection. */}
               <WheelEditor
                 key={baseConfig.id}
                 initialConfig={baseConfig}
                 wheelId={block.id}
                 history={wrappedEditorHistory}
                 onPreview={handleWheelPreview}
-                selectedTab={sheetTab === 'segments' ? 0 : 1}
+                layout="stacked"
+                registerSection={spy.registerEl}
                 onReorderActiveChange={handleEditorReorderingChange}
                 scrollToSegmentIndex={pendingScrollSegment}
                 onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
-                renderRows={sheetTab === 'segments' || sheetTab === 'style'}
+                renderRows={sheetOpen}
                 sheetHeight={sheetHeight}
                 isMobile={isMobile}
                 showSegmentHeader={showSegmentHeader}
                 onToggleSegmentHeader={setShowSegmentHeader}
               />
-            </div>
-            <div
-              key={sheetTab ?? 'closed'}
-              style={{
-                animation: tabSlideDir === 'right'
-                  ? 'slide-in-from-right 0.3s cubic-bezier(0.32, 0.72, 0, 1) both'
-                  : tabSlideDir === 'left'
-                    ? 'slide-in-from-left 0.3s cubic-bezier(0.32, 0.72, 0, 1) both'
-                    : undefined,
-              }}
-            >
-            {sheetTab === 'settings' && (
-              <div style={{ padding: '0 20px 24px' }}>
-                <ToggleRow
-                  label="Random Intensity"
-                  icon={<Shuffle size={22} />}
-                  value={isRandomIntensity}
-                  onChange={setIsRandomIntensity}
+              <section ref={spy.register('settings')}>
+                <SettingsPane
+                  isRandomIntensity={isRandomIntensity} onIsRandomIntensityChange={setIsRandomIntensity}
+                  spinIntensity={spinIntensity} onSpinIntensityChange={setSpinIntensity}
+                  showWinAnimation={showWinAnimation} onShowWinAnimationChange={setShowWinAnimation}
+                  showSpinButton={showSpinButton} onShowSpinButtonChange={setShowSpinButton}
                 />
-                <div style={{ height: 12 }} />
-                {!isRandomIntensity && (
-                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, gap: 8 }}>
-                    <span style={{ width: 100, fontWeight: 600, fontSize: 14, color: withAlpha(ON_SURFACE, 0.6) }}>Intensity</span>
-                    <input
-                      type="range"
-                      min={0} max={1} step={0.05}
-                      value={spinIntensity}
-                      onChange={e => setSpinIntensity(parseFloat(e.target.value))}
-                      style={{ flex: 1, accentColor: ON_SURFACE }}
-                    />
-                    <span style={{ width: 44, textAlign: 'right', fontWeight: 700, fontSize: 13 }}>
-                      {Math.round(spinIntensity * 100)}%
-                    </span>
-                  </div>
-                )}
-                <ToggleRow
-                  label="Win Effects"
-                  icon={<Sparkles size={22} />}
-                  value={showWinAnimation}
-                  onChange={setShowWinAnimation}
-                />
-                <div style={{ height: 12 }} />
-                {/* "Segment Header" moved to Style › Text & Images, co-located
-                    with the Header Text size it governs. */}
-                <ToggleRow
-                  label="Spin Button"
-                  icon={<Play size={22} />}
-                  value={showSpinButton}
-                  onChange={setShowSpinButton}
-                />
-              </div>
-            )}
-            {sheetTab === 'templates' && (
-              <div style={{ padding: '0 20px 32px' }}>
-                {/* Title — the wheel's name (same value as the top-bar pill). */}
-                <div style={{ marginTop: 4, marginBottom: 22 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.4, color: withAlpha(ON_SURFACE, 0.5), marginBottom: 8, paddingLeft: 2 }}>TITLE</div>
-                  <input
-                    type="text"
-                    value={editorHistory.state.name}
-                    onChange={e => wrappedEditorHistory.patch({ name: e.target.value })}
-                    onBlur={() => wrappedEditorHistory.commit()}
-                    placeholder="Wheel name"
-                    style={{
-                      width: '100%', boxSizing: 'border-box', padding: '12px 14px', borderRadius: 14,
-                      border: `1.5px solid ${BORDER}`, backgroundColor: SURFACE_ELEVATED,
-                      fontSize: 16, fontWeight: 700, fontFamily: 'inherit', color: ON_SURFACE, outline: 'none',
-                    }}
-                  />
-                </div>
-                {/* Vibe — recolours all slices by cycling the chosen palette. */}
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.4, color: withAlpha(ON_SURFACE, 0.5), marginBottom: 10, paddingLeft: 2 }}>VIBE</div>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    {SLICE_VIBES.map(v => {
-                      const segs = editorHistory.state.segments;
-                      const palLower = v.palette.map(c => c.toLowerCase());
-                      const active = segs.length > 0 && segs.every(s => palLower.includes(s.color.toLowerCase()));
-                      return (
-                        <button
-                          key={v.key}
-                          aria-label={`Vibe: ${v.key}`}
-                          onClick={() => {
-                            const recolored = editorHistory.state.segments.map((s, i) => ({ ...s, color: v.palette[i % v.palette.length] }));
-                            wrappedEditorHistory.set({ ...editorHistory.state, segments: recolored });
-                          }}
-                          style={{
-                            flex: 1, height: 52, borderRadius: 14, padding: 3, cursor: 'pointer',
-                            background: active ? withAlpha(ON_SURFACE, 0.1) : SURFACE_ELEVATED,
-                            border: active ? `2px solid ${ON_SURFACE}` : `1.5px solid ${BORDER}`,
-                            boxShadow: active ? `0 0 0 3px ${withAlpha(ON_SURFACE, 0.15)}` : 'none',
-                          }}
-                        >
-                          <div style={{ display: 'flex', width: '100%', height: '100%', borderRadius: 10, overflow: 'hidden' }}>
-                            {v.cols.map((c, i) => <span key={i} style={{ flex: 1, background: c }} />)}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <p style={{ fontSize: 13, fontWeight: 500, color: withAlpha(ON_SURFACE, 0.45), margin: '4px 8px 0', textAlign: 'center' }}>
-                  Prebuilt wheels are coming soon — pick a starter here and customize from there.
-                </p>
-              </div>
-            )}
-            </div>
+              </section>
             </div>
           </SnappingSheet>
         )}
@@ -2122,7 +2020,7 @@ export default function RouletteScreen({
               label="Edit wheel"
               onTap={() => {
                 setCtxMenuIndex(null);
-                setSheetTabAnimated('segments');
+                openSheetTo('segments');
               }}
             />
             <CtxRow
@@ -2387,7 +2285,7 @@ function PinnedChipBar({
   innerRef,
 }: {
   activeTab: 'segments' | 'style' | 'settings' | 'templates' | null;
-  onChange: (t: 'segments' | 'style' | 'settings' | 'templates' | null) => void;
+  onChange: (t: 'segments' | 'style' | 'settings' | 'templates') => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -2509,7 +2407,7 @@ function PinnedChipBar({
           return (
             <PushDownButton
               key={key}
-              onTap={() => onChange(isActive ? null : key)}
+              onTap={() => onChange(key)}
               color={isActive ? ON_SURFACE : SURFACE_ELEVATED}
               borderRadius={26}
               height={38}
@@ -2671,57 +2569,6 @@ function CtxRow({ icon, label, onTap, danger }: {
         <span style={{ fontWeight: 700, fontSize: 15 }}>{label}</span>
       </div>
     </PushDownButton>
-  );
-}
-
-function ToggleRow({ label, icon, value, onChange }: {
-  label: string;
-  icon: React.ReactNode;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div
-      onClick={() => onChange(!value)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        padding: '14px 16px',
-        borderRadius: 14,
-        backgroundColor: value ? withAlpha(PRIMARY, 0.12) : SURFACE_ELEVATED,
-        border: `1.5px solid ${value ? PRIMARY : BORDER}`,
-        cursor: 'pointer',
-        transition: 'all 0.18s',
-      }}
-    >
-      <div style={{ color: value ? '#0EA5E9' : withAlpha(ON_SURFACE, 0.45) }}>{icon}</div>
-      <span style={{
-        flex: 1,
-        marginLeft: 12,
-        fontWeight: 700,
-        fontSize: 15,
-        color: value ? ON_SURFACE : withAlpha(ON_SURFACE, 0.5),
-      }}>
-        {label}
-      </span>
-      {/* Toggle switch */}
-      <div style={{
-        width: 44, height: 26,
-        borderRadius: 13,
-        backgroundColor: value ? PRIMARY : BORDER,
-        display: 'flex',
-        alignItems: 'center',
-        padding: 2,
-        justifyContent: value ? 'flex-end' : 'flex-start',
-        transition: 'all 0.18s',
-      }}>
-        <div style={{
-          width: 22, height: 22,
-          borderRadius: '50%',
-          backgroundColor: '#FFFFFF',
-        }} />
-      </div>
-    </div>
   );
 }
 

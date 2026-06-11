@@ -82,6 +82,16 @@ interface WheelEditorProps {
   // editor manages its own tab state (legacy behavior).
   selectedTab?: number;
   onTabChange?: (tab: number) => void;
+  // Layout mode. 'tabs' (default) keeps the legacy display:none toggle driven
+  // by selectedTab — the always-visible desktop sidebar (no scroll container,
+  // one section at a time). 'stacked' renders Slices then Style both mounted
+  // and visible, for the continuous-scroll mobile sheet whose parent runs a
+  // scroll-spy.
+  layout?: 'tabs' | 'stacked';
+  // Stacked-mode only: the parent's scroll-spy registrar. The editor tags its
+  // Slices and Style section wrappers so the parent can observe them for the
+  // chip highlight. No-op in tabs mode (undefined).
+  registerSection?: (key: 'segments' | 'style', el: HTMLElement | null) => void;
   // Fires when a segment-reorder gesture activates / releases. Lets the
   // hosting screen lock parent gestures (e.g. the SnappingSheet's
   // scroll-to-drag handoff) so the sheet doesn't slide while a card is
@@ -316,10 +326,15 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
 
 export default function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
-  selectedTab: selectedTabProp, onTabChange, onReorderActiveChange,
+  selectedTab: selectedTabProp, onTabChange, layout = 'tabs', registerSection, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
   isMobile = false, showSegmentHeader, onToggleSegmentHeader,
 }: WheelEditorProps) {
+  const stacked = layout === 'stacked';
+  // Stable per-section ref callbacks (no-op when registerSection is absent, e.g.
+  // the desktop sidebar) so the section wrappers don't detach/reattach.
+  const slicesSectionRef = useCallback((el: HTMLElement | null) => registerSection?.('segments', el), [registerSection]);
+  const styleSectionRef = useCallback((el: HTMLElement | null) => registerSection?.('style', el), [registerSection]);
   const configId = initialConfig?.id ?? Date.now().toString();
   const { state, set, patch, commit, undo, redo } = history;
   const { segments, name } = state;
@@ -1981,12 +1996,14 @@ export default function WheelEditor({
   // sheet scrolls for long lists. Re-sized on content change and when the
   // segments tab becomes visible (a hidden textarea reports scrollHeight 0).
   useLayoutEffect(() => {
-    if (selectedTab !== 0 || segmentsMode !== 'list' || !renderRows) return;
+    // In stacked mode the textarea is always laid out (never display:none), so
+    // only the tabs path needs the selectedTab gate.
+    if ((!stacked && selectedTab !== 0) || segmentsMode !== 'list' || !renderRows) return;
     const el = simpleTextareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
-  }, [selectedTab, segmentsMode, simpleDraft, renderRows]);
+  }, [stacked, selectedTab, segmentsMode, simpleDraft, renderRows]);
   const renderSimpleMode = () => (
     <div>
       <textarea
@@ -2224,18 +2241,30 @@ export default function WheelEditor({
   );
 
   return (
-    <div style={{ padding: '4px 20px 16px' }}>
-      {/* Both tabs stay mounted in the DOM so tab switches (and the
-          first chip-tap-open) don't have to remount the segment list —
-          on a wheel with many segments, that remount is the bulk of
-          the "segments sheet feels slower than style sheet" lag. The
-          inactive tab is hidden with display:none (zero layout cost)
-          but its React tree stays intact, so the next switch back is
-          a single display flip. */}
-      <div style={{ display: selectedTab === 1 ? 'block' : 'none' }}>
+    <div style={{ padding: '4px 20px 16px', ...(stacked ? { display: 'flex', flexDirection: 'column' } : null) }}>
+      {/* TABS mode: both tabs stay mounted (display:none toggle) so tab switches
+          don't remount the heavy segment list. STACKED mode: both render; flex
+          `order` puts Slices visually first (chip order) while the JSX keeps
+          Style first (smaller desktop diff). The section wrappers are
+          overflow-free with NO content-visibility so the list's scroll-ancestor
+          walk still finds the sheet scroller and slice-row halos aren't clipped. */}
+      <div
+        ref={styleSectionRef}
+        // content-visibility:auto keeps the Style controls from laying out while
+        // they're scrolled off-screen below the slice list — restoring the fast
+        // open the old display:none gave (safe here: no halos to clip, and this
+        // wrapper isn't between the list and its scroll ancestor). Tabs mode
+        // keeps the plain display toggle.
+        style={stacked
+          ? { order: 2, contentVisibility: 'auto', containIntrinsicSize: '0 900px' }
+          : { display: selectedTab === 1 ? 'block' : 'none' }}
+      >
         {renderStyleTab()}
       </div>
-      <div style={{ display: selectedTab === 0 ? 'block' : 'none' }}>
+      <div
+        ref={slicesSectionRef}
+        style={stacked ? { order: 1 } : { display: selectedTab === 0 ? 'block' : 'none' }}
+      >
         <>
           {/* Section header: title + a chip that toggles Cards ↔ List. */}
           <div style={{
