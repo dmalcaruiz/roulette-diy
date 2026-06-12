@@ -24,7 +24,11 @@
       "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\('it.text'\\); console.log\\(JSON.stringify\\(s.slice\\(i-30, i+60\\)\\)\\);\")",
       "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\(\\\\\"join\\(''\\)\\\\\"\\); console.log\\(JSON.stringify\\(s.slice\\(i-70, i+12\\)\\)\\);\")",
       "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('src/components/WheelCanvas.ts','utf8'\\); const i=s.indexOf\\('.join'\\); console.log\\('idx',i\\); console.log\\(JSON.stringify\\(s.slice\\(i-78, i+15\\)\\)\\);\")",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(node audit-driver.mjs 150 5174)",
+      "Bash(node audit-drag.mjs 5174)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(npm remove *)"
     ]
   }
 }
