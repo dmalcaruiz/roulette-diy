@@ -161,21 +161,22 @@ export default function RouletteScreen({
   useEffect(() => {
     setSkipSheetOpenAnim(false);
   }, [block.id]);
-  // Tap a chip → open the sheet at that section (instant jump on a fresh open so
-  // "Slices" lands on the list without painting Templates first), or smooth-
-  // scroll to it if already open. Snap target + height are seeded in the same
-  // commit as setSheetOpen so the chip-tap is a single React commit.
+  // Tap a chip → on a FRESH open, jump to the section in a single frame (the
+  // sheet is sliding up anyway, so its content just starts already at the section
+  // — no Templates flash). When the sheet is ALREADY open, smooth-scroll
+  // (navigate) to the section. Snap target + height are seeded in the same commit
+  // as setSheetOpen so the chip-tap is a single React commit.
   const openSheetTo = useCallback((key: Section) => {
     setCurrentSection(key);
     if (sheetOpen) {
-      spy.scrollTo(key);
+      spy.scrollTo(key); // already open → animate
       return;
     }
     setSheetOpen(true);
     const openH = window.innerWidth < 900 ? 380 : 400;
     setSheetSnapTargetH(openH);
     setSheetHeight(openH);
-    requestAnimationFrame(() => spy.scrollTo(key, { instant: true }));
+    requestAnimationFrame(() => spy.scrollTo(key, { instant: true })); // fresh open → single frame
   }, [sheetOpen, spy]);
   const closeSheet = useCallback(() => {
     setSkipSheetOpenAnim(true);
@@ -1986,13 +1987,16 @@ export default function RouletteScreen({
             onDragStart={() => { setIsSheetDragging(true); isSheetDraggingRef.current = true; }}
             onDragEnd={() => { setIsSheetDragging(false); isSheetDraggingRef.current = false; }}
           >
-            {/* overflow-x: hidden clips the off-screen slide so the parent
-                doesn't briefly horizontal-scroll during the animation. */}
             {/* Continuous scroll-spy column: Templates → (Slices + Style, stacked
                 INSIDE WheelEditor) → Settings. Each section is tagged via the
                 spy so the chips follow the scroll; tapping a chip scrolls here.
-                overflow-x:hidden clips the off-screen slide of nested sheets. */}
-            <div style={{ overflowX: 'hidden' }}>
+                Uses overflow-x:CLIP (NOT hidden) to clip the off-screen slide of
+                nested sheets: per CSS, `hidden` on one axis forces the other to
+                compute `auto`, turning this non-scrolling column into a fake
+                scroll container — the scroll-spy's root discovery then stops HERE
+                instead of the SnappingSheet scroller, so chip autoslide silently
+                does nothing. `clip` clips horizontally without that side effect. */}
+            <div style={{ overflowX: 'clip' }}>
               <section ref={spy.register('templates')}>
                 <TemplatesPane
                   name={editorHistory.state.name}
