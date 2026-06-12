@@ -494,20 +494,19 @@ export default function WheelEditor({
   // ~25 on the first frame.
   const [segWindow, setSegWindow] = useState<{ start: number; end: number }>({ start: 0, end: 12 });
 
-  // Scroll the nearest scrollable ancestor of `anchorEl` to its bottom
-  // over 110ms (easeOutCubic) — same curve and duration as the wheel's
-  // segment-add transition (see SpinningWheel.tsx). Walks every ancestor;
-  // whichever has overflow-y auto / scroll AND actually has overflow
-  // content (scrollHeight > clientHeight) wins. Falls back to
-  // document.scrollingElement if nothing usable is found.
-  const scrollAncestorToBottom = (anchorEl: HTMLElement) => {
+  // Scroll the nearest scrollable ancestor of `anchorEl` so the anchor lands at
+  // the BOTTOM of the viewport over 110ms (easeOutCubic — same curve as the
+  // wheel's segment-add transition). NOT the bottom of the whole scroll content:
+  // in the stacked editor the Style/Settings sections sit below the slice list,
+  // so the content bottom is far past the Add button. Walks every ancestor;
+  // whichever has overflow-y auto/scroll AND real overflow content wins; falls
+  // back to document.scrollingElement.
+  const scrollAnchorIntoView = (anchorEl: HTMLElement) => {
     let scrollEl: HTMLElement | null = null;
     let cur: HTMLElement | null = anchorEl.parentElement;
     while (cur) {
       const cs = getComputedStyle(cur);
-      const overflowY = cs.overflowY;
-      const overflow = cs.overflow;
-      const isScrollable = /(auto|scroll)/.test(overflowY) || /(auto|scroll)/.test(overflow);
+      const isScrollable = /(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow);
       if (isScrollable && cur.scrollHeight > cur.clientHeight + 1) {
         scrollEl = cur;
         break;
@@ -516,20 +515,23 @@ export default function WheelEditor({
     }
     if (!scrollEl) scrollEl = (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
     if (!scrollEl) return;
-    const startScroll = scrollEl.scrollTop;
     const target = scrollEl;
+    const startScroll = target.scrollTop;
     const t0 = performance.now();
-    // Recompute the bottom on every frame: when a segment is added the
-    // scrollHeight grows AFTER React's commit (the new row's content
-    // might still be settling layout for a frame or two). If we lock
-    // `targetScroll` at the start, we'd undershoot. By querying
-    // `scrollHeight - clientHeight` each tick, the tween's final landing
-    // is whatever the bottom is at the END of the 150ms window.
+    const BOTTOM_GAP = 12; // breathing room below the Add button
+    // Recompute the landing each frame: a freshly-added row grows the list and
+    // shifts the anchor down for a frame or two after React's commit. The
+    // anchor's bottom in CONTENT space (scrollTop + its viewport-relative
+    // bottom) is invariant to scrollTop, so this is stable mid-tween.
     const tick = (now: number) => {
       const u = Math.min(1, (now - t0) / 110);
       const eased = 1 - Math.pow(1 - u, 3);
-      const liveBottom = target.scrollHeight - target.clientHeight;
-      target.scrollTop = startScroll + (liveBottom - startScroll) * eased;
+      const aRect = anchorEl.getBoundingClientRect();
+      const rRect = target.getBoundingClientRect();
+      const anchorBottom = target.scrollTop + (aRect.bottom - rRect.top);
+      const maxScroll = target.scrollHeight - target.clientHeight;
+      const desired = Math.max(0, Math.min(maxScroll, anchorBottom - target.clientHeight + BOTTOM_GAP));
+      target.scrollTop = startScroll + (desired - startScroll) * eased;
       if (u < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
@@ -781,7 +783,7 @@ export default function WheelEditor({
     // the page to the bottom — keeps both the new segment and the Add
     // Segment button visible in the same gesture.
     setTimeout(() => requestAnimationFrame(() => {
-      if (addSegmentBtnRef.current) scrollAncestorToBottom(addSegmentBtnRef.current);
+      if (addSegmentBtnRef.current) scrollAnchorIntoView(addSegmentBtnRef.current);
     }), 0);
   };
 
