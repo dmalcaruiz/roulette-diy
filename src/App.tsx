@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Block, BlockType, newRouletteBlock, newListRandomizerBlock } from './models/types';
+import { selectedVibe, recolorWithVibe } from './components/editor/vibes';
 import { loadDrafts, saveDraft, deleteDraft, saveDraftOrder, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
 import { buildForkedExperience, type ForkSource } from './services/publishedExperienceService';
 import { dbg, sid, sids } from './utils/debugLog';
@@ -267,6 +268,16 @@ export default function App() {
         break;
       default:
         newBlock = newRouletteBlock(); // unreachable, satisfies TS
+    }
+    // A freshly-added wheel inherits the currently-SELECTED vibe (the last one
+    // applied in the vibe row), so new wheels match the latest pick. Default
+    // (nothing picked yet) → 'classic', the same palette newRouletteBlock seeds.
+    if (newBlock.wheelConfig) {
+      const cols = recolorWithVibe(selectedVibe(), newBlock.wheelConfig.items.length);
+      newBlock.wheelConfig = {
+        ...newBlock.wheelConfig,
+        items: newBlock.wheelConfig.items.map((it, i) => ({ ...it, color: cols[i] })),
+      };
     }
     // Optimistic: add the new block to local state and navigate immediately.
     // The Firestore write happens in the background — no two-round-trip wait

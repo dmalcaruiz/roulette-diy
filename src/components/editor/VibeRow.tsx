@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { deriveCardSurfaces } from '../../utils/colorUtils';
-import { SLICE_VIBES, vibePreview, isVibeActive, type SliceVibe } from './vibes';
+import { SLICE_VIBES, vibePreview, isVibeActive, VIBE_ORDER_KEY, type SliceVibe } from './vibes';
 
 // Horizontally-scrollable, drag-REORDERABLE row of vibe cards. The card UI copies
 // the closed slice card's 3D look (bottom face + top face + halo); the drag /
@@ -19,7 +19,6 @@ const FACE_H = 52;
 // Virtualisation: cards within ±BUFFER slots of the viewport render; the rest are
 // reserved by spacers. Keeps a large vibe list cheap to scroll.
 const BUFFER = 6;
-const ORDER_KEY = 'wheelVibeOrder';
 // Active = the halo simply turns white; nothing else.
 const HALO_REST = '0 0 0 3.5px rgba(0,0,0,0.36)';
 const HALO_ACTIVE = '0 0 0 3.5px rgba(255,255,255,0.7)';
@@ -28,7 +27,7 @@ const byKey = new Map(SLICE_VIBES.map(v => [v.key, v]));
 
 function loadOrder(): string[] {
   try {
-    const raw = localStorage.getItem(ORDER_KEY);
+    const raw = localStorage.getItem(VIBE_ORDER_KEY);
     if (raw) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr)) {
@@ -44,7 +43,7 @@ function loadOrder(): string[] {
 }
 
 function saveOrder(order: string[]): void {
-  try { localStorage.setItem(ORDER_KEY, JSON.stringify(order)); } catch { /* ignore */ }
+  try { localStorage.setItem(VIBE_ORDER_KEY, JSON.stringify(order)); } catch { /* ignore */ }
 }
 
 export function VibeRow({ sliceColors, onApplyVibe, onReorderActiveChange }: {
@@ -383,10 +382,12 @@ function VibeCard({ vibe, index, grabbed, offsetX, instant, active, onApply, onG
       {/* 3D card — exactly a closed slice card, but each layer is divided into
           colour cuts: top = original colours, bottom (the peek) = darkened. */}
       <div style={{ position: 'relative', height: FACE_H + PEEK }}>
-        {/* Halo ring — hugs the lower layer; turns white when selected. */}
+        {/* Halo ring — white when selected, but it falls to the NON-selected
+            ring while GRABBED (a dragged card reads as unselected), then returns
+            to selected on release. */}
         <div style={{
           position: 'absolute', left: 0, right: 0, top: PEEK, bottom: 0, borderRadius: RADIUS,
-          boxShadow: active ? HALO_ACTIVE : HALO_REST, pointerEvents: 'none',
+          boxShadow: active && !grabbed ? HALO_ACTIVE : HALO_REST, pointerEvents: 'none',
         }} />
         {/* Bottom face — darkened colour cuts. */}
         <div style={{

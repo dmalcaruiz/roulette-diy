@@ -29,7 +29,7 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
   const [lastIdea, setLastIdea] = useState<WheelIdea | null>(null);
   // Name field sits slightly DARKER than the sheet surface (a recessed look),
   // not lighter.
-  const nameFieldBg = oklchShadow(SURFACE, 0.035);
+  const nameFieldBg = oklchShadow(SURFACE, 0.015);
   return (
     <div style={{ padding: '0 20px 32px' }}>
       {/* Title — the wheel's name (same value as the top-bar pill). The
@@ -48,7 +48,7 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
             // previous field; right padding clears the sparkles.
             style={{
               width: '100%', height: 46, boxSizing: 'border-box', padding: '0 44px 0 14px',
-              border: `2.5px solid ${oklchShadow(SURFACE, 0.065)}`, borderRadius: 14,
+              border: `2.5px solid ${oklchShadow(SURFACE, 0.04)}`, borderRadius: 14,
               backgroundColor: nameFieldBg, color: readableTextColor(nameFieldBg),
               fontSize: 17, fontWeight: 600, fontFamily: 'inherit', outline: 'none',
             }}
@@ -68,8 +68,8 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
       </div>
       {/* Vibe — a reorderable, scrollable row of slice-card-style palette tiles.
           Tap one to recolour all slices; long-press to reorder. */}
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ ...LABEL, marginBottom: 6 }}>VIBE</div>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ ...LABEL, marginBottom: 0 }}>VIBE</div>
         <VibeRow sliceColors={sliceColors} onApplyVibe={onApplyVibe} onReorderActiveChange={onReorderActiveChange} />
       </div>
       {/* Ideas — fill the whole wheel with a random themed starter set. */}

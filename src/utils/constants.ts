@@ -21,8 +21,10 @@ export const ROULETTE_COLOR = '#38BDF8';
 export const LIST_COLOR = '#88d515';
 export const EXPERIENCE_COLOR = '#c827d4';
 
-// Segment palette
+// Segment palette. The first 8 are the new-wheel default (see newRouletteBlock)
+// AND the first / 'classic' vibe, so a fresh wheel reads as that vibe and its
+// card shows selected — keep the yellow here (#ffd500) equal to the new wheel's.
 export const SEGMENT_COLORS = [
-  '#fb2d29', '#fb9000', '#f5cc00', '#88d515', '#00c485',
+  '#fb2d29', '#fb9000', '#ffd500', '#88d515', '#00c485',
   '#00ace7', '#303dcb', '#c827d4', '#fd41a4', '#322d2a',
 ];

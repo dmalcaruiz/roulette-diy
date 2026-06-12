@@ -19,7 +19,7 @@ import {
 } from '../services/flowService';
 import { deleteDraft, saveDraft, type CloudBlock } from '../services/blockService';
 import { dbg, sid, sids } from '../utils/debugLog';
-import { recolorWithVibe, activeVibe } from '../components/editor/vibes';
+import { recolorWithVibe, activeVibe, matchedVibe, firstOrderedVibe, rememberSelectedVibe } from '../components/editor/vibes';
 import { SettingsPane } from '../components/editor/SettingsPane';
 import { TemplatesPane } from '../components/editor/TemplatesPane';
 import { useScrollSpy } from '../hooks/useScrollSpy';
@@ -377,6 +377,17 @@ export default function RouletteScreen({
     handleWheelPreview(stateToConfig(s, configId));
   }, [handleWheelPreview, configId]);
   const editorHistory = useHistory(buildInitialState(block.wheelConfig, block.id), handleHistoryChange, block.id);
+
+  // Remember the vibe of the wheel currently open — whenever its slice colours
+  // genuinely match one — so a freshly-added wheel inherits it (the Home add
+  // button reads this "selected vibe"). A custom palette (no match) leaves the
+  // remembered vibe untouched. Covers both opening a wheel and tapping a vibe
+  // (which recolours the slices → this fires).
+  const vibeColorsKey = editorHistory.state.segments.map(s => s.color).join(',');
+  useEffect(() => {
+    const m = matchedVibe(vibeColorsKey ? vibeColorsKey.split(',') : []);
+    if (m) rememberSelectedVibe(m.key);
+  }, [vibeColorsKey]);
 
   // ── Flow history ───────────────────────────────────────────────────────
   // Mirrors the pattern used by the wheel-editor's useHistory: a single
@@ -1855,6 +1866,10 @@ export default function RouletteScreen({
                     change = buildAppendWheelChange({
                       currentBlock: { ...block, wheelConfig: activeConfig } as CloudBlock,
                       experience: flowExperience,
+                      // Inherit the CURRENT wheel's vibe — colour the new wheel's
+                      // slices from the vibe the selected tile matches. No match
+                      // (custom palette) → fall back to the first vibe in order.
+                      newWheelColors: (matchedVibe(activeConfig.items.map(it => it.color)) ?? firstOrderedVibe()).palette,
                     });
                   } catch (e) {
                     dbg('RouletteScreen', 'plus:build-fail', { err: e instanceof Error ? e.message : String(e) });

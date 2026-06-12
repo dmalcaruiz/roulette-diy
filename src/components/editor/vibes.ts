@@ -37,9 +37,59 @@ export function recolorWithVibe(vibe: SliceVibe, count: number): string[] {
   return Array.from({ length: count }, (_, i) => vibe.palette[i % vibe.palette.length]);
 }
 
+// localStorage key for the user's drag-reordered vibe order (owned by VibeRow).
+export const VIBE_ORDER_KEY = 'wheelVibeOrder';
+
+// The vibe currently FIRST in the user's saved (reorderable) order, defaulting to
+// the first built-in vibe. The fallback when a wheel matches no vibe.
+export function firstOrderedVibe(): SliceVibe {
+  try {
+    const raw = localStorage.getItem(VIBE_ORDER_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        for (const k of arr) {
+          const v = SLICE_VIBES.find(sv => sv.key === k);
+          if (v) return v;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return SLICE_VIBES[0];
+}
+
+// localStorage key remembering the vibe the user last applied — the "selected"
+// one. A freshly-added wheel inherits it, so new wheels match the latest pick.
+const SELECTED_VIBE_KEY = 'wheelSelectedVibe';
+
+// Record the vibe the user just applied as the selected one.
+export function rememberSelectedVibe(key: string): void {
+  try { localStorage.setItem(SELECTED_VIBE_KEY, key); } catch { /* ignore */ }
+}
+
+// The currently-selected vibe (the last one applied), defaulting to the first
+// built-in vibe when nothing's been picked yet. New wheels are coloured with it.
+export function selectedVibe(): SliceVibe {
+  try {
+    const key = localStorage.getItem(SELECTED_VIBE_KEY);
+    if (key) {
+      const v = SLICE_VIBES.find(sv => sv.key === key);
+      if (v) return v;
+    }
+  } catch { /* ignore */ }
+  return firstOrderedVibe();
+}
+
 // The vibe currently in effect for these slice colours — the one whose palette
 // they all belong to, DEFAULTING to the first vibe. New slices pull their colour
 // from this palette so additions keep whatever vibe is selected.
 export function activeVibe(sliceColors: string[]): SliceVibe {
   return SLICE_VIBES.find(v => isVibeActive(v, sliceColors)) ?? SLICE_VIBES[0];
+}
+
+// Like activeVibe, but returns null when NO vibe genuinely matches (instead of
+// defaulting to the first). Lets a caller remember a wheel's vibe only when it
+// truly has one — a custom palette won't overwrite the remembered selection.
+export function matchedVibe(sliceColors: string[]): SliceVibe | null {
+  return SLICE_VIBES.find(v => isVibeActive(v, sliceColors)) ?? null;
 }

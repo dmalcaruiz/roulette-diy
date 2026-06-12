@@ -31,6 +31,20 @@ function newRoulette(): CloudBlock {
   };
 }
 
+// Recolour a wheel block's slices by cycling `colors` (e.g. the current wheel's
+// vibe palette), so an appended wheel can inherit the flow's look. No-op when no
+// colours are given (the new wheel keeps its default palette).
+function withSliceColors(block: CloudBlock, colors?: string[]): CloudBlock {
+  if (!colors || colors.length === 0 || !block.wheelConfig) return block;
+  return {
+    ...block,
+    wheelConfig: {
+      ...block.wheelConfig,
+      items: block.wheelConfig.items.map((it, i) => ({ ...it, color: colors[i % colors.length] })),
+    },
+  };
+}
+
 export interface AppendWheelChange {
   newBlock: CloudBlock;
   // All docs that must be written to Firestore to persist this change.
@@ -46,9 +60,12 @@ export interface AppendWheelChange {
 export function buildAppendWheelChange(args: {
   currentBlock: CloudBlock;
   experience?: CloudBlock;
+  // Slice colours for the new wheel (e.g. the current wheel's vibe palette),
+  // cycled over its slices. Omit to keep the default new-wheel palette.
+  newWheelColors?: string[];
 }): AppendWheelChange {
-  const { currentBlock, experience } = args;
-  const newBlock = newRoulette();
+  const { currentBlock, experience, newWheelColors } = args;
+  const newBlock = withSliceColors(newRoulette(), newWheelColors);
   dbg('flowService', 'buildAppendWheelChange:enter', {
     currentBlock: sid(currentBlock.id),
     parentExperienceId: sid(currentBlock.parentExperienceId ?? null),

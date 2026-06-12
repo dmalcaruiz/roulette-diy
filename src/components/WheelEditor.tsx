@@ -2098,7 +2098,7 @@ export default function WheelEditor({
 
       {/* ── Slices — the wedge shape ───────────────────────────────────── */}
       <StyleSection title="Slices" icon={<PieChart size={13} />} first>
-        <SettingSlider label="Corner Radius" value={state.cornerRadius} min={0} max={100} step={2.5}
+        <SettingSlider label="Round Corners" value={state.cornerRadius} min={0} max={100} step={2.5}
           snapPoint={20}
           onChange={v => patch({ cornerRadius: v })} onChangeEnd={commit} />
       </StyleSection>
