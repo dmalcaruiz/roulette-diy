@@ -272,8 +272,14 @@ export interface WheelPainterConfig {
   roughSeed?: number;
 }
 
+// A point on a segment's outline plus the divider stroke-width MULTIPLIER at that
+// point (1 = base Inner Stroke). Drives the hand-drawn "ink" stroke that swells
+// and tapers along each divider. `m` is a pure function of the point's geometry,
+// so both sides of a shared divider compute identical widths (seam stays matched).
+interface StrokePt { x: number; y: number; m: number; }
 interface CachedLayout {
   paths: Path2D[];
+  outlines: StrokePt[][];
   startAngles: number[];
   segmentSizes: number[];
   effectiveWeights: number[];
@@ -551,7 +557,7 @@ export function paintWheel(
   const arcSize = (2 * Math.PI) / totalWeight;
 
   // Precompute layout
-  const layout: CachedLayout = { paths: [], startAngles: [], segmentSizes: [], effectiveWeights };
+  const layout: CachedLayout = { paths: [], outlines: [], startAngles: [], segmentSizes: [], effectiveWeights };
   const n = items.length;
   const sizes = effectiveWeights.map((w) => arcSize * w);
   let startAngle = 0;
@@ -564,7 +570,9 @@ export function paintWheel(
     // divider see the same min → the shared edge stays identical.
     const startEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i - 1 + n) % n]));
     const endEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i + 1) % n]));
-    layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth));
+    const outline: StrokePt[] = [];
+    layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth, outline));
+    layout.outlines.push(outline);
     startAngle += segmentSize;
   }
 
@@ -669,13 +677,19 @@ export function paintWheel(
     // Stroke
     if (strokeWidth > 0) {
       ctx.strokeStyle = wheelBaseColor;
-      ctx.lineWidth = strokeWidth;
       // Round joins instead of the default 'miter' — at small wheel sizes
       // the join between the radial edge and the rounded-corner curve gets
       // acute enough that miter joins spike well past the stroke width,
       // producing visible spike artifacts on the wheel's outer rim.
       ctx.lineJoin = 'round';
-      ctx.stroke(path);
+      const outline = layout.outlines[i];
+      if (ROUGHNESS.enabled && ROUGHNESS.strokeWidthVar > 0 && outline && outline.length > 1) {
+        // Hand-drawn "ink" stroke: width swells/tapers along each divider.
+        strokeVariableWidth(ctx, outline, strokeWidth);
+      } else {
+        ctx.lineWidth = strokeWidth;
+        ctx.stroke(path);
+      }
     }
 
     // Text — always drawn, regardless of how thin the slice is. The
@@ -945,6 +959,13 @@ export const ROUGHNESS = {
   // between slices, so this has no seam constraint. Amplitude is a multiple of
   // edgeAmp. 0 = clean rounding; ~0.6 = hand-drawn tips; raise for scruffier.
   cornerRough: 0.6,
+  // Divider stroke-width "ink" variation. Without it the divider/border lines are
+  // a constant thickness (vector-flat) against the hand-drawn edges. This swells
+  // and tapers the stroke ALONG each line like a pen — a per-point multiplier on
+  // the Inner Stroke width (low harmonics in t for a couple of swells per edge,
+  // plus the divider angle so lines differ). 0 = constant width; ~0.4 = gentle
+  // ink; higher = scratchier. Clamped so the line never fully disappears.
+  strokeWidthVar: 0.3,
 };
 
 // Snapshot of the code defaults, captured before any debug-panel mutation, so
@@ -970,6 +991,7 @@ export const ROUGHNESS_CONTROLS: { key: RoughnessKey; label: string; min: number
   { key: 'edgeGrain4',      label: 'grain 4 (micro 2)',   min: 0,   max: 0.6,  step: 0.005 },
   { key: 'microGrainThinBoost', label: 'micro grain on thin', min: 0, max: 2, step: 0.05 },
   { key: 'cornerRough',     label: 'corner roughness',    min: 0,   max: 2,    step: 0.05 },
+  { key: 'strokeWidthVar',  label: 'stroke ink var',      min: 0,   max: 1,    step: 0.02 },
   { key: 'seamSeal',        label: 'seam seal (px)',      min: 0,   max: 4,    step: 0.1 },
 ];
 
@@ -993,7 +1015,7 @@ export function notifyRoughnessChanged(): void {
 // its dividers vary together. Channels: 0-2 rim, 3-4 edge wobble, 5-8 edge
 // amplitude/density asymmetry envelopes, 9-11 grain layer 1, 12-14 grain layer
 // 2, 15-17 grain layer 3, 18-19 grain layer 4, 20-21 phase-decorr source, 22-23
-// amplitude-decorr source, 24-25 corner roughness.
+// amplitude-decorr source, 24-25 corner roughness, 26-27 stroke-width ink.
 // Edge peak softening (the tanh soft-clip knee) is driven by the wheel's Inner
 // Stroke width rather than being a fixed knob: a thicker divider stroke wants a
 // harder (lower) knee so the rough peaks stay tucked under the stroke, while a
@@ -1013,7 +1035,7 @@ let edgeSoftKnee = KNEE_AT_0;
 
 function computeRoughPhases(seed: number): number[] {
   const phases: number[] = [];
-  for (let c = 0; c < 26; c++) {
+  for (let c = 0; c < 28; c++) {
     // fract(sin(x) · k) → [0,1) → [0, 2π). Distinct per (seed, channel),
     // deterministic, no Math.random.
     const x = Math.sin(seed * 127.1 + c * 311.7 + 0.5) * 43758.5453;
@@ -1157,6 +1179,43 @@ function edgeSmoothFactor(minSweep: number): number {
   return x * x * (3 - 2 * x); // smoothstep
 }
 
+// Per-point divider stroke-width multiplier — the "ink" variation that swells and
+// tapers the border along its length. Low harmonics in `t` (a couple of swells
+// per radial edge) plus the divider `angle` (so lines differ). A pure function of
+// (angle, t), so both sides of a shared divider produce identical widths and the
+// seam stays matched. Clamped so the line never vanishes. `t` is the inner→rim
+// fraction for radial edges, or the angle itself for arc/corner points.
+function strokeMul(angle: number, t: number): number {
+  const w = Math.sin(t * 5 + angle * 3 + roughPhases[26]) * 0.6
+          + Math.sin(t * 12 + angle * 8 + roughPhases[27]) * 0.4;
+  return Math.max(0.2, 1 + ROUGHNESS.strokeWidthVar * w);
+}
+
+// Draw a segment outline as a variable-width "ink" stroke: each adjacent pair of
+// outline points is stroked as its own round-capped sub-stroke at the points'
+// averaged width multiplier, so the line swells and tapers along its length (the
+// round caps overlap and read as one continuous stroke). Bake-time only — the
+// spin is a CSS transform, so paintWheel doesn't run per frame. The outline is a
+// closed loop; the final segment back to the first point closes it (zero-length
+// for centre-meeting wedges, the inner donut edge otherwise).
+function strokeVariableWidth(ctx: CanvasRenderingContext2D, pts: StrokePt[], baseWidth: number): void {
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let i = 1; i <= pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i % pts.length];
+    // Skip near-zero-length sub-strokes — a round-capped dot would otherwise
+    // appear (notably the centre-meeting closing segment of a 'none'-inner wedge).
+    if (Math.abs(a.x - b.x) < 0.05 && Math.abs(a.y - b.y) < 0.05) continue;
+    ctx.lineWidth = baseWidth * (a.m + b.m) * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt'; // restore default so later strokes aren't round-capped
+}
+
 // A closed hand-drawn circle (rim wobble applied) for the background disc and the
 // concentric outer ring, so the silhouette stays consistent with the rough
 // slices. `ampRadius` = the wheel radius (keeps every circle's wobble parallel).
@@ -1222,10 +1281,19 @@ function buildRoughSegmentPath(
   centerInset: number,
   startEdgeSmooth: number,
   endEdgeSmooth: number,
+  outlineOut?: StrokePt[],
 ): Path2D {
   const path = new Path2D();
   const inner = innerCornerStyle === 'none' ? 0 : centerInset;
   const sweep = endAngle - startAngle;
+  // Emit a point to the path (moveTo for the first, lineTo after) and, if the
+  // caller wants it, record it + its stroke-width multiplier for the variable
+  // "ink" divider stroke (see strokeVariableWidth).
+  let moved = false;
+  const emit = (x: number, y: number, m: number) => {
+    if (!moved) { path.moveTo(x, y); moved = true; } else path.lineTo(x, y);
+    if (outlineOut) outlineOut.push({ x, y, m });
+  };
   // Enough to resolve the finest edges: grain layer 4 runs at t·101 (~16.1
   // cycles), so 120 steps keeps ~7.5 samples/cycle and even the micro-grained
   // edges read smooth, not faceted. (Both slices of a divider use the same
@@ -1260,6 +1328,7 @@ function buildRoughSegmentPath(
   type Pt = { x: number; y: number };
   const roughCorner = (p0: Pt, c: Pt, p2: Pt, seedAngle: number) => {
     const steps = Math.max(6, Math.ceil(Math.hypot(p2.x - p0.x, p2.y - p0.y) / 6));
+    const m = strokeMul(seedAngle, 1);
     for (let i = 1; i <= steps; i++) {
       const u = i / steps;
       const mu = 1 - u;
@@ -1272,7 +1341,7 @@ function buildRoughSegmentPath(
       const noise = Math.sin(u * 11 + seedAngle * 6 + roughPhases[24]) * 0.6
                   + Math.sin(u * 23 + seedAngle * 4 + roughPhases[25]) * 0.4;
       const off = ROUGHNESS.edgeAmp * radius * ROUGHNESS.cornerRough * taper * noise;
-      path.lineTo(bx - (ty / tlen) * off, by + (tx / tlen) * off);
+      emit(bx - (ty / tlen) * off, by + (tx / tlen) * off, m);
     }
   };
 
@@ -1284,16 +1353,19 @@ function buildRoughSegmentPath(
   // No rounding requested — original sharp wedge (also avoids degenerate curves).
   if (effR <= 0.01) {
     for (let i = 0; i <= EDGE_STEPS; i++) {
-      const p = edgePoint(startAngle, i / EDGE_STEPS, startEdgeSmooth);
-      if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
+      const t = i / EDGE_STEPS;
+      const p = edgePoint(startAngle, t, startEdgeSmooth);
+      emit(p.x, p.y, strokeMul(startAngle, t));
     }
     for (let i = 1; i <= arcSteps; i++) {
-      const p = rimPoint(startAngle + (sweep * i) / arcSteps);
-      path.lineTo(p.x, p.y);
+      const a = startAngle + (sweep * i) / arcSteps;
+      const p = rimPoint(a);
+      emit(p.x, p.y, strokeMul(a, 1));
     }
     for (let i = EDGE_STEPS - 1; i >= 0; i--) {
-      const p = edgePoint(endAngle, i / EDGE_STEPS, endEdgeSmooth);
-      path.lineTo(p.x, p.y);
+      const t = i / EDGE_STEPS;
+      const p = edgePoint(endAngle, t, endEdgeSmooth);
+      emit(p.x, p.y, strokeMul(endAngle, t));
     }
     path.closePath();
     return path;
@@ -1316,8 +1388,9 @@ function buildRoughSegmentPath(
   const startSteps = Math.max(2, Math.ceil(EDGE_STEPS * tStart));
   let cursor: Pt = { x: 0, y: 0 };
   for (let i = 0; i <= startSteps; i++) {
-    const p = edgePoint(startAngle, (tStart * i) / startSteps, startEdgeSmooth);
-    if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
+    const t = (tStart * i) / startSteps;
+    const p = edgePoint(startAngle, t, startEdgeSmooth);
+    emit(p.x, p.y, strokeMul(startAngle, t));
     cursor = p;
   }
   // Outer arc — only the grid points inside the corner cut-backs (so they match
@@ -1332,7 +1405,7 @@ function buildRoughSegmentPath(
       roughCorner(cursor, rimPoint(startAngle), p, startAngle);
       started = true;
     } else {
-      path.lineTo(p.x, p.y);
+      emit(p.x, p.y, strokeMul(a, 1));
     }
     cursor = p;
   }
@@ -1348,8 +1421,9 @@ function buildRoughSegmentPath(
   // End radial edge: pull-back → inner.
   const endSteps = Math.max(2, Math.ceil(EDGE_STEPS * tEnd));
   for (let i = endSteps - 1; i >= 0; i--) {
-    const p = edgePoint(endAngle, (tEnd * i) / endSteps, endEdgeSmooth);
-    path.lineTo(p.x, p.y);
+    const t = (tEnd * i) / endSteps;
+    const p = edgePoint(endAngle, t, endEdgeSmooth);
+    emit(p.x, p.y, strokeMul(endAngle, t));
   }
   path.closePath();
   return path;
@@ -1365,10 +1439,11 @@ function buildSegmentPath(
   centerInset: number,
   startEdgeSmooth = 1,
   endEdgeSmooth = 1,
+  outlineOut?: StrokePt[],
 ): Path2D {
   const segmentSize = endAngle - startAngle;
   if (ROUGHNESS.enabled) {
-    return buildRoughSegmentPath(center, radius, startAngle, endAngle, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth);
+    return buildRoughSegmentPath(center, radius, startAngle, endAngle, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth, outlineOut);
   }
   // Clamp the rounded-corner radius so the two corner arcs at the ends of
   // the wedge never overlap. Without this clamp, when the segment is
