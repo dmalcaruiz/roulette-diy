@@ -6,12 +6,15 @@ import { oklchShade } from '../utils/colorUtils';
 // 2π-periodic (clean seam); the per-harmonic phases are derived from `seed` with
 // the same fract(sin·k) hash the wheel uses, so each wheel id gets its own wobble
 // while staying deterministic (it doesn't boil frame-to-frame).
-function roughCirclePath(cx: number, cy: number, r: number, amp: number, seed: number): string {
+// `phase` adds a small offset to every harmonic — same seed/character, just
+// nudged — for shapes that should differ only SLIGHTLY (e.g. the shadow halos vs
+// the marker, and from each other) rather than being fully decorrelated.
+function roughCirclePath(cx: number, cy: number, r: number, amp: number, seed: number, phase = 0): string {
   const ph = (c: number) => {
     const x = Math.sin(seed * 127.1 + c * 311.7 + 0.5) * 43758.5453;
     return (x - Math.floor(x)) * Math.PI * 2;
   };
-  const p0 = ph(0), p1 = ph(1), p2 = ph(2);
+  const p0 = ph(0) + phase, p1 = ph(1) + phase, p2 = ph(2) + phase;
   const steps = 72;
   let d = '';
   for (let i = 0; i < steps; i++) {
@@ -115,15 +118,18 @@ export default function CustomMarker({
   const pinD = baseD * 2.2;
   return (
     <div style={{ position: 'relative', width: size, height: size, pointerEvents: 'none' }}>
-      {/* Lowest halo — black 6%, +28px diameter (rough, synced to the marker) */}
+      {/* Shadow halos — same seed as the marker but each with a small phase
+          nudge, so the shadow's roughness is SLIGHTLY off from the bottom layer
+          and the two halos are slightly off from each other (not fully different). */}
+      {/* Lowest halo — black 6%, +28px diameter */}
       <svg width={halo1Box} height={halo1Box} viewBox={`0 0 ${halo1Box} ${halo1Box}`}
         style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', overflow: 'visible' }}>
-        <path d={roughCirclePath(halo1Box / 2, halo1Box / 2, halo1D / 2, roughAmp, roughSeed)} fill="rgba(0,0,0,0.06)" />
+        <path d={roughCirclePath(halo1Box / 2, halo1Box / 2, halo1D / 2, roughAmp, roughSeed, 0.35)} fill="rgba(0,0,0,0.06)" />
       </svg>
-      {/* Halo — black 14%, +12px diameter (rough, synced to the marker) */}
+      {/* Halo — black 14%, +12px diameter */}
       <svg width={halo2Box} height={halo2Box} viewBox={`0 0 ${halo2Box} ${halo2Box}`}
         style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', overflow: 'visible' }}>
-        <path d={roughCirclePath(halo2Box / 2, halo2Box / 2, halo2D / 2, roughAmp, roughSeed)} fill="rgba(0,0,0,0.14)" />
+        <path d={roughCirclePath(halo2Box / 2, halo2Box / 2, halo2D / 2, roughAmp, roughSeed, 0.7)} fill="rgba(0,0,0,0.14)" />
       </svg>
       {/* Bottom layer — derived (darker), dead centre, hand-drawn rough outline
           (replaces the perfect CSS circle so it matches the wheel silhouette) */}
@@ -137,8 +143,11 @@ export default function CustomMarker({
           bottom. roughR-style insets account for each stroke width. */}
       <svg width={roughBox} height={roughBox} viewBox={`0 0 ${roughBox} ${roughBox}`}
         style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) translateY(${-peekPx}px)`, overflow: 'visible' }}>
-        {/* base disc */}
-        <path d={roughPath} fill={topFill} stroke={topStroke} strokeWidth={3} strokeLinejoin="round" />
+        {/* base disc fill + an ink-blot ribbon for its thin border (rides the
+            same edge as the fill: same r/amp/seed), so the top-layer stroke
+            swells and tapers instead of being a uniform line */}
+        <path d={roughPath} fill={topFill} />
+        <path d={roughRingRibbon(roughBox / 2, roughBox / 2, roughR, 1.5, roughAmp, roughSeed, 0.3)} fill={topStroke} fillRule="evenodd" />
         {/* ring — its OWN deform source (offset seed + slightly bigger amp) AND a
             variable "ink" width (filled ribbon that swells/tapers around it) */}
         <path d={roughRingRibbon(roughBox / 2, roughBox / 2, baseD * 0.39 - 1.5, 1.5, innerAmp * 1.25, roughSeed + 7.1, 0.25)} fill={ringStroke} fillRule="evenodd" />
