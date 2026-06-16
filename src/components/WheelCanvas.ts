@@ -505,6 +505,9 @@ export function paintWheel(
   const radius = Math.min(width, height) / 2 - strokeInset - outerInset;
   const scale = radius / 350;
   const textX = radius - 20 * scale;
+  // Edge peak softening from the Inner Stroke. `strokeWidth` arrives scaled by
+  // `scale` (= radius/350), so divide it back to slider units before mapping.
+  if (ROUGHNESS.enabled) edgeSoftKnee = kneeFromStroke(scale > 0 ? strokeWidth / scale : strokeWidth);
 
   ctx.clearRect(0, 0, width, height);
 
@@ -915,12 +918,9 @@ export const ROUGHNESS = {
   // different frequency is what makes it add detail rather than just scaling
   // grain 3. 0 = off.
   edgeGrain4: 0.09,
-  // Peak softening (compression): the summed edge offset is soft-clipped with
-  // tanh, which leaves SMALL offsets (already-soft edges) almost linear but
-  // squashes LARGE excursions (rough edges / grain spikes) toward this ceiling.
-  // So it softens the rough without touching the calm. LOWER = more softening
-  // (lower ceiling); raise toward ~3 to effectively disable it.
-  edgeSoftKnee: 1,
+  // NOTE: edge peak softening (the tanh soft-clip knee) is NOT a knob here — it's
+  // derived from the wheel's Inner Stroke width (see kneeFromStroke): a thicker
+  // divider stroke wants a harder knee so rough peaks stay tucked under it.
   // Narrow-slice smoothing: a divider between thin slices (low %) gets its edge
   // wobble scaled DOWN toward a straight line, since the same wobble that looks
   // good on a wide slice looks cramped between two close dividers. This is the
@@ -938,6 +938,13 @@ export const ROUGHNESS = {
   // value (thinnest). 0 = old behaviour (micro killed on thin); ~0.3 = a bit of
   // texture retained; 1 = micro never reduced; >1 = thin slices grainier than wide.
   microGrainThinBoost: 0.3,
+  // Roughness of the rounded corners themselves. Without this the corner curves
+  // are clean quadratics — vector-smooth tips against the hand-drawn edges. This
+  // jitters each corner curve along its normal (tapered to 0 at both ends so it
+  // still meets the radial edge and the arc cleanly). Corners aren't shared
+  // between slices, so this has no seam constraint. Amplitude is a multiple of
+  // edgeAmp. 0 = clean rounding; ~0.6 = hand-drawn tips; raise for scruffier.
+  cornerRough: 0.6,
 };
 
 // Snapshot of the code defaults, captured before any debug-panel mutation, so
@@ -956,13 +963,13 @@ export const ROUGHNESS_CONTROLS: { key: RoughnessKey; label: string; min: number
   { key: 'edgeDensVar',     label: 'edge density var',    min: 0,   max: 1,    step: 0.02 },
   { key: 'edgeDecorr',      label: 'neighbour decorr',    min: 0,   max: 3,    step: 0.05 },
   { key: 'edgeAmpDecorr',   label: 'amp decorr',          min: 0,   max: 1,    step: 0.02 },
-  { key: 'edgeSoftKnee',    label: 'edge peak soften',    min: 0.3, max: 3,    step: 0.05 },
   { key: 'edgeSmoothWidth', label: 'narrow-slice smooth', min: 0,   max: 0.6,  step: 0.01 },
   { key: 'edgeGrain',       label: 'grain 1 (coarse)',    min: 0,   max: 2,    step: 0.05 },
   { key: 'edgeGrain2',      label: 'grain 2 (fine)',      min: 0,   max: 2,    step: 0.05 },
   { key: 'edgeGrain3',      label: 'grain 3 (micro)',     min: 0,   max: 0.6,  step: 0.005 },
   { key: 'edgeGrain4',      label: 'grain 4 (micro 2)',   min: 0,   max: 0.6,  step: 0.005 },
   { key: 'microGrainThinBoost', label: 'micro grain on thin', min: 0, max: 2, step: 0.05 },
+  { key: 'cornerRough',     label: 'corner roughness',    min: 0,   max: 2,    step: 0.05 },
   { key: 'seamSeal',        label: 'seam seal (px)',      min: 0,   max: 4,    step: 0.1 },
 ];
 
@@ -986,10 +993,27 @@ export function notifyRoughnessChanged(): void {
 // its dividers vary together. Channels: 0-2 rim, 3-4 edge wobble, 5-8 edge
 // amplitude/density asymmetry envelopes, 9-11 grain layer 1, 12-14 grain layer
 // 2, 15-17 grain layer 3, 18-19 grain layer 4, 20-21 phase-decorr source, 22-23
-// amplitude-decorr source.
+// amplitude-decorr source, 24-25 corner roughness.
+// Edge peak softening (the tanh soft-clip knee) is driven by the wheel's Inner
+// Stroke width rather than being a fixed knob: a thicker divider stroke wants a
+// harder (lower) knee so the rough peaks stay tucked under the stroke, while a
+// thin / no stroke wants a soft knee that lets the peaks breathe. Linear from
+// KNEE_AT_0 at stroke 0 to KNEE_AT_MAX at stroke >= STROKE_KNEE_MAX (in Inner
+// Stroke slider units), clamped. Tweak these three to retune the relationship.
+const STROKE_KNEE_MAX = 15;
+const KNEE_AT_0 = 1.0;
+const KNEE_AT_MAX = 0.3;
+function kneeFromStroke(strokeWidth: number): number {
+  const x = Math.min(1, Math.max(0, strokeWidth / STROKE_KNEE_MAX));
+  return KNEE_AT_0 + (KNEE_AT_MAX - KNEE_AT_0) * x;
+}
+// Set per-paint from the Inner Stroke (module state, like roughPhases — safe
+// because paints run synchronously).
+let edgeSoftKnee = KNEE_AT_0;
+
 function computeRoughPhases(seed: number): number[] {
   const phases: number[] = [];
-  for (let c = 0; c < 24; c++) {
+  for (let c = 0; c < 26; c++) {
     // fract(sin(x) · k) → [0,1) → [0, 2π). Distinct per (seed, channel),
     // deterministic, no Math.random.
     const x = Math.sin(seed * 127.1 + c * 311.7 + 0.5) * 43758.5453;
@@ -1118,7 +1142,7 @@ function edgeNoise(angle: number, t: number, ampRadius: number, smooth: number):
   // calm. Monotonic and a function of `raw` alone, so shared dividers still
   // match and the 2π periodicity holds; the taper is applied AFTER, so the ends
   // still pin to the centre and rim.
-  const k = ROUGHNESS.edgeSoftKnee;
+  const k = edgeSoftKnee;
   const softened = k * Math.tanh(raw / k);
   return ampRadius * ROUGHNESS.edgeAmp * taper * softened;
 }
@@ -1227,6 +1251,30 @@ function buildRoughSegmentPath(
     const r = radius + rimNoise(a, radius);
     return { x: center.x + Math.cos(a) * r, y: center.y + Math.sin(a) * r };
   };
+  // Append a corner quadratic (p0 → control c → p2) to the path as a jittered
+  // polyline so the rounded tip reads hand-drawn, not vector-smooth. The jitter
+  // rides the curve normal and tapers (sin πu) to 0 at both ends, so the corner
+  // still meets the radial pull-back (p0) and the arc (p2) exactly. Corners
+  // aren't shared between slices, so `seedAngle` (the divider) just needs to be
+  // stable, not matched. The path is assumed to already sit at p0.
+  type Pt = { x: number; y: number };
+  const roughCorner = (p0: Pt, c: Pt, p2: Pt, seedAngle: number) => {
+    const steps = Math.max(6, Math.ceil(Math.hypot(p2.x - p0.x, p2.y - p0.y) / 6));
+    for (let i = 1; i <= steps; i++) {
+      const u = i / steps;
+      const mu = 1 - u;
+      const bx = mu * mu * p0.x + 2 * mu * u * c.x + u * u * p2.x;
+      const by = mu * mu * p0.y + 2 * mu * u * c.y + u * u * p2.y;
+      const tx = 2 * mu * (c.x - p0.x) + 2 * u * (p2.x - c.x);
+      const ty = 2 * mu * (c.y - p0.y) + 2 * u * (p2.y - c.y);
+      const tlen = Math.hypot(tx, ty) || 1;
+      const taper = Math.sin(Math.PI * u);
+      const noise = Math.sin(u * 11 + seedAngle * 6 + roughPhases[24]) * 0.6
+                  + Math.sin(u * 23 + seedAngle * 4 + roughPhases[25]) * 0.4;
+      const off = ROUGHNESS.edgeAmp * radius * ROUGHNESS.cornerRough * taper * noise;
+      path.lineTo(bx - (ty / tlen) * off, by + (tx / tlen) * off);
+    }
+  };
 
   // Corner rounding (mirrors clean buildSegmentPath): clamp the angular corner so
   // the two corners of a wedge never overlap; `effR` is the radial pull-back.
@@ -1263,38 +1311,40 @@ function buildRoughSegmentPath(
   const arcStartA = startAngle + cornerArc;
   const arcEndA = endAngle - cornerArc;
 
-  // Start radial edge: inner → pull-back point.
+  // Start radial edge: inner → pull-back point. `cursor` tracks the last point so
+  // the corner quadratics know where they start from.
   const startSteps = Math.max(2, Math.ceil(EDGE_STEPS * tStart));
+  let cursor: Pt = { x: 0, y: 0 };
   for (let i = 0; i <= startSteps; i++) {
     const p = edgePoint(startAngle, (tStart * i) / startSteps, startEdgeSmooth);
     if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
+    cursor = p;
   }
   // Outer arc — only the grid points inside the corner cut-backs (so they match
-  // the backing exactly); the corners themselves are quadratics through the rough
-  // rim point at the divider, bridging the pull-back to the arc.
+  // the backing exactly); the corners themselves are (jittered) quadratics through
+  // the rough rim point at the divider, bridging the pull-back to the arc.
   let started = false;
   for (let i = 0; i <= arcSteps; i++) {
     const a = startAngle + (sweep * i) / arcSteps;
     if (a < arcStartA || a > arcEndA) continue;
     const p = rimPoint(a);
     if (!started) {
-      const c = rimPoint(startAngle);
-      path.quadraticCurveTo(c.x, c.y, p.x, p.y);
+      roughCorner(cursor, rimPoint(startAngle), p, startAngle);
       started = true;
     } else {
       path.lineTo(p.x, p.y);
     }
+    cursor = p;
   }
   if (!started) {
     // Corners meet (no flat arc between them) — round to a single apex at mid.
     const apex = rimPoint((startAngle + endAngle) / 2);
-    const c = rimPoint(startAngle);
-    path.quadraticCurveTo(c.x, c.y, apex.x, apex.y);
+    roughCorner(cursor, rimPoint(startAngle), apex, startAngle);
+    cursor = apex;
   }
   // End corner: last arc point → (control = rough rim at endAngle) → pull-back.
   const endPull = edgePoint(endAngle, tEnd, endEdgeSmooth);
-  const cEnd = rimPoint(endAngle);
-  path.quadraticCurveTo(cEnd.x, cEnd.y, endPull.x, endPull.y);
+  roughCorner(cursor, rimPoint(endAngle), endPull, endAngle);
   // End radial edge: pull-back → inner.
   const endSteps = Math.max(2, Math.ceil(EDGE_STEPS * tEnd));
   for (let i = endSteps - 1; i >= 0; i--) {
@@ -1445,6 +1495,8 @@ export function paintWheelThumbnail(
   // Proportional scale: thumbnail dimension vs the wheel's ideal render size.
   const scale = Math.min(width, height) / WHEEL_REFERENCE_SIZE;
   const wheelStrokeWidth = style?.strokeWidth ?? 7.7;
+  // Edge peak softening from the Inner Stroke (already in slider units here).
+  if (ROUGHNESS.enabled) edgeSoftKnee = kneeFromStroke(wheelStrokeWidth);
   const wheelCornerRadius = style?.cornerRadius ?? 30;
   const wheelInnerStyle = style?.innerCornerStyle ?? 'none';
   const wheelCenterInset = style?.centerInset ?? 50;
