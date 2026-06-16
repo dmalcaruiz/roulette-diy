@@ -1182,15 +1182,18 @@ function buildRoughDisc(
   return path;
 }
 
-// Rough wedge — a sharp, jittered slice (rounded corners dropped: jaggedness and
-// corner rounding fight). Radial edges jitter tangentially (small chunks); the
-// outer arc rides the rim wobble (large chunks). Shared dividers + rim points are
-// computed from the angle alone, so adjacent slices line up exactly.
+// Rough wedge — a jittered slice that ALSO honours rounded outer corners. Radial
+// edges jitter tangentially (small chunks); the outer arc rides the rim wobble
+// (large chunks). Shared dividers + rim points are computed from the angle alone,
+// so adjacent slices line up exactly. Corners are rounded the same way clean mode
+// does (quadratic through the corner, per-segment clamp), which works because the
+// edge jitter tapers to ~0 at the rim — the radial edges reach the corner clean.
 function buildRoughSegmentPath(
   center: { x: number; y: number },
   radius: number,
   startAngle: number,
   endAngle: number,
+  cornerRadius: number,
   innerCornerStyle: string,
   centerInset: number,
   startEdgeSmooth: number,
@@ -1198,11 +1201,15 @@ function buildRoughSegmentPath(
 ): Path2D {
   const path = new Path2D();
   const inner = innerCornerStyle === 'none' ? 0 : centerInset;
+  const sweep = endAngle - startAngle;
   // Enough to resolve the finest edges: grain layer 4 runs at t·101 (~16.1
   // cycles), so 120 steps keeps ~7.5 samples/cycle and even the micro-grained
   // edges read smooth, not faceted. (Both slices of a divider use the same
   // count, so the shared edge still matches exactly.)
   const EDGE_STEPS = 120;
+  // Arc sampled at the SAME per-span step as buildRoughDisc, so a rim point this
+  // slice keeps lands exactly on the backing's rim point — no white sliver.
+  const arcSteps = Math.max(8, Math.ceil(sweep / 0.022));
   // A point on the radial edge at `angle`, fraction t (inner → rim). The rim
   // radius itself wobbles so the edge's outer end lands on the rough arc.
   const edgePoint = (angle: number, t: number, smooth: number) => {
@@ -1214,22 +1221,84 @@ function buildRoughSegmentPath(
       y: center.y + Math.sin(angle) * r + Math.cos(angle) * off,
     };
   };
-  // Start edge: centre/inner → rim.
-  for (let i = 0; i <= EDGE_STEPS; i++) {
-    const p = edgePoint(startAngle, i / EDGE_STEPS, startEdgeSmooth);
+  // A point on the wobbly rim at `angle` (no tangential offset — the edge jitter
+  // is ~0 here, and the corner curve/arc ride the silhouette directly).
+  const rimPoint = (a: number) => {
+    const r = radius + rimNoise(a, radius);
+    return { x: center.x + Math.cos(a) * r, y: center.y + Math.sin(a) * r };
+  };
+
+  // Corner rounding (mirrors clean buildSegmentPath): clamp the angular corner so
+  // the two corners of a wedge never overlap; `effR` is the radial pull-back.
+  const cornerArc = Math.min(cornerRadius / radius, sweep / 2);
+  const effR = cornerArc * radius;
+
+  // No rounding requested — original sharp wedge (also avoids degenerate curves).
+  if (effR <= 0.01) {
+    for (let i = 0; i <= EDGE_STEPS; i++) {
+      const p = edgePoint(startAngle, i / EDGE_STEPS, startEdgeSmooth);
+      if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
+    }
+    for (let i = 1; i <= arcSteps; i++) {
+      const p = rimPoint(startAngle + (sweep * i) / arcSteps);
+      path.lineTo(p.x, p.y);
+    }
+    for (let i = EDGE_STEPS - 1; i >= 0; i--) {
+      const p = edgePoint(endAngle, i / EDGE_STEPS, endEdgeSmooth);
+      path.lineTo(p.x, p.y);
+    }
+    path.closePath();
+    return path;
+  }
+
+  // Fraction t at which a radial edge stops (radius pulled back by effR). rimR
+  // wobbles per angle, so compute per side; both sides of a shared divider pull
+  // back by the SAME radial distance, matching clean mode's per-segment clamp.
+  const tCorner = (angle: number) => {
+    const rimR = radius + rimNoise(angle, radius);
+    return Math.max(0, 1 - effR / (rimR - inner));
+  };
+  const tStart = tCorner(startAngle);
+  const tEnd = tCorner(endAngle);
+  const arcStartA = startAngle + cornerArc;
+  const arcEndA = endAngle - cornerArc;
+
+  // Start radial edge: inner → pull-back point.
+  const startSteps = Math.max(2, Math.ceil(EDGE_STEPS * tStart));
+  for (let i = 0; i <= startSteps; i++) {
+    const p = edgePoint(startAngle, (tStart * i) / startSteps, startEdgeSmooth);
     if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
   }
-  // Outer arc — skip i=0 (the start edge already placed the rim point there).
-  const sweep = endAngle - startAngle;
-  const arcSteps = Math.max(8, Math.ceil(sweep / 0.022));
-  for (let i = 1; i <= arcSteps; i++) {
+  // Outer arc — only the grid points inside the corner cut-backs (so they match
+  // the backing exactly); the corners themselves are quadratics through the rough
+  // rim point at the divider, bridging the pull-back to the arc.
+  let started = false;
+  for (let i = 0; i <= arcSteps; i++) {
     const a = startAngle + (sweep * i) / arcSteps;
-    const r = radius + rimNoise(a, radius);
-    path.lineTo(center.x + Math.cos(a) * r, center.y + Math.sin(a) * r);
+    if (a < arcStartA || a > arcEndA) continue;
+    const p = rimPoint(a);
+    if (!started) {
+      const c = rimPoint(startAngle);
+      path.quadraticCurveTo(c.x, c.y, p.x, p.y);
+      started = true;
+    } else {
+      path.lineTo(p.x, p.y);
+    }
   }
-  // End edge: rim → centre/inner; skip i=EDGE_STEPS (the arc placed the rim point).
-  for (let i = EDGE_STEPS - 1; i >= 0; i--) {
-    const p = edgePoint(endAngle, i / EDGE_STEPS, endEdgeSmooth);
+  if (!started) {
+    // Corners meet (no flat arc between them) — round to a single apex at mid.
+    const apex = rimPoint((startAngle + endAngle) / 2);
+    const c = rimPoint(startAngle);
+    path.quadraticCurveTo(c.x, c.y, apex.x, apex.y);
+  }
+  // End corner: last arc point → (control = rough rim at endAngle) → pull-back.
+  const endPull = edgePoint(endAngle, tEnd, endEdgeSmooth);
+  const cEnd = rimPoint(endAngle);
+  path.quadraticCurveTo(cEnd.x, cEnd.y, endPull.x, endPull.y);
+  // End radial edge: pull-back → inner.
+  const endSteps = Math.max(2, Math.ceil(EDGE_STEPS * tEnd));
+  for (let i = endSteps - 1; i >= 0; i--) {
+    const p = edgePoint(endAngle, (tEnd * i) / endSteps, endEdgeSmooth);
     path.lineTo(p.x, p.y);
   }
   path.closePath();
@@ -1249,7 +1318,7 @@ function buildSegmentPath(
 ): Path2D {
   const segmentSize = endAngle - startAngle;
   if (ROUGHNESS.enabled) {
-    return buildRoughSegmentPath(center, radius, startAngle, endAngle, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth);
+    return buildRoughSegmentPath(center, radius, startAngle, endAngle, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth);
   }
   // Clamp the rounded-corner radius so the two corner arcs at the ends of
   // the wedge never overlap. Without this clamp, when the segment is
