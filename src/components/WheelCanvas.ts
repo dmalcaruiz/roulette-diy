@@ -605,8 +605,22 @@ export function paintWheel(
   // mirroring clean mode's full-disc backing.
   if (ROUGHNESS.enabled && showBackgroundCircle) {
     const noStrokeNoRound = strokeWidth === 0 && cornerRadius === 0;
+    const inkRim = strokeWidth > 0 && ROUGHNESS.strokeWidthVar > 0;
+    const discOutline: StrokePt[] = [];
+    const disc = buildRoughDisc(center, radius, layout.startAngles, layout.segmentSizes, inkRim ? discOutline : undefined);
     ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
-    ctx.fill(buildRoughDisc(center, radius, layout.startAngles, layout.segmentSizes));
+    ctx.fill(disc);
+    // Continuous outer ring at the rim. The rounded corners pull each slice IN at
+    // every divider, so the per-slice rim strokes alone leave the wheel's outer
+    // border notched. Stroking the backing disc (sampled to match the slice rim)
+    // closes those gaps into one clean rough ring — mirrors clean mode's bg-circle
+    // stroke. The notches then read as white indentations just inside the ring.
+    if (strokeWidth > 0) {
+      ctx.strokeStyle = wheelBaseColor;
+      ctx.lineJoin = 'round';
+      if (inkRim && discOutline.length > 1) strokeVariableWidth(ctx, discOutline, strokeWidth);
+      else { ctx.lineWidth = strokeWidth; ctx.stroke(disc); }
+    }
   }
 
   // Extra outer ring, silhouette-following. With no background circle the
@@ -630,9 +644,19 @@ export function paintWheel(
       ctx.clip('evenodd');
     }
     ctx.strokeStyle = wheelBaseColor;
-    ctx.lineWidth = strokeWidth + outerStrokeWidth * 2;
     ctx.lineJoin = 'round';
-    for (const p of layout.paths) ctx.stroke(p);
+    const ringWidth = strokeWidth + outerStrokeWidth * 2;
+    const inkRing = ROUGHNESS.enabled && ROUGHNESS.strokeWidthVar > 0;
+    for (let i = 0; i < layout.paths.length; i++) {
+      const outline = layout.outlines[i];
+      // Match the dividers' ink swell/taper so the ring reads hand-drawn too.
+      if (inkRing && outline && outline.length > 1) {
+        strokeVariableWidth(ctx, outline, ringWidth, RING_INK_SCALE);
+      } else {
+        ctx.lineWidth = ringWidth;
+        ctx.stroke(layout.paths[i]);
+      }
+    }
     ctx.restore();
   }
 
@@ -1198,7 +1222,13 @@ function strokeMul(angle: number, t: number): number {
 // spin is a CSS transform, so paintWheel doesn't run per frame. The outline is a
 // closed loop; the final segment back to the first point closes it (zero-length
 // for centre-meeting wedges, the inner donut edge otherwise).
-function strokeVariableWidth(ctx: CanvasRenderingContext2D, pts: StrokePt[], baseWidth: number): void {
+// How much of the divider ink variation the (wider) outer ring gets — lower so
+// the ring's swell stays subtle relative to the thin dividers. 1 = same as
+// dividers, 0 = uniform ring.
+const RING_INK_SCALE = 0.65;
+// `mScale` damps the width variation toward a constant (1 = full ink, 0 = uniform)
+// — used to give the wide outer ring a gentler swell than the thin dividers.
+function strokeVariableWidth(ctx: CanvasRenderingContext2D, pts: StrokePt[], baseWidth: number, mScale = 1): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (let i = 1; i <= pts.length; i++) {
@@ -1207,7 +1237,9 @@ function strokeVariableWidth(ctx: CanvasRenderingContext2D, pts: StrokePt[], bas
     // Skip near-zero-length sub-strokes — a round-capped dot would otherwise
     // appear (notably the centre-meeting closing segment of a 'none'-inner wedge).
     if (Math.abs(a.x - b.x) < 0.05 && Math.abs(a.y - b.y) < 0.05) continue;
-    ctx.lineWidth = baseWidth * (a.m + b.m) * 0.5;
+    const ma = 1 + (a.m - 1) * mScale;
+    const mb = 1 + (b.m - 1) * mScale;
+    ctx.lineWidth = baseWidth * (ma + mb) * 0.5;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
@@ -1245,6 +1277,7 @@ function buildRoughDisc(
   radius: number,
   startAngles: number[],
   segmentSizes: number[],
+  outlineOut?: StrokePt[],
 ): Path2D {
   const path = new Path2D();
   let first = true;
@@ -1259,6 +1292,9 @@ function buildRoughDisc(
       const x = center.x + Math.cos(a) * r;
       const y = center.y + Math.sin(a) * r;
       if (first) { path.moveTo(x, y); first = false; } else path.lineTo(x, y);
+      // Same multiplier the slice arcs use (strokeMul(a, 1)), so the continuous
+      // rim ring matches the slice rim strokes exactly where they overlap.
+      if (outlineOut) outlineOut.push({ x, y, m: strokeMul(a, 1) });
     }
   }
   path.closePath();
