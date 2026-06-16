@@ -2,7 +2,6 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
-import RoughnessDebugPanel from '../components/RoughnessDebugPanel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
@@ -1544,7 +1543,6 @@ export default function RouletteScreen({
               transformOrigin: 'top center',
               transition: wheelTransitionCss,
             }}>
-            {import.meta.env.DEV && <RoughnessDebugPanel />}
             <SpinningWheel
               ref={wheelRef}
               items={activeConfig.items}

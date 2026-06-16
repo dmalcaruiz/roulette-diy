@@ -326,7 +326,7 @@ function playWinChord(): void {
   }
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig, subscribeRoughness } from './WheelCanvas';
+import { paintWheel, WheelPainterConfig } from './WheelCanvas';
 export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
@@ -795,9 +795,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const id = requestAnimationFrame(() => repaint());
     return () => cancelAnimationFrame(id);
   }, [repaint, paintImpl]);
-
-  // Debug: re-bake when the roughness debug panel tweaks a value (dev only).
-  useEffect(() => subscribeRoughness(() => paint()), [paint]);
 
   // Repaint when a segment's custom image finishes decoding. The painter skips
   // not-yet-loaded images (showing a faint placeholder); this brings them in.

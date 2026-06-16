@@ -992,44 +992,6 @@ export const ROUGHNESS = {
   strokeWidthVar: 0.3,
 };
 
-// Snapshot of the code defaults, captured before any debug-panel mutation, so
-// the panel's "reset" can restore them.
-export const ROUGHNESS_DEFAULTS = { ...ROUGHNESS };
-
-// ── Debug live-tuning ───────────────────────────────────────────────────────
-// Slider metadata for RoughnessDebugPanel (dev only). Numeric ROUGHNESS knobs
-// with sensible ranges; `enabled` is handled as a checkbox in the panel.
-export type RoughnessKey = Exclude<keyof typeof ROUGHNESS, 'enabled'>;
-export const ROUGHNESS_CONTROLS: { key: RoughnessKey; label: string; min: number; max: number; step: number }[] = [
-  { key: 'rimAmp',          label: 'rim amplitude',       min: 0,   max: 0.03, step: 0.0005 },
-  { key: 'rimSoftKnee',     label: 'rim peak soften',     min: 0.3, max: 3,    step: 0.05 },
-  { key: 'edgeAmp',         label: 'edge amplitude',      min: 0,   max: 0.03, step: 0.0005 },
-  { key: 'edgeAmpVar',      label: 'edge amp variation',  min: 0,   max: 1,    step: 0.02 },
-  { key: 'edgeDensVar',     label: 'edge density var',    min: 0,   max: 1,    step: 0.02 },
-  { key: 'edgeDecorr',      label: 'neighbour decorr',    min: 0,   max: 3,    step: 0.05 },
-  { key: 'edgeAmpDecorr',   label: 'amp decorr',          min: 0,   max: 1,    step: 0.02 },
-  { key: 'edgeSmoothWidth', label: 'narrow-slice smooth', min: 0,   max: 0.6,  step: 0.01 },
-  { key: 'edgeGrain',       label: 'grain 1 (coarse)',    min: 0,   max: 2,    step: 0.05 },
-  { key: 'edgeGrain2',      label: 'grain 2 (fine)',      min: 0,   max: 2,    step: 0.05 },
-  { key: 'edgeGrain3',      label: 'grain 3 (micro)',     min: 0,   max: 0.6,  step: 0.005 },
-  { key: 'edgeGrain4',      label: 'grain 4 (micro 2)',   min: 0,   max: 0.6,  step: 0.005 },
-  { key: 'microGrainThinBoost', label: 'micro grain on thin', min: 0, max: 2, step: 0.05 },
-  { key: 'cornerRough',     label: 'corner roughness',    min: 0,   max: 2,    step: 0.05 },
-  { key: 'strokeWidthVar',  label: 'stroke ink var',      min: 0,   max: 1,    step: 0.02 },
-  { key: 'seamSeal',        label: 'seam seal (px)',      min: 0,   max: 4,    step: 0.1 },
-];
-
-// A debug panel mutates ROUGHNESS in place then calls notifyRoughnessChanged();
-// every mounted SpinningWheel subscribes and re-bakes with the new values.
-const roughnessListeners = new Set<() => void>();
-export function subscribeRoughness(cb: () => void): () => void {
-  roughnessListeners.add(cb);
-  return () => { roughnessListeners.delete(cb); };
-}
-export function notifyRoughnessChanged(): void {
-  roughnessListeners.forEach((cb) => cb());
-}
-
 // Per-wheel seed → phase offsets. Each wheel passes a stable seed (hashed from
 // its config id — see roughSeedFromId) so its wobble differs from other wheels
 // while staying IDENTICAL frame-to-frame (a per-frame random seed would make the
