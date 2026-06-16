@@ -326,7 +326,8 @@ function playWinChord(): void {
   }
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig } from './WheelCanvas';
+import { paintWheel, WheelPainterConfig, subscribeRoughness } from './WheelCanvas';
+export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
 import DotCelebration, { DotCelebrationHandle } from './DotCelebration';
@@ -439,6 +440,9 @@ export interface SpinningWheelProps {
   // during the hold). Receives the index of the segment under the
   // pointer. Use to open an editor / context menu for that segment.
   onSegmentLongPress?: (index: number) => void;
+  // Per-wheel roughness seed (e.g. roughSeedFromId(config.id)) so each wheel's
+  // hand-drawn wobble differs. Stable per wheel; omitted → 0.
+  roughSeed?: number;
 }
 
 export interface SpinningWheelHandle {
@@ -481,6 +485,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     headerCanvasGap = 16,
     headerTransition,
     onSegmentLongPress,
+    roughSeed = 0,
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -712,6 +717,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       loadingAngle: 0,
       fromItems: fromItemsRef.current,
       transition: transitionRef.current,
+      roughSeed,
     };
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -719,7 +725,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
       bezelDotsColorMode, bezelDotsCustomColor, textWrap, markerDiameter,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
-      wheelBaseColor]);
+      wheelBaseColor, roughSeed]);
 
   // Public `paint` is *stable* (never changes identity) but always invokes
   // the latest paintImpl via a ref. The spin/decay rAF callbacks capture
@@ -789,6 +795,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const id = requestAnimationFrame(() => repaint());
     return () => cancelAnimationFrame(id);
   }, [repaint, paintImpl]);
+
+  // Debug: re-bake when the roughness debug panel tweaks a value (dev only).
+  useEffect(() => subscribeRoughness(() => paint()), [paint]);
 
   // Repaint when a segment's custom image finishes decoding. The painter skips
   // not-yet-loaded images (showing a faint placeholder); this brings them in.

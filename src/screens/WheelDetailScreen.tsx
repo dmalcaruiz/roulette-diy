@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import SpinningWheel, { type SpinningWheelHandle } from '../components/SpinningWheel';
+import SpinningWheel, { type SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
 import { PushDownButton } from '../components/PushDownButton';
 import ResponseUploadSheet from '../components/ResponseUploadSheet';
 import CommentsSection from '../components/CommentsSection';
@@ -139,6 +139,7 @@ export default function WheelDetailScreen() {
         <SpinningWheel
           ref={wheelRef}
           items={wheel.wheelConfig?.items ?? []}
+          roughSeed={roughSeedFromId(wheel.wheelConfig?.id ?? wheel.id ?? '')}
           onFinished={onSpinFinished}
           size={Math.min(window.innerWidth - 40, 560)}
           textSizeMultiplier={wheel.wheelConfig?.textSize ?? 1}

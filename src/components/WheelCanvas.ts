@@ -267,6 +267,9 @@ export interface WheelPainterConfig {
   // Transition support
   fromItems?: WheelItem[] | null;
   transition: number;
+  // Per-wheel roughness seed (stable, e.g. roughSeedFromId(config.id)). Varies
+  // the hand-drawn wobble between wheels. Omitted → 0 (a fixed base pattern).
+  roughSeed?: number;
 }
 
 interface CachedLayout {
@@ -492,6 +495,8 @@ export function paintWheel(
   const outerStrokeWidth = config.outerStrokeWidth ?? 0;
   const outerStrokeDots = config.outerStrokeDots ?? false;
   const textWrap = config.textWrap ?? false;
+  // Per-wheel wobble: set the phase offsets before any rough path is built.
+  if (ROUGHNESS.enabled) roughPhases = computeRoughPhases(config.roughSeed ?? 0);
 
   const center = { x: width / 2, y: height / 2 };
   const strokeInset = strokeWidth > 0 ? strokeWidth / 2 + 0.5 : 0;
@@ -508,15 +513,19 @@ export function paintWheel(
   // arc — strict canvasR reads as too tight with no ring band or rounded
   // corners to lift it visually. Pull it in to 0.98 so a thin dark sliver
   // at the edge breaks the silhouette (mirrors the thumbnail's logic).
-  if (showBackgroundCircle) {
+  // Rough mode draws its backing later, in the slices' rotated frame, sampled
+  // to match the slice rim exactly (see buildRoughDisc) — an independently
+  // sampled rough disc here poked past the slices at divider valleys, leaking
+  // a white sliver. Clean mode keeps the simple concentric disc.
+  if (showBackgroundCircle && !ROUGHNESS.enabled) {
     const noStrokeNoRound = strokeWidth === 0 && cornerRadius === 0;
     const bgRadius = noStrokeNoRound ? radius * 0.98 : radius;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, bgRadius, 0, Math.PI * 2);
     // 50% grey in the no-stroke / no-round edge case (the disc is the
     // only visible "outline" since there's no ring or rounded corners);
     // white otherwise.
     ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, bgRadius, 0, Math.PI * 2);
     ctx.fill();
     if (strokeWidth > 0) {
       ctx.strokeStyle = wheelBaseColor;
@@ -540,12 +549,19 @@ export function paintWheel(
 
   // Precompute layout
   const layout: CachedLayout = { paths: [], startAngles: [], segmentSizes: [], effectiveWeights };
+  const n = items.length;
+  const sizes = effectiveWeights.map((w) => arcSize * w);
   let startAngle = 0;
-  for (let i = 0; i < items.length; i++) {
-    const segmentSize = arcSize * effectiveWeights[i];
+  for (let i = 0; i < n; i++) {
+    const segmentSize = sizes[i];
     layout.startAngles.push(startAngle);
     layout.segmentSizes.push(segmentSize);
-    layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset));
+    // Smooth each edge by the THINNER of the two slices it divides (wrapping at
+    // the seam), so a low-% slice gets near-straight edges. Both slices of a
+    // divider see the same min → the shared edge stays identical.
+    const startEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i - 1 + n) % n]));
+    const endEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i + 1) % n]));
+    layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth));
     startAngle += segmentSize;
   }
 
@@ -571,6 +587,16 @@ export function paintWheel(
   ctx.translate(center.x, center.y);
   ctx.rotate(rotation);
   ctx.translate(-center.x, -center.y);
+
+  // Rough backing — drawn here (inside the slices' rotation) and sampled to
+  // match the slice rim exactly, so it can't poke past a slice at a divider
+  // valley. Hidden by the colour fills everywhere except the donut centre,
+  // mirroring clean mode's full-disc backing.
+  if (ROUGHNESS.enabled && showBackgroundCircle) {
+    const noStrokeNoRound = strokeWidth === 0 && cornerRadius === 0;
+    ctx.fillStyle = noStrokeNoRound ? '#808080' : wheelBaseColor;
+    ctx.fill(buildRoughDisc(center, radius, layout.startAngles, layout.segmentSizes));
+  }
 
   // Extra outer ring, silhouette-following. With no background circle the
   // outline is the segment union (a "flower" once corners are rounded). A
@@ -621,6 +647,18 @@ export function paintWheel(
 
     ctx.fillStyle = effectiveColor;
     ctx.fill(path);
+
+    // Seal the rough divider seam: stroke the wedge with its own fill colour so
+    // it overlaps each neighbour by ~half the width, covering the anti-aliased
+    // hairline that otherwise lets the background disc bleed through where the
+    // jittered edges run diagonally. (The radial edges are already geometrically
+    // identical between neighbours — this only hides AA, it doesn't move them.)
+    if (ROUGHNESS.enabled && ROUGHNESS.seamSeal > 0) {
+      ctx.strokeStyle = effectiveColor;
+      ctx.lineWidth = ROUGHNESS.seamSeal;
+      ctx.lineJoin = 'round';
+      ctx.stroke(path);
+    }
 
     // Texture — pattern overlay on the fill (under the divider stroke + text).
     if (item.texture) drawSegmentTexture(ctx, path, center.x, center.y, radius, item.texture, textureOverlayColor(effectiveColor));
@@ -708,11 +746,21 @@ export function paintWheel(
     // which is why the artifact vanished there). Outer edge is unchanged.
     const innerEdge = radius;
     const outerEdge = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, (innerEdge + outerEdge) / 2, 0, Math.PI * 2);
     ctx.strokeStyle = wheelBaseColor;
     ctx.lineWidth = outerEdge - innerEdge;
-    ctx.stroke();
+    if (ROUGHNESS.enabled) {
+      // Rotate the rough ring with the slices so its wobble stays concentric.
+      ctx.save();
+      ctx.translate(center.x, center.y);
+      ctx.rotate(rotation);
+      ctx.translate(-center.x, -center.y);
+      ctx.stroke(roughCirclePath(center.x, center.y, (innerEdge + outerEdge) / 2, radius));
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, (innerEdge + outerEdge) / 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // ── Decorative outer dots (carnival-bulb bezel) ──
@@ -793,6 +841,401 @@ export function paintWheel(
   }
 }
 
+// ── Hand-drawn "rough" wheel geometry ───────────────────────────────────────
+// Procedural roughness so the wheel reads hand-drawn rather than geometrically
+// perfect: slice edges (dividers) get SMALL-chunk wobble, the outer silhouette
+// gets LARGER-chunk wobble. All jitter is DETERMINISTIC (seeded by angle), so
+// it's stable frame-to-frame — the wheel is baked once and GPU-rotated, and even
+// a re-bake reproduces the identical wobble (no shimmer/crawl). Shared dividers
+// key off the SAME angle, so neighbouring slices wobble identically (seamless).
+export const ROUGHNESS = {
+  enabled: true,
+  rimAmp: 0.009,  // outer-silhouette amplitude, fraction of radius (LARGE chunks)
+  // Soft-clip on the silhouette: compresses the taller rim peaks while leaving
+  // small wobble near-linear. At this knee it reaches into the MID-RANGE peaks
+  // (not just the very tallest). Symmetric → mean radius unchanged. LOWER = more
+  // peak smoothing (reaches further down the range); raise toward ~3 to disable.
+  rimSoftKnee: 0.8,
+  edgeAmp: 0.0105, // slice-edge amplitude, fraction of radius (SMALL chunks); also scales all grain layers
+  // Adjacent wedges share an identical jittered divider (same angle → same
+  // jitter), but the two fills still anti-alias against the background disc
+  // along that diagonal seam, leaking a sub-pixel hairline of bg ("peak meets
+  // valley" bleed). Sealing each wedge with a thin stroke in its OWN fill
+  // colour overlaps neighbours by ~half this width and covers the seam. CSS px.
+  seamSeal: 1.2,
+  // Per-edge asymmetry. Without these every divider has the SAME amplitude and
+  // SAME wiggle-count (only its phase varies), which reads as too uniform. These
+  // give each edge its own character via low-harmonic envelopes sampled at the
+  // divider angle — and because dividers are irregularly spaced, the result is
+  // lumpy (some edges wobble hard / busy, others nearly straight / loose) rather
+  // than a smooth gradient. 0 = uniform (old look); ~1 = strong spread.
+  edgeAmpVar: 0.8,  // depth of per-edge AMPLITUDE variation (straight ↔ wobbly)
+  edgeDensVar: 0.55, // depth of per-edge DENSITY variation (loose ↔ busy wiggles)
+  // Neighbour decorrelation. Every envelope above is a SLOWLY-varying function of
+  // the divider `angle` (low harmonics), so on a tight wheel two near-adjacent
+  // dividers sit at almost the same angle → almost the same wobble phase → they
+  // bulge in unison, which reads as the whole surface being nudged rather than
+  // each edge being an independent painted stroke. This adds a SECOND source: a
+  // high-harmonic phase (sampled at the divider angle) mixed into the base
+  // wobble, so it swings a lot between close dividers (→ neighbours get their own
+  // stroke shape) while staying integer-harmonic and 2π-periodic (→ shared
+  // dividers, incl. the wrap seam, still match exactly). It only re-phases the
+  // wobble, never its amplitude, so the tuned roughness level is unchanged.
+  // 0 = old correlated look; ~1 = neighbours fully independent; raise for tighter
+  // wheels.
+  edgeDecorr: 1,
+  // Third source — per-edge amplitude decorrelation. `edgeDecorr` above gives each
+  // edge its own wobble PHASE; this gives each its own wobble STRENGTH, so a
+  // phase-shifted family of equally-tall edges becomes one of genuinely
+  // independent strokes (some neighbours wobbly, some calm). Again high integer
+  // harmonics (19, 31, distinct from the phase source's 23/37) for neighbour
+  // decorrelation that stays 2π-periodic, and it MULTIPLIES the base wobble
+  // (centred on 1) so it scatters amplitude without biasing the overall level the
+  // grain/edgeAmp knobs set. At ~1 the per-edge multiplier spans ~[0, 2]; kept
+  // ≥0 (no wobble inversion) for edgeAmpDecorr ≤ 1. 0 = uniform strength.
+  edgeAmpDecorr: 0.5,
+  // Grain: a fine, high-frequency detail layer added ON TOP of the wobble, but
+  // only in some sectors — gated by a per-section envelope (high harmonics →
+  // several scattered patches) so a few edges read sketchy/grainy and the rest
+  // stay clean. Distinct from edgeDensVar, which only stretches the existing
+  // wavelength. 0 = no grain. Amplitude is a multiple of edgeAmp (1 ≈ as strong
+  // as the base wobble), applied only in the gated sectors.
+  edgeGrain: 0.4,
+  // Second, FINER grain layer (t·41 vs layer 1's t·27) with its own gate on
+  // different harmonics, so its patches fall in different sectors — overlapping
+  // grain scales (some edges coarse-grainy, some fine, some both). 0 = off.
+  edgeGrain2: 0.3,
+  // Third, EVEN FINER grain layer (t·83) — micro-grain on top of layers 1 & 2.
+  // Present on EVERY edge, really small and pretty uniform (only a gentle ±15%
+  // variation), so it reads as a fine even texture, not scattered patches.
+  // 0 = off.
+  edgeGrain3: 0.085,
+  // Second micro-grain — same uniform character as grain 3 but a FINER frequency
+  // (t·101) and ~half the intensity, layered on for a richer fine texture. A
+  // different frequency is what makes it add detail rather than just scaling
+  // grain 3. 0 = off.
+  edgeGrain4: 0.09,
+  // Peak softening (compression): the summed edge offset is soft-clipped with
+  // tanh, which leaves SMALL offsets (already-soft edges) almost linear but
+  // squashes LARGE excursions (rough edges / grain spikes) toward this ceiling.
+  // So it softens the rough without touching the calm. LOWER = more softening
+  // (lower ceiling); raise toward ~3 to effectively disable it.
+  edgeSoftKnee: 1,
+  // Narrow-slice smoothing: a divider between thin slices (low %) gets its edge
+  // wobble scaled DOWN toward a straight line, since the same wobble that looks
+  // good on a wide slice looks cramped between two close dividers. This is the
+  // angular width (radians) at/above which an edge keeps full wobble; below it
+  // the edge progressively straightens, reaching ~straight near 0. ~0.11 rad ≈
+  // 1.7% of the wheel. Raise to smooth more slices, lower to smooth only the
+  // very thinnest. (The factor keys off the THINNER adjacent slice, computed at
+  // layout time and passed to both sides, so the shared edge still matches.)
+  edgeSmoothWidth: 0.11,
+  // Micro-grain retention on thin slices. Narrow-slice smoothing (above)
+  // straightens the base wobble + coarse grain on thin slices, and used to flatten
+  // the micro grain (layers 3 & 4) with them, leaving thin slices reading as clean
+  // vector edges. This sets how much of the micro grain is KEPT at the thinnest
+  // (smooth→0): the micro factor lerps from 1 (wide slice, full grain) to this
+  // value (thinnest). 0 = old behaviour (micro killed on thin); ~0.3 = a bit of
+  // texture retained; 1 = micro never reduced; >1 = thin slices grainier than wide.
+  microGrainThinBoost: 0.3,
+};
+
+// Snapshot of the code defaults, captured before any debug-panel mutation, so
+// the panel's "reset" can restore them.
+export const ROUGHNESS_DEFAULTS = { ...ROUGHNESS };
+
+// ── Debug live-tuning ───────────────────────────────────────────────────────
+// Slider metadata for RoughnessDebugPanel (dev only). Numeric ROUGHNESS knobs
+// with sensible ranges; `enabled` is handled as a checkbox in the panel.
+export type RoughnessKey = Exclude<keyof typeof ROUGHNESS, 'enabled'>;
+export const ROUGHNESS_CONTROLS: { key: RoughnessKey; label: string; min: number; max: number; step: number }[] = [
+  { key: 'rimAmp',          label: 'rim amplitude',       min: 0,   max: 0.03, step: 0.0005 },
+  { key: 'rimSoftKnee',     label: 'rim peak soften',     min: 0.3, max: 3,    step: 0.05 },
+  { key: 'edgeAmp',         label: 'edge amplitude',      min: 0,   max: 0.03, step: 0.0005 },
+  { key: 'edgeAmpVar',      label: 'edge amp variation',  min: 0,   max: 1,    step: 0.02 },
+  { key: 'edgeDensVar',     label: 'edge density var',    min: 0,   max: 1,    step: 0.02 },
+  { key: 'edgeDecorr',      label: 'neighbour decorr',    min: 0,   max: 3,    step: 0.05 },
+  { key: 'edgeAmpDecorr',   label: 'amp decorr',          min: 0,   max: 1,    step: 0.02 },
+  { key: 'edgeSoftKnee',    label: 'edge peak soften',    min: 0.3, max: 3,    step: 0.05 },
+  { key: 'edgeSmoothWidth', label: 'narrow-slice smooth', min: 0,   max: 0.6,  step: 0.01 },
+  { key: 'edgeGrain',       label: 'grain 1 (coarse)',    min: 0,   max: 2,    step: 0.05 },
+  { key: 'edgeGrain2',      label: 'grain 2 (fine)',      min: 0,   max: 2,    step: 0.05 },
+  { key: 'edgeGrain3',      label: 'grain 3 (micro)',     min: 0,   max: 0.6,  step: 0.005 },
+  { key: 'edgeGrain4',      label: 'grain 4 (micro 2)',   min: 0,   max: 0.6,  step: 0.005 },
+  { key: 'microGrainThinBoost', label: 'micro grain on thin', min: 0, max: 2, step: 0.05 },
+  { key: 'seamSeal',        label: 'seam seal (px)',      min: 0,   max: 4,    step: 0.1 },
+];
+
+// A debug panel mutates ROUGHNESS in place then calls notifyRoughnessChanged();
+// every mounted SpinningWheel subscribes and re-bakes with the new values.
+const roughnessListeners = new Set<() => void>();
+export function subscribeRoughness(cb: () => void): () => void {
+  roughnessListeners.add(cb);
+  return () => { roughnessListeners.delete(cb); };
+}
+export function notifyRoughnessChanged(): void {
+  roughnessListeners.forEach((cb) => cb());
+}
+
+// Per-wheel seed → phase offsets. Each wheel passes a stable seed (hashed from
+// its config id — see roughSeedFromId) so its wobble differs from other wheels
+// while staying IDENTICAL frame-to-frame (a per-frame random seed would make the
+// edges boil during a spin). The seed only shifts each harmonic's PHASE — never
+// its integer angle multiplier — so the 2π wrap-seam periodicity survives, and
+// one seed drives BOTH the rim and the slice edges, so a wheel's silhouette and
+// its dividers vary together. Channels: 0-2 rim, 3-4 edge wobble, 5-8 edge
+// amplitude/density asymmetry envelopes, 9-11 grain layer 1, 12-14 grain layer
+// 2, 15-17 grain layer 3, 18-19 grain layer 4, 20-21 phase-decorr source, 22-23
+// amplitude-decorr source.
+function computeRoughPhases(seed: number): number[] {
+  const phases: number[] = [];
+  for (let c = 0; c < 24; c++) {
+    // fract(sin(x) · k) → [0,1) → [0, 2π). Distinct per (seed, channel),
+    // deterministic, no Math.random.
+    const x = Math.sin(seed * 127.1 + c * 311.7 + 0.5) * 43758.5453;
+    phases.push((x - Math.floor(x)) * Math.PI * 2);
+  }
+  return phases;
+}
+// Set at the top of each paint from the wheel's seed. Safe as module state
+// because canvas paints run synchronously — one wheel is fully drawn before the
+// next starts, so there's no interleaving that could read a stale value.
+let roughPhases = computeRoughPhases(0);
+
+// Stable [0,1) seed from a wheel's id (or any stable string). FNV-1a: cheap and
+// well-spread, so distinct wheels get distinct wobble. Derive from the id (not
+// the items) so editing/typing a label doesn't reshuffle the silhouette.
+export function roughSeedFromId(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+// Radial wobble for the outer silhouette — periodic over 2π (integer harmonics)
+// so it's seamless where the rim wraps; LOW frequencies → large chunks. Amplitude
+// scales by `ampRadius` — pass the WHEEL radius everywhere so concentric circles
+// wobble in parallel instead of the bigger ones wobbling more. Per-wheel phase
+// from roughPhases (constant in angle → periodicity preserved).
+function rimNoise(angle: number, ampRadius: number): number {
+  const s =
+    Math.sin(angle * 4 + roughPhases[0]) * 0.6 +
+    Math.sin(angle * 7 + roughPhases[1]) * 0.32 +
+    Math.sin(angle * 11 + roughPhases[2]) * 0.08;
+  // Soft-clip: ≈ linear for small |s| (typical wobble untouched), compresses
+  // |s|→1 (the tallest peaks). tanh is monotonic and 2π-periodic in `s`, so the
+  // wrap seam and the slice/backing/ring consistency all hold.
+  const k = ROUGHNESS.rimSoftKnee;
+  return ampRadius * ROUGHNESS.rimAmp * k * Math.tanh(s / k);
+}
+
+// Tangential wobble along a slice edge. `t`: 0 at centre → 1 at rim; tapered to 0
+// at both ends so edges pin to the centre and meet the rim without a gap. Seeded
+// by the divider `angle` so the two slices sharing it wobble identically. HIGHER
+// frequencies in t → small chunks.
+function edgeNoise(angle: number, t: number, ampRadius: number, smooth: number): number {
+  const taper = Math.sin(Math.PI * t);
+  // Per-edge character envelopes, sampled at the divider `angle`. Each is a sum
+  // of two low integer harmonics in [-1, 1]; integer harmonics keep them
+  // 2π-periodic (wrap seam matches) and they depend only on `angle` (shared
+  // dividers agree). `amp`: how wobbly this edge is (some ~straight, some big).
+  // `dens`: its wiggle-count (some loose, some busy). Irregular divider spacing
+  // turns these smooth envelopes into lumpy, asymmetrical per-edge variation.
+  const ampEnv  = Math.sin(angle * 2 + roughPhases[5]) * 0.65 + Math.sin(angle * 5 + roughPhases[6]) * 0.35;
+  const densEnv = Math.sin(angle * 3 + roughPhases[7]) * 0.6  + Math.sin(angle * 7 + roughPhases[8]) * 0.4;
+  // Per-edge amplitude decorrelation (third source): high integer harmonics
+  // (19, 31) so it swings hard between close dividers, MULTIPLYING the base
+  // wobble strength so neighbours differ in how much they wobble (not just how).
+  // Centred on 1; integer harmonics keep it 2π-periodic so shared dividers/the
+  // wrap seam still match. Clamped ≥0 so a big knob can't invert the wobble.
+  const ampDecorr = Math.max(0, 1 + ROUGHNESS.edgeAmpDecorr * (
+    Math.sin(angle * 19 + roughPhases[22]) * 0.6 +
+    Math.sin(angle * 31 + roughPhases[23]) * 0.4
+  ));
+  const amp  = (1 + ROUGHNESS.edgeAmpVar  * ampEnv) * ampDecorr;  // per-edge strength
+  const dens = 1 + ROUGHNESS.edgeDensVar * densEnv;  // ~[1-var, 1+var]
+  // Grain gate: 0 over the sectors where the envelope is negative (clean edges),
+  // rising in scattered positive patches (grainy edges), and peaking slightly
+  // past 1 (weights sum to 1.1) where both harmonics align — those few spots get
+  // a touch more grain than the rest. High harmonics (6, 8) → several small
+  // patches around the wheel, not one big region.
+  const grainGate = Math.max(0, Math.sin(angle * 6 + roughPhases[9]) * 0.6 + Math.sin(angle * 8 + roughPhases[10]) * 0.5);
+  // Layer-2 gate — different harmonics (5, 11) so its grainy patches sit in
+  // different sectors than layer 1's.
+  const grainGate2 = Math.max(0, Math.sin(angle * 5 + roughPhases[12]) * 0.6 + Math.sin(angle * 11 + roughPhases[13]) * 0.5);
+  // Layer-3 amount — NOT a patchy gate: a near-constant level (≈0.85 ± 0.15) so
+  // the micro-grain sits on every edge, pretty uniform — a fine even texture
+  // rather than scattered patches. The per-edge phase (angle·6 in the term
+  // below) still keeps neighbouring edges from looking identical.
+  const grainAmt3 = 0.85 + 0.15 * Math.sin(angle * 5 + roughPhases[15]);
+  // Layer-4 amount — same uniform treatment as layer 3 (different harmonic/phase).
+  const grainAmt4 = 0.85 + 0.15 * Math.sin(angle * 4 + roughPhases[18]);
+  // Neighbour-decorrelation phase (the SECOND source). HIGH integer harmonics
+  // (23, 37) so the value swings a lot between close dividers — two adjacent
+  // edges on a tight wheel land on very different phases and stop bulging in
+  // unison. Integers keep it 2π-periodic, so a shared divider (same angle, both
+  // sides) and the wrap seam still match. Folded into the base wobble's phase
+  // below: it re-shapes each edge's stroke without changing its amplitude.
+  const decorr = ROUGHNESS.edgeDecorr * Math.PI * (
+    Math.sin(angle * 23 + roughPhases[20]) * 0.6 +
+    Math.sin(angle * 37 + roughPhases[21]) * 0.4
+  );
+  // The `angle` multipliers MUST stay integers so this is periodic over 2π: the
+  // wrap-around divider is angle 0 to the first slice but 2π to the last, and
+  // only a 2π-periodic seed makes those two edges wobble identically (interior
+  // dividers share an exact angle, so they match regardless). Was 3.1 / 1.7 —
+  // non-integer — which leaked the bg at that one seam. `dens` scaling the t
+  // frequency is fine: it's a periodic function of angle, and the taper pins
+  // both ends to 0 regardless of frequency. Grain (t·27) is added independent of
+  // `amp`, so even a near-straight edge can carry fine grain in a grainy sector.
+  // Base wobble + coarse grain (layers 1-2): the cramped-looking part that the
+  // narrow-slice smoothing straightens on thin slices.
+  const baseCoarse =
+    amp * (
+      Math.sin(t * 9 * dens + angle * 3 + roughPhases[3] + decorr) * 0.6 +
+      Math.sin(t * 17 * dens + angle * 2 + roughPhases[4] + decorr) * 0.4
+    ) +
+    grainGate * ROUGHNESS.edgeGrain * Math.sin(t * 27 + angle * 4 + roughPhases[11]) +
+    grainGate2 * ROUGHNESS.edgeGrain2 * Math.sin(t * 41 + angle * 5 + roughPhases[14]);
+  // Micro grain (layers 3-4): fine texture, NOT cramped by close dividers, so it
+  // shouldn't be smoothed away as hard as the base wobble. Its factor lerps from 1
+  // (wide) to microGrainThinBoost (thinnest), so thin slices keep some texture.
+  // `smooth` (1 wide → 0 thin) is identical on both sides of a divider, so the
+  // seam still matches.
+  const micro =
+    grainAmt3 * ROUGHNESS.edgeGrain3 * Math.sin(t * 83 + angle * 6 + roughPhases[17]) +
+    grainAmt4 * ROUGHNESS.edgeGrain4 * Math.sin(t * 101 + angle * 7 + roughPhases[19]);
+  // Apply narrow-slice smoothing HERE (not as an outer multiply): base+coarse fade
+  // toward straight, micro fades only toward its retention floor. So `raw` already
+  // bakes in the per-slice thinness — the caller no longer scales the result.
+  const microFactor = smooth + ROUGHNESS.microGrainThinBoost * (1 - smooth);
+  const raw = baseCoarse * smooth + micro * microFactor;
+  // Soft-clip the summed offset: tanh ≈ identity for small |raw| (already-soft
+  // edges pass through), saturating toward ±knee for large |raw| (rough edges /
+  // grain spikes get compressed) — softens the rough without flattening the
+  // calm. Monotonic and a function of `raw` alone, so shared dividers still
+  // match and the 2π periodicity holds; the taper is applied AFTER, so the ends
+  // still pin to the centre and rim.
+  const k = ROUGHNESS.edgeSoftKnee;
+  const softened = k * Math.tanh(raw / k);
+  return ampRadius * ROUGHNESS.edgeAmp * taper * softened;
+}
+
+// Edge-wobble scale for a divider, from the angular width of the THINNER slice
+// it separates: 1 for slices ≥ edgeSmoothWidth (full wobble), smoothstepping to
+// 0 (straight edge) as they get narrow — so close-together dividers don't carry
+// cramped wobble. Computed at layout time and passed to BOTH slices of a divider
+// (see paintWheel), so the shared edge still matches exactly.
+function edgeSmoothFactor(minSweep: number): number {
+  const x = Math.min(1, minSweep / ROUGHNESS.edgeSmoothWidth);
+  return x * x * (3 - 2 * x); // smoothstep
+}
+
+// A closed hand-drawn circle (rim wobble applied) for the background disc and the
+// concentric outer ring, so the silhouette stays consistent with the rough
+// slices. `ampRadius` = the wheel radius (keeps every circle's wobble parallel).
+// Draw it inside the SAME rotation as the slices so it doesn't desync on a spin.
+function roughCirclePath(cx: number, cy: number, baseRadius: number, ampRadius: number): Path2D {
+  const path = new Path2D();
+  const steps = Math.max(96, Math.round(baseRadius * 0.7));
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    const r = baseRadius + rimNoise(a, ampRadius);
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+  }
+  path.closePath();
+  return path;
+}
+
+// Backing disc whose wobbly rim is sampled IDENTICALLY to the slices' outer
+// arcs — same divider angles, same per-span step (mirrors buildRoughSegmentPath's
+// arc loop). A separately sampled rough circle disagreed with the slice rim at
+// divider valleys and poked a white sliver past the slices; this can't, because
+// it traces the exact same points. A star polygon around the centre, so (like the
+// clean full-disc backing) the centre is filled. Draw inside the slices' rotation.
+function buildRoughDisc(
+  center: { x: number; y: number },
+  radius: number,
+  startAngles: number[],
+  segmentSizes: number[],
+): Path2D {
+  const path = new Path2D();
+  let first = true;
+  for (let s = 0; s < startAngles.length; s++) {
+    const startAngle = startAngles[s];
+    const sweep = segmentSizes[s];
+    if (sweep <= 0) continue;
+    const arcSteps = Math.max(8, Math.ceil(sweep / 0.022));
+    for (let i = 0; i <= arcSteps; i++) {
+      const a = startAngle + (sweep * i) / arcSteps;
+      const r = radius + rimNoise(a, radius);
+      const x = center.x + Math.cos(a) * r;
+      const y = center.y + Math.sin(a) * r;
+      if (first) { path.moveTo(x, y); first = false; } else path.lineTo(x, y);
+    }
+  }
+  path.closePath();
+  return path;
+}
+
+// Rough wedge — a sharp, jittered slice (rounded corners dropped: jaggedness and
+// corner rounding fight). Radial edges jitter tangentially (small chunks); the
+// outer arc rides the rim wobble (large chunks). Shared dividers + rim points are
+// computed from the angle alone, so adjacent slices line up exactly.
+function buildRoughSegmentPath(
+  center: { x: number; y: number },
+  radius: number,
+  startAngle: number,
+  endAngle: number,
+  innerCornerStyle: string,
+  centerInset: number,
+  startEdgeSmooth: number,
+  endEdgeSmooth: number,
+): Path2D {
+  const path = new Path2D();
+  const inner = innerCornerStyle === 'none' ? 0 : centerInset;
+  // Enough to resolve the finest edges: grain layer 4 runs at t·101 (~16.1
+  // cycles), so 120 steps keeps ~7.5 samples/cycle and even the micro-grained
+  // edges read smooth, not faceted. (Both slices of a divider use the same
+  // count, so the shared edge still matches exactly.)
+  const EDGE_STEPS = 120;
+  // A point on the radial edge at `angle`, fraction t (inner → rim). The rim
+  // radius itself wobbles so the edge's outer end lands on the rough arc.
+  const edgePoint = (angle: number, t: number, smooth: number) => {
+    const rimR = radius + rimNoise(angle, radius);
+    const r = inner + (rimR - inner) * t;
+    const off = edgeNoise(angle, t, radius, smooth);
+    return {
+      x: center.x + Math.cos(angle) * r - Math.sin(angle) * off,
+      y: center.y + Math.sin(angle) * r + Math.cos(angle) * off,
+    };
+  };
+  // Start edge: centre/inner → rim.
+  for (let i = 0; i <= EDGE_STEPS; i++) {
+    const p = edgePoint(startAngle, i / EDGE_STEPS, startEdgeSmooth);
+    if (i === 0) path.moveTo(p.x, p.y); else path.lineTo(p.x, p.y);
+  }
+  // Outer arc — skip i=0 (the start edge already placed the rim point there).
+  const sweep = endAngle - startAngle;
+  const arcSteps = Math.max(8, Math.ceil(sweep / 0.022));
+  for (let i = 1; i <= arcSteps; i++) {
+    const a = startAngle + (sweep * i) / arcSteps;
+    const r = radius + rimNoise(a, radius);
+    path.lineTo(center.x + Math.cos(a) * r, center.y + Math.sin(a) * r);
+  }
+  // End edge: rim → centre/inner; skip i=EDGE_STEPS (the arc placed the rim point).
+  for (let i = EDGE_STEPS - 1; i >= 0; i--) {
+    const p = edgePoint(endAngle, i / EDGE_STEPS, endEdgeSmooth);
+    path.lineTo(p.x, p.y);
+  }
+  path.closePath();
+  return path;
+}
+
 function buildSegmentPath(
   center: { x: number; y: number },
   radius: number,
@@ -801,8 +1244,13 @@ function buildSegmentPath(
   cornerRadius: number,
   innerCornerStyle: string,
   centerInset: number,
+  startEdgeSmooth = 1,
+  endEdgeSmooth = 1,
 ): Path2D {
   const segmentSize = endAngle - startAngle;
+  if (ROUGHNESS.enabled) {
+    return buildRoughSegmentPath(center, radius, startAngle, endAngle, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth);
+  }
   // Clamp the rounded-corner radius so the two corner arcs at the ends of
   // the wedge never overlap. Without this clamp, when the segment is
   // narrower than 2 * cornerRadius/radius, the outer arc's sweep would
@@ -904,6 +1352,7 @@ export interface WheelThumbnailStyle {
   markerDiameter?: number;                                       // default 60 — % of marker box
   markerPeek?: number;                                           // default 4 — % of diameter
   markerBaseColor?: string;                                      // default white
+  roughSeed?: number;                                            // per-wheel wobble seed (default 0)
 }
 
 export function paintWheelThumbnail(
@@ -919,6 +1368,9 @@ export function paintWheelThumbnail(
   // circle is off, rounded corners, outer stroke), not a plain circle.
   monochrome?: string,
 ): void {
+  // Per-wheel wobble — set before any rough path is built (see paintWheel).
+  if (ROUGHNESS.enabled) roughPhases = computeRoughPhases(style?.roughSeed ?? 0);
+
   const center = { x: width / 2, y: height / 2 };
   const canvasR = Math.min(width, height) / 2;
   // Proportional scale: thumbnail dimension vs the wheel's ideal render size.
@@ -986,13 +1438,18 @@ export function paintWheelThumbnail(
   const thumbPaths: Path2D[] = [];
   const thumbDividers: number[] = []; // segment divider angles (for bezel dots)
   const thumbSweeps: number[] = [];
+  const nThumb = items.length;
+  const sweeps = items.map((it) => (it.weight / totalWeight) * 2 * Math.PI);
   let startAngle = -Math.PI / 2;
-  for (const item of items) {
-    const sweep = (item.weight / totalWeight) * 2 * Math.PI;
+  for (let i = 0; i < nThumb; i++) {
+    const sweep = sweeps[i];
     thumbDividers.push(startAngle);
     thumbSweeps.push(sweep);
+    // Match paintWheel: thin slices (low %) get straighter edges.
+    const startEdgeSmooth = edgeSmoothFactor(Math.min(sweep, sweeps[(i - 1 + nThumb) % nThumb]));
+    const endEdgeSmooth = edgeSmoothFactor(Math.min(sweep, sweeps[(i + 1) % nThumb]));
     thumbPaths.push(buildSegmentPath(center, pieR, startAngle, startAngle + sweep,
-                                     cornerR, wheelInnerStyle, innerInset));
+                                     cornerR, wheelInnerStyle, innerInset, startEdgeSmooth, endEdgeSmooth));
     startAngle += sweep;
   }
 

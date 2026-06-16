@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { getDraft } from '../services/blockService';
 import { getPublishedExperience } from '../services/publishedExperienceService';
 import { recordPlayResult } from '../services/resultService';
-import SpinningWheel, { type SpinningWheelHandle } from '../components/SpinningWheel';
+import SpinningWheel, { type SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
 import { ON_SURFACE, PRIMARY } from '../utils/constants';
 import { withAlpha } from '../utils/colorUtils';
 import { PushDownButton } from '../components/PushDownButton';
@@ -253,6 +253,7 @@ export default function ExperiencePlayScreen({ onUseAsTemplate }: ExperiencePlay
           <SpinningWheel
             ref={wheelRef}
             items={items}
+            roughSeed={roughSeedFromId(cfg.id)}
             size={Math.min(window.innerWidth * 0.9, 600)}
             textSizeMultiplier={cfg.textSize}
             headerTextSizeMultiplier={cfg.headerTextSize}

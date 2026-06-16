@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { WheelItem } from '../models/types';
-import { paintWheelThumbnail, type WheelThumbnailStyle } from './WheelCanvas';
+import { paintWheelThumbnail, roughSeedFromId, type WheelThumbnailStyle } from './WheelCanvas';
 import CustomMarker from './CustomMarker';
 
 // Box size the marker's absolute-px details are tuned for (≈ the live wheel's
@@ -75,7 +75,14 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
-    paintWheelThumbnail(ctx, size, size, items, style);
+    // Per-wheel wobble: default the seed from the items' text so each wheel's
+    // thumbnail differs. Callers holding the wheel id can override via
+    // style.roughSeed to match the live wheel exactly.
+    const seededStyle: WheelThumbnailStyle = {
+      ...style,
+      roughSeed: style?.roughSeed ?? roughSeedFromId(items.map(it => it.text).join('')),
+    };
+    paintWheelThumbnail(ctx, size, size, items, seededStyle);
 
     // Shadow silhouettes — each a faithful copy of the wheel's outline painted
     // a bit LARGER (in its own bigger canvas) in one flat tone, so its fill
@@ -90,7 +97,7 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
       c.width = big * dpr;
       c.height = big * dpr;
       cctx.scale(dpr, dpr);
-      paintWheelThumbnail(cctx, big, big, items, style, SHADOW_FILL);
+      paintWheelThumbnail(cctx, big, big, items, seededStyle, SHADOW_FILL);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, size, styleKey]);
