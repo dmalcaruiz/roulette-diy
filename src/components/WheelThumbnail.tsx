@@ -155,6 +155,8 @@ export default function WheelThumbnail({ items, size = 40, style, debugLabel }: 
           markerDiameter={style?.markerDiameter}
           markerPeek={style?.markerPeek}
           markerBaseColor={style?.markerBaseColor}
+          roughSeed={style?.roughSeed ?? roughSeedFromId(items.map(it => it.text).join(''))}
+          showPin={style?.showPin}
         />
       </div>
     </div>

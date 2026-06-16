@@ -49,6 +49,9 @@ export interface WheelConfig {
   markerDiameter?: number;
   markerPeek?: number;
   markerBaseColor?: string;
+  // Whether the pin graphic (pinbase + pinshadow SVGs) is drawn on the marker.
+  // Defaults to hidden (undefined/false) — only the disc/ring stack shows.
+  showPin?: boolean;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   // 'list'  = textarea, one segment per line (former 'simple').
@@ -77,6 +80,7 @@ export function defaultWheelConfig(overrides?: Partial<WheelConfig>): WheelConfi
     outerStrokeDots: true,
     bezelDotsColorMode: 'default',
     showBackgroundCircle: true,
+    showPin: false,
     innerCornerStyle: 'none',
     centerInset: 50,
     segmentsMode: 'cards',

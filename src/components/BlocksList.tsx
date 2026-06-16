@@ -690,6 +690,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
                 markerDiameter: flowPreviewConfigs[0].markerDiameter,
                 markerPeek: flowPreviewConfigs[0].markerPeek,
                 markerBaseColor: flowPreviewConfigs[0].markerBaseColor,
+                showPin: flowPreviewConfigs[0].showPin,
               }}
             />
           ) : block.type === 'roulette' && block.wheelConfig ? (
@@ -708,6 +709,7 @@ function BlockCard({ block, stats, onTap, onEdit, asFlow, allBlocks }: {
                 markerDiameter: block.wheelConfig.markerDiameter,
                 markerPeek: block.wheelConfig.markerPeek,
                 markerBaseColor: block.wheelConfig.markerBaseColor,
+                showPin: block.wheelConfig.showPin,
               }}
             />
           ) : (

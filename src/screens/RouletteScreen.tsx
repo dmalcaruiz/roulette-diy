@@ -1566,6 +1566,7 @@ export default function RouletteScreen({
               markerDiameter={activeConfig.markerDiameter}
               markerPeek={activeConfig.markerPeek}
               markerBaseColor={activeConfig.markerBaseColor}
+              showPin={activeConfig.showPin}
               tickSound={activeConfig.tickSound}
               resultDialog={activeConfig.resultDialog}
               spinIntensity={spinIntensity}
@@ -1795,6 +1796,7 @@ export default function RouletteScreen({
                               markerDiameter: cfg.markerDiameter,
                               markerPeek: cfg.markerPeek,
                               markerBaseColor: cfg.markerBaseColor,
+                              showPin: cfg.showPin,
                             } : undefined;
                           })()}
                           debugLabel={`tile#${idx}/${sid(step.id)}/curr=${isCurrent}`}
@@ -1833,6 +1835,7 @@ export default function RouletteScreen({
                         markerDiameter: activeConfig.markerDiameter,
                         markerPeek: activeConfig.markerPeek,
                         markerBaseColor: activeConfig.markerBaseColor,
+                        showPin: activeConfig.showPin,
                       }}
                       debugLabel={`solo/${sid(block.id)}`}
                     />

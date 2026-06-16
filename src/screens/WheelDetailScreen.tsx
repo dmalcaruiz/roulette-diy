@@ -159,6 +159,7 @@ export default function WheelDetailScreen() {
           markerDiameter={wheel.wheelConfig?.markerDiameter}
           markerPeek={wheel.wheelConfig?.markerPeek}
           markerBaseColor={wheel.wheelConfig?.markerBaseColor}
+          showPin={wheel.wheelConfig?.showPin}
           tickSound={wheel.wheelConfig?.tickSound}
           resultDialog={wheel.wheelConfig?.resultDialog}
           spinIntensity={0.5}

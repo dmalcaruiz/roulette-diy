@@ -160,9 +160,36 @@ function drawOuterDots(
   // its dots are always ≥~4px once the option is unlocked).
   const dotR = Math.max(0.5, Math.min(bandWidth * 0.34, radius * 0.08) * dotRadiusScale);
   const dot = (a: number, color: string) => {
+    // Ride the hand-drawn rim: offset the dot ring by the same rim wobble the
+    // silhouette uses (rimNoise at this angle), so the bezel band follows the
+    // deformed edge instead of sitting on a perfect circle.
+    const r = dotRing + (ROUGHNESS.enabled ? rimNoise(a, radius) : 0);
+    const ox = cx + Math.cos(a) * r;
+    const oy = cy + Math.sin(a) * r;
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(cx + Math.cos(a) * dotRing, cy + Math.sin(a) * dotRing, dotR, 0, Math.PI * 2);
+    if (ROUGHNESS.enabled) {
+      // Per-dot hash from the angle (+ per-wheel phase) → a little SIZE variation
+      // and a slightly irregular, hand-drawn blob instead of a perfect circle.
+      const hash = (k: number) => {
+        const x = Math.sin(a * k + roughPhases[0]) * 43758.5453;
+        return x - Math.floor(x);
+      };
+      const dr = dotR * (0.925 + 0.15 * hash(91.7));   // ~[0.925, 1.075]× size
+      const w0 = hash(12.9) * Math.PI * 2;
+      const w1 = hash(78.2) * Math.PI * 2;
+      const steps = 10;
+      for (let i = 0; i < steps; i++) {
+        const t = (i / steps) * Math.PI * 2;
+        const wob = 1 + 0.07 * (Math.sin(t * 2 + w0) * 0.6 + Math.sin(t * 3 + w1) * 0.4);
+        const px = ox + Math.cos(t) * dr * wob;
+        const py = oy + Math.sin(t) * dr * wob;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    } else {
+      ctx.arc(ox, oy, dotR, 0, Math.PI * 2);
+    }
     ctx.fill();
   };
   const n = dividerAngles.length;
@@ -825,19 +852,33 @@ export function paintWheel(
 
   // ── Overlay: dark tint + winning segment highlight ──
   if (overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length) {
-    // Always extend past the outermost stroke. Segment outer-arc strokes
-    // extend `strokeWidth/2` past `radius` whether or not the background
-    // circle is on — previously the no-bg-circle branch dropped that
-    // term and the overlay left the outer ring strokes uncovered (visible
-    // as a bright rim on the dimmed win frame). +0.5 is just an AA buffer.
-    const overlayRadius = radius + (strokeWidth > 0 ? strokeWidth / 2 : 0) + outerStrokeWidth + 0.5;
+    // Extend past the outermost stroke's MAX extent. The divider / rim-ring /
+    // outer-ring strokes ride the rim AND swell with the ink variation (up to
+    // 1 + strokeWidthVar), so the tint has to clear that swollen width or the
+    // fattened bits poke out as a bright rim on the dimmed win frame. The rough
+    // disc below adds the rim wobble on top, so this only needs the stroke band.
+    const strokeHalf = strokeWidth > 0 ? strokeWidth / 2 : 0;
+    const inkMax = ROUGHNESS.enabled && ROUGHNESS.strokeWidthVar > 0 ? 1 + ROUGHNESS.strokeWidthVar : 1;
+    const overlayRadius = radius + (strokeHalf + outerStrokeWidth) * inkMax + 1;
 
-    // Dark overlay
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, overlayRadius, 0, Math.PI * 2);
+    // Dark overlay. With roughness on, the rim wobbles past a clean circle, so a
+    // plain arc left the peaks uncovered — fill a rough disc that rides the same
+    // rim wobble (offset out past the stroke band) instead, drawn rotated so it
+    // lines up with the wheel.
     const oc = hexToRgba(overlayColor);
     ctx.fillStyle = `rgba(${oc.r}, ${oc.g}, ${oc.b}, ${overlayOpacity * 0.7})`;
-    ctx.fill();
+    if (ROUGHNESS.enabled) {
+      ctx.save();
+      ctx.translate(center.x, center.y);
+      ctx.rotate(rotation);
+      ctx.translate(-center.x, -center.y);
+      ctx.fill(roughCirclePath(center.x, center.y, overlayRadius, radius));
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, overlayRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Winning segment highlight
     ctx.save();
@@ -963,11 +1004,14 @@ export const ROUGHNESS = {
   // wobble scaled DOWN toward a straight line, since the same wobble that looks
   // good on a wide slice looks cramped between two close dividers. This is the
   // angular width (radians) at/above which an edge keeps full wobble; below it
-  // the edge progressively straightens, reaching ~straight near 0. ~0.11 rad ≈
-  // 1.7% of the wheel. Raise to smooth more slices, lower to smooth only the
-  // very thinnest. (The factor keys off the THINNER adjacent slice, computed at
-  // layout time and passed to both sides, so the shared edge still matches.)
-  edgeSmoothWidth: 0.11,
+  // the edge progressively straightens (smoothstep), reaching ~straight near 0.
+  // The SLOW half of edgeSmoothFactor's two-part ramp: the angular width (rad) by
+  // which a slice reaches FULL wobble. ~0.8 rad ≈ 13% of the wheel. (The fast half
+  // — EDGE_SMOOTH_FAST — lifts the ultra-thins to a baseline so they aren't dead,
+  // and the plateau between keeps the few-% slices calm.) The factor keys off the
+  // THINNER adjacent slice, computed at layout time and passed to both sides, so
+  // the shared edge still matches.
+  edgeSmoothWidth: 0.8,
   // Micro-grain retention on thin slices. Narrow-slice smoothing (above)
   // straightens the base wobble + coarse grain on thin slices, and used to flatten
   // the micro grain (layers 3 & 4) with them, leaving thin slices reading as clean
@@ -1160,9 +1204,18 @@ function edgeNoise(angle: number, t: number, ampRadius: number, smooth: number):
 // 0 (straight edge) as they get narrow — so close-together dividers don't carry
 // cramped wobble. Computed at layout time and passed to BOTH slices of a divider
 // (see paintWheel), so the shared edge still matches exactly.
+// Two-part ramp so the wobble-vs-slice-size curve isn't a single monotone rise
+// (which forced a bad trade: calm the chaotic few-% slices OR keep the ultra-thins
+// and mids alive, never both). A FAST smoothstep (≈0.8% wide) brings the ultra-
+// thin slices up to EDGE_SMOOTH_FLOOR quickly so they aren't dead-straight; a SLOW
+// smoothstep (edgeSmoothWidth, ≈13%) carries the rest up to full. Between them the
+// curve plateaus, so the 2–4.5% slices stay calm (no full-amplitude wobble cramped
+// into a narrow wedge) while ultra-thins and mids both keep life.
+const EDGE_SMOOTH_FAST = 0.05;   // fast-rise width (rad) ≈ 0.8% of the wheel
+const EDGE_SMOOTH_FLOOR = 0.5;   // wobble the fast rise tops out at (the plateau)
 function edgeSmoothFactor(minSweep: number): number {
-  const x = Math.min(1, minSweep / ROUGHNESS.edgeSmoothWidth);
-  return x * x * (3 - 2 * x); // smoothstep
+  const ss = (w: number) => { const x = Math.min(1, minSweep / w); return x * x * (3 - 2 * x); };
+  return EDGE_SMOOTH_FLOOR * ss(EDGE_SMOOTH_FAST) + (1 - EDGE_SMOOTH_FLOOR) * ss(ROUGHNESS.edgeSmoothWidth);
 }
 
 // Per-point divider stroke-width multiplier — the "ink" variation that swells and
@@ -1545,6 +1598,7 @@ export interface WheelThumbnailStyle {
   markerPeek?: number;                                           // default 4 — % of diameter
   markerBaseColor?: string;                                      // default white
   roughSeed?: number;                                            // per-wheel wobble seed (default 0)
+  showPin?: boolean;                                             // draw the pin graphic (default off)
 }
 
 export function paintWheelThumbnail(

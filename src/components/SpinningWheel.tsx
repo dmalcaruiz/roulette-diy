@@ -415,6 +415,8 @@ export interface SpinningWheelProps {
   markerDiameter?: number;
   markerPeek?: number;
   markerBaseColor?: string;
+  // Draw the pin graphic on the marker. Default off (only the disc/ring stack).
+  showPin?: boolean;
   // Tick sound: 'click' = sampled click.mp3 (default); the rest are synthesized
   // voices. The win arpeggio plays regardless of this choice.
   tickSound?: 'click' | 'blip' | 'fire' | 'ding' | 'zap';
@@ -474,6 +476,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     markerDiameter = 60,
     markerPeek = 4,
     markerBaseColor = '#FFFFFF',
+    showPin = false,
     tickSound = 'click',
     spinIntensity = 0.5,
     isRandomIntensity = true,
@@ -1649,6 +1652,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             markerDiameter={markerDiameter}
             markerPeek={markerPeek}
             markerBaseColor={markerBaseColor}
+            roughSeed={roughSeed}
+            showPin={showPin}
           />
         </div>
       </div>

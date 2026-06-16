@@ -50,6 +50,7 @@ export interface EditorState {
   wheelBaseColor: string;
   markerDiameter: number;
   markerPeek: number;
+  showPin: boolean;
   innerCornerStyle: 'none' | 'rounded' | 'circular' | 'straight';
   centerInset: number;
   segmentsMode: 'list' | 'cards';
@@ -273,6 +274,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
     markerDiameter: config?.markerDiameter ?? 60,
     markerPeek: config?.markerPeek ?? 4,
+    showPin: config?.showPin ?? false,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,
     // Migrate the legacy 'simple'/'complex' values from older saved wheels
@@ -326,6 +328,7 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
     markerPeek: state.markerPeek,
     // Marker shares the one base colour — see EditorState.wheelBaseColor.
     markerBaseColor: state.wheelBaseColor,
+    showPin: state.showPin,
     innerCornerStyle: state.innerCornerStyle,
     centerInset: state.centerInset,
     segmentsMode: state.segmentsMode,
@@ -2202,6 +2205,13 @@ export default function WheelEditor({
           onChange={v => patch({ markerDiameter: v })} onChangeEnd={commit} />
         {/* Peek is no longer exposed (locked to its config / default). Colour
             lives in Wheel › Base Color — the marker shares it. */}
+        {/* Pin graphic — off by default; only the disc/ring stack shows. */}
+        <SettingToggleRow
+          icon={<MapPin size={20} />}
+          label="Show Pin"
+          value={state.showPin}
+          onChange={v => set({ ...state, showPin: v })}
+        />
       </StyleSection>
 
       {/* ── Sound — the tick the wheel makes as it passes segments. The win
