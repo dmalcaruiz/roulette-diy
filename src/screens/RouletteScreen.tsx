@@ -2526,7 +2526,7 @@ function PinnedChipBar({
               color={isActive ? ON_SURFACE : SURFACE_ELEVATED}
               borderRadius={26}
               height={38}
-              bottomBorderWidth={4}
+              bottomBorderWidth={0}
               innerStrokeWidth={3}
               style={{ flexShrink: 0, marginBottom: 8 }}
             >
@@ -2575,7 +2575,7 @@ function PinnedChipBar({
           color={SURFACE_ELEVATED}
           borderRadius={50}
           height={42}
-          bottomBorderWidth={4}
+          bottomBorderWidth={0}
           innerStrokeWidth={3}
           style={{ width: 38, marginBottom: 6 }}
         >
@@ -2599,7 +2599,7 @@ function PinnedChipBar({
           color={SURFACE_ELEVATED}
           borderRadius={50}
           height={42}
-          bottomBorderWidth={4}
+          bottomBorderWidth={0}
           innerStrokeWidth={3}
           style={{ width: 38, marginBottom: 6 }}
         >
@@ -2623,7 +2623,7 @@ function PinnedChipBar({
           color={PRIMARY}
           borderRadius={50}
           height={46}
-          bottomBorderWidth={4}
+          bottomBorderWidth={0}
           innerStrokeWidth={3}
           style={{ width: 42, marginLeft: 8, marginBottom: 6 }}
         >

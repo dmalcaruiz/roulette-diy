@@ -29,7 +29,9 @@
       "Bash(node audit-drag.mjs 5174)",
       "Bash(taskkill //F //IM node.exe)",
       "Bash(npm remove *)",
-      "Bash(awk 'NR>=1230 && NR<=1933' src/components/WheelEditor.tsx)"
+      "Bash(awk 'NR>=1230 && NR<=1933' src/components/WheelEditor.tsx)",
+      "Bash(awk 'NR>=2390 && NR<=2560' src/screens/RouletteScreen.tsx)",
+      "Bash(awk 'NR>=2515 && NR<=2700' src/screens/RouletteScreen.tsx)"
     ]
   }
 }
