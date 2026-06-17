@@ -25,6 +25,10 @@ interface SnappingSheetProps {
    *  first time a locked move arrives. */
   isDragLocked?: () => boolean;
   children: React.ReactNode;
+  /** Optional bar pinned to the BOTTOM of the sheet, overlaid on top of the
+   *  scrollable content (absolute — doesn't affect sheet height or the scroll
+   *  area). Give the scrollable content enough bottom padding to clear it. */
+  footer?: React.ReactNode;
   visible: boolean;
   /** Optional ref exposing the sheet's outer container — used by
    *  external debug code that needs to read live bounding rects. */
@@ -69,6 +73,7 @@ export default function SnappingSheet({
   onHeightChange,
   isDragLocked,
   children,
+  footer,
   visible,
   outerRef,
   keepAlive = false,
@@ -566,6 +571,15 @@ export default function SnappingSheet({
         >
           {children}
         </div>
+
+        {/* Footer bar — pinned to the sheet's bottom edge, overlaying the scroll
+            content (absolute, so it doesn't change the sheet height or shrink the
+            scroll area). The content padding-bottom keeps the last items clear. */}
+        {footer && (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 2 }}>
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -450,6 +450,8 @@ export interface SpinningWheelProps {
 export interface SpinningWheelHandle {
   spin: () => void;
   reset: () => void;
+  /** Rotate so segment `idx`'s centre lands under the marker (top centre). */
+  focusSegment: (idx: number) => void;
   isSpinning: boolean;
 }
 
@@ -1177,6 +1179,46 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     animRef.current = requestAnimationFrame(animate);
   }, [paint]);
 
+  // Rotate so segment `idx`'s centre lands under the marker (top centre).
+  // Animates like reset() — rAF + paint() to the shortest-path target angle.
+  const focusSegment = useCallback((idx: number) => {
+    if (idx < 0 || idx >= items.length) return;
+    cancelAnimationFrame(animRef.current);
+    cancelAnimationFrame(headerRafRef.current);
+    if (gpuSpinActiveRef.current) { gpuSpinActiveRef.current = false; paint(); }
+    for (const s of scheduledSourcesRef.current) { try { s.stop(); } catch {} }
+    scheduledSourcesRef.current = [];
+    isSpinningRef.current = false;
+
+    const totalWeight = items.reduce((s, it) => s + it.weight, 0);
+    if (totalWeight <= 0) return;
+    let acc = 0;
+    for (let i = 0; i < idx; i++) acc += items[i].weight;
+    const segCenter = ((acc + items[idx].weight / 2) / totalWeight) * 2 * Math.PI;
+    // The marker reads the wheel-local angle (3π/2 − rotation) mod 2π (see
+    // getWinningIndex). Solve rotation so that equals the segment's centre.
+    const targetMod = (((3 * Math.PI / 2 - segCenter) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const current = rotationRef.current;
+    const currentMod = ((current % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    let delta = targetMod - currentMod;
+    if (delta > Math.PI) delta -= 2 * Math.PI;       // shortest direction
+    if (delta < -Math.PI) delta += 2 * Math.PI;
+    if (Math.abs(delta) < 0.0005) { updateCurrentSegment(); return; }
+
+    const startTime = performance.now();
+    const duration = 450;
+    const startRot = current;
+    const endRot = current + delta;
+    const animate = (now: number) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      rotationRef.current = startRot + (endRot - startRot) * easeInOut(t);
+      paint();
+      updateCurrentSegment();
+      if (t < 1) animRef.current = requestAnimationFrame(animate);
+    };
+    animRef.current = requestAnimationFrame(animate);
+  }, [items, paint, updateCurrentSegment]);
+
   // ── Drag-to-spin physics ────────────────────────────────────────────
   // Tap on the wheel still calls the deterministic spin() above (with
   // pre-scheduled audio + a guaranteed weighted-random winner). A drag
@@ -1209,13 +1251,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // a plain tap (no drag) then just STOPS it (like a drag does) instead of
   // launching a fresh spin. A tap on a LIVE spin still restarts the spin.
   const tappedToStopRef = useRef(false);
-  // Long-press detection on the wheel canvas. Timer fires at LONG_PRESS_MS
-  // if the pointer hasn't moved past the tap-vs-drag threshold; on fire,
-  // we compute which segment the tap landed on and call onSegmentLongPress.
-  // didLongPressRef tells pointerUp to skip the spin-on-release path.
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const didLongPressRef = useRef(false);
-  const LONG_PRESS_MS = 500;
+  // A stationary tap on a wedge fires onSegmentLongPress (the segment action) and
+  // no longer spins; spinning is via the SPIN button (or a flick/drag). In play
+  // mode — where no segment action is wired — a tap still spins. See
+  // handlePointerUp. (Kept the prop name for compatibility with callers.)
 
   // Compute which segment index a screen-coords tap landed on. Inverts the
   // canvas rotation so the angle is in segment-local coords, then walks the
@@ -1297,21 +1336,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       lastRenderedSegment: segmentAtRotation(rotationRef.current),
       carriedVelocity: carried,
     };
-    // Long-press timer — fires if pointer hasn't moved past the
-    // tap-vs-drag threshold by LONG_PRESS_MS. handlePointerMove clears
-    // it when crossedThreshold flips true. Skip if no callback wired.
-    didLongPressRef.current = false;
-    if (onSegmentLongPress) {
-      const tapX = e.clientX;
-      const tapY = e.clientY;
-      longPressTimerRef.current = setTimeout(() => {
-        longPressTimerRef.current = null;
-        didLongPressRef.current = true;
-        const idx = segmentIndexAtPos(tapX, tapY, cx, cy);
-        onSegmentLongPress(idx);
-      }, LONG_PRESS_MS);
-    }
-  }, [cancelInFlight, segmentAtRotation, onSegmentLongPress, segmentIndexAtPos]);
+  }, [cancelInFlight, segmentAtRotation]);
 
   // Live drag: re-paint the wheel BITMAP on each pointermove (rotation baked
   // into the canvas, element transform left at identity). This is what rendered
@@ -1327,11 +1352,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const dy = e.clientY - drag.startClientPos.y;
       if (Math.hypot(dx, dy) < 6) return; // still might be a tap
       drag.crossedThreshold = true;
-      // Movement past threshold = not a long-press; cancel the timer.
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
     }
 
     // Pointer angle around the wheel centre; the delta since last event is how
@@ -1365,30 +1385,23 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     dragRef.current = null;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
 
-    // Clear pending long-press timer (still pending = release happened
-    // before LONG_PRESS_MS elapsed → was a normal tap, not a long-press).
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    // If the long-press already fired, the segment sheet is opening —
-    // don't ALSO trigger a spin. Consume the flag and bail.
-    if (didLongPressRef.current) {
-      didLongPressRef.current = false;
-      return;
-    }
-
     // The header was written straight to the DOM during the drag; sync React
     // state to it now so later renders keep the correct text.
     if (drag.crossedThreshold) setCurrentSegment(lastRenderedSegmentRef.current);
 
     if (!drag.crossedThreshold) {
       // A tap that interrupted the END animation just stops it (already
-      // cancelled on pointerdown) — don't launch a fresh spin.
+      // cancelled on pointerdown) — don't do anything else.
       if (tappedToStopRef.current) return;
-      // Stationary press → treat as tap → use the existing deterministic
-      // spin path (with pre-scheduled audio and weighted-random winner).
-      spin();
+      if (onSegmentLongPress) {
+        // Stationary tap → open the tapped wedge's segment action (it no longer
+        // spins; spinning is via the SPIN button or a flick).
+        const idx = segmentIndexAtPos(drag.startClientPos.x, drag.startClientPos.y, drag.centerScreen.x, drag.centerScreen.y);
+        onSegmentLongPress(idx);
+      } else {
+        // No segment action wired (play mode) → a tap still spins.
+        spin();
+      }
       return;
     }
 
@@ -1518,7 +1531,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       }
     };
     headerRafRef.current = requestAnimationFrame(decayTick);
-  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay]);
+  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay, onSegmentLongPress, segmentIndexAtPos]);
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
@@ -1535,8 +1548,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   useImperativeHandle(ref, () => ({
     spin,
     reset,
+    focusSegment,
     get isSpinning() { return isSpinningRef.current; },
-  }), [spin, reset]);
+  }), [spin, reset, focusSegment]);
 
   // Cleanup animations + audio on unmount — cancels both the spin/decay
   // slot AND the win-overlay slot, plus the hold-timer between fade-in

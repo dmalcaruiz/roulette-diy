@@ -133,7 +133,7 @@ export default function RouletteScreen({
   const [isRandomIntensity, setIsRandomIntensity] = useState(true);
   const [showWinAnimation, setShowWinAnimation] = useState(true);
   const [showSegmentHeader, setShowSegmentHeader] = useState(false);
-  const [showSpinButton, setShowSpinButton] = useState(false);
+  const [showSpinButton, setShowSpinButton] = useState(true);
   // When the X is pressed we set this to true to play the slide-out-down
   // animation before actually navigating. The screen unmounts after the
   // animation finishes so the user sees the editor slide off the bottom.
@@ -154,6 +154,10 @@ export default function RouletteScreen({
   // long-press on the wheel canvas; consumed by WheelEditor's
   // scrollToSegmentIndex effect (which clears it via onConsumed).
   const [pendingScrollSegment, setPendingScrollSegment] = useState<number | null>(null);
+  // The segment the editor is currently focused on (last tapped). Used to skip a
+  // redundant scroll/spin when the same segment is tapped again while the sheet is
+  // already open. Reset when the sheet closes so a fresh open re-focuses.
+  const lastTappedSegmentRef = useRef<number | null>(null);
   // Set for one frame on a close — toggles the SnappingSheet's height transition
   // off so the sheet snaps shut instantly. rAF resets it the next frame.
   const [skipSheetOpenAnim, setSkipSheetOpenAnim] = useState(false);
@@ -184,6 +188,7 @@ export default function RouletteScreen({
     setSheetOpen(false);
     setSheetSnapTargetH(0);
     setSheetHeight(0);
+    lastTappedSegmentRef.current = null;
   }, []);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
@@ -1138,10 +1143,11 @@ export default function RouletteScreen({
 
   // Dynamic wheel sizing — the wheel + sheet area is a flex column:
   //   child1 (flex:1): app bar + wheel + red container (red grows with sheet)
-  //   child2 (flex-shrink:0, 48px): chip bar
+  // The chip bar is no longer a screen-bottom child — it's overlaid at the bottom
+  // of the edit sheet — so it reserves no screen space (CHIP_H = 0).
   // Red container absorbs sheet height so the wheel shrinks in lockstep.
   const RED_BASE = 136;   // red container minimum (preview row + padding)
-  const CHIP_H = 56;      // pinned chip bar
+  const CHIP_H = 0;       // chip bar moved INSIDE the sheet (no screen reserve)
   const SPIN_H = 66;      // spin button (54) + margin (12)
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
@@ -1173,7 +1179,28 @@ export default function RouletteScreen({
   // via `onSnapTargetChange` at the exact moment its own snap state
   // flips. During a finger drag we switch to imperative mode (no
   // transition) so the wheel tracks the pointer 1:1.
-  const upperSnapH = screenHeight - 105; // matches SnappingSheet's snapPositions[2]
+  const upperSnapH = screenHeight - 105; // matches SnappingSheet's top snap
+  // New default-open snap: a height where the sheet's top edge bisects the wheel.
+  // The wheel freezes at midSnap, so at any snap ≥ midSnap its centre is fixed —
+  // we measure it once the wheel settles and set the snap to (screenHeight −
+  // wheelCentreY). Starts at an estimate, then self-corrects (converges in one
+  // step since the frozen wheel's centre doesn't depend on the exact snap height).
+  const [wheelMidSnap, setWheelMidSnap] = useState(() => Math.round((screenHeight || 800) * 0.62));
+  useEffect(() => {
+    if (!isMobile || isPlayMode) return;
+    if (sheetSnapTargetH < midSnap) return; // wheel only frozen/stable at ≥ mid
+    const id = setTimeout(() => {                // measure after the ~280ms transition
+      const el = wheelOuterRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.height === 0) return;
+      const centreY = rect.top + rect.height / 2;
+      const snap = Math.round(screenHeight - centreY);
+      const clamped = Math.max(midSnap + 8, Math.min(upperSnapH - 8, snap));
+      setWheelMidSnap(prev => (Math.abs(prev - clamped) > 2 ? clamped : prev));
+    }, 320);
+    return () => clearTimeout(id);
+  }, [isMobile, isPlayMode, sheetSnapTargetH, screenHeight, midSnap, upperSnapH, showSegmentHeader]);
   // Solve wheel-state at any sheetHeight `h` (closed/midSnap/upper) — same
   // algebra as above but parameterised. Used to precompute the three
   // CSS-transition targets.
@@ -1579,11 +1606,17 @@ export default function RouletteScreen({
               headerCanvasGap={showSpinButton && showSegmentHeader ? 28 : 16}
               headerTransition={wheelTransitionCss}
               onSegmentLongPress={idx => {
-                // Open the segments sheet and queue a scroll to the
-                // tapped segment. WheelEditor's effect picks up the
-                // index, scrolls there, and clears the pending state.
+                // Tapping the SAME segment again (already focused, sheet open) is
+                // a no-op — don't re-scroll the list or re-spin the wheel.
+                if (sheetOpen && lastTappedSegmentRef.current === idx) return;
+                lastTappedSegmentRef.current = idx;
+                // Open the segments sheet and queue a scroll to the tapped
+                // segment. WheelEditor's effect picks up the index, scrolls
+                // there, and clears the pending state.
                 setPendingScrollSegment(idx);
                 openSheetTo('segments');
+                // Spin the wheel so the tapped segment lands at top centre.
+                wheelRef.current?.focusSegment(idx);
               }}
             />
             </div>
@@ -1935,33 +1968,31 @@ export default function RouletteScreen({
 
           </div>
 
-        {/* Stack child 2 — pinned chip bar. Always visible, never moves.
-            The sheet (bottomOffset: 48) snaps to its top edge. */}
-        {isMobile && !isPlayMode && (
-          <PinnedChipBar
-            activeTab={sheetOpen ? currentSection : null}
-            onChange={(key) => { if (sheetOpen && currentSection === key) closeSheet(); else openSheetTo(key); }}
-            canUndo={editorHistory.canUndo || opCanUndo}
-            canRedo={editorHistory.canRedo || opCanRedo}
-            onUndo={unifiedUndo}
-            onRedo={unifiedRedo}
-            onPlay={() => setIsPlayMode(true)}
-            innerRef={chipBarDbgRef}
-          />
-        )}
-
-        {/* Unified snapping sheet — overlays the red container area. The
-            chip bar sits beneath, so bottomOffset: 48 keeps the sheet from
-            covering it. */}
+        {/* Unified snapping sheet — extends to the screen bottom. The chip bar is
+            now overlaid at the sheet's own bottom edge (see `footer` below), so
+            no bottomOffset is reserved for it. */}
         {isMobile && (
           <SnappingSheet
-            bottomOffset={56}
+            bottomOffset={0}
+            footer={!isPlayMode ? (
+              <PinnedChipBar
+                activeTab={sheetOpen ? currentSection : null}
+                onChange={(key) => { if (sheetOpen && currentSection === key) closeSheet(); else openSheetTo(key); }}
+                canUndo={editorHistory.canUndo || opCanUndo}
+                canRedo={editorHistory.canRedo || opCanRedo}
+                onUndo={unifiedUndo}
+                onRedo={unifiedRedo}
+                onPlay={() => setIsPlayMode(true)}
+                innerRef={chipBarDbgRef}
+              />
+            ) : undefined}
             visible={sheetOpen}
-            snapPositions={[0, isMobile ? 380 : 400, screenHeight - 105]}
-            initialSnap={1}
+            snapPositions={[0, midSnap, wheelMidSnap, upperSnapH]}
+            initialSnap={2}
             onCollapsed={() => {
               setSheetOpen(false);
               setSheetHeight(0);
+              lastTappedSegmentRef.current = null;
             }}
             onHeightChange={handleSheetHeightChange}
             isDragLocked={isSheetDragLocked}
@@ -2000,7 +2031,7 @@ export default function RouletteScreen({
                 scroll container — the scroll-spy's root discovery then stops HERE
                 instead of the SnappingSheet scroller, so chip autoslide silently
                 does nothing. `clip` clips horizontally without that side effect. */}
-            <div style={{ overflowX: 'clip' }}>
+            <div style={{ overflowX: 'clip', paddingBottom: 56 }}>
               <section ref={spy.register('templates')}>
                 <TemplatesPane
                   name={editorHistory.state.name}
