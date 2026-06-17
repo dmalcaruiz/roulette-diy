@@ -1228,7 +1228,7 @@ export default function WheelEditor({
       // halo extends past the SwipeableActionCell entirely.
       <div
         key={segment.id}
-        style={{ paddingBottom: 5 }}
+        style={{ paddingBottom: 0 }}
         // Desktop right-click → segment actions sheet (mirrors the preview
         // tiles). Only while collapsed, so right-clicking an expanded card's
         // text field still gives the native copy/paste menu during editing.
@@ -1239,11 +1239,11 @@ export default function WheelEditor({
       >
         {/* 3D Card */}
         <div style={{ position: 'relative' }}>
-          {/* Bottom face — solid color only; the halo ring lives on the
-              SegmentRow's outer boxShadow. */}
+          {/* Bottom face — flush behind the top face (peek removed), so the card
+              reads flat. Kept for colour identity but no longer hangs below. */}
           <div style={{
             position: 'absolute',
-            left: 0, right: 0, top: 5, bottom: -5,
+            left: 0, right: 0, top: 0, bottom: 0,
             borderRadius: 21,
             backgroundColor: bottomColor,
           }} />
@@ -1277,8 +1277,8 @@ export default function WheelEditor({
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                padding: '8px 0',
-                minHeight: 58,
+                padding: '4px 0',
+                minHeight: 44,
                 cursor: 'pointer',
               }}
             >
@@ -1313,66 +1313,35 @@ export default function WheelEditor({
               </div>
               <div
                 style={{ flex: 1 }}
-                onClick={isExpanded ? (e) => e.stopPropagation() : (e) => {
-                  // Tap-on-text while collapsed: the click bubbles to the
-                  // parent (which expands the card), and we focus the input
-                  // HERE, synchronously, inside the click handler — so it
-                  // lands within the tap's user-activation window. A deferred
-                  // (rAF) focus runs outside that window, so the mobile
-                  // keyboard never opens and it reads as "not focused". The
-                  // field is readOnly while collapsed, so clear that
-                  // imperatively first (else focus won't summon the keyboard);
-                  // React keeps readOnly=false once the expand commits.
-                  const input = (e.currentTarget as HTMLDivElement).querySelector('input');
-                  if (!input) return;
-                  // Only focus+select when the tap lands on the written text,
-                  // not the blank space after it. (Empty/placeholder text →
-                  // always focus, since there's no text to aim at.) Either
-                  // way the card still expands via the bubbled parent click.
-                  const text = segment.text;
-                  if (text.trim() !== '') {
-                    const rect = input.getBoundingClientRect();
-                    // 12 = input's left padding (see style below).
-                    const textEndX = rect.left + 12
-                      + measureTextWidth(text, '600 17px Inter, -apple-system, sans-serif');
-                    if (e.clientX > textEndX + 4) return; // tapped blank space
-                  }
-                  input.readOnly = false;
-                  input.focus();
-                  input.select();
-                }}
-                onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
+                // The text field behaves identically open or closed: tapping it
+                // edits inline (native focus + keyboard), never toggles expand —
+                // so swallow the click/pointer here in both states.
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               >
-                {/* Single text element, swaps modes — closed: transparent
-                    bg/border, parent onClick handles tap-to-expand;
-                    open: visible field bg/border, dark editable text.
-                    Position + font stay identical between modes so the
-                    text doesn't shift when the field appears, only the
-                    bounds + bg fade in. */}
+                {/* Always an active, visible field — same in the closed card as
+                    the open one. */}
                 <input
                   type="text"
                   value={segment.text}
                   onChange={e => patchSegment(index, { text: e.target.value })}
-                  onBlur={isExpanded ? commit : undefined}
+                  onBlur={commit}
                   placeholder="Segment name"
-                  readOnly={!isExpanded}
-                  tabIndex={isExpanded ? 0 : -1}
                   style={{
                     display: 'block',
                     boxSizing: 'border-box',
                     width: '100%',
-                    border: `2.5px solid ${isExpanded ? oklchShadow('#F8F8F9', 0.06) : 'transparent'}`,
+                    border: 'none',
                     borderRadius: 14,
                     outline: 'none',
-                    backgroundColor: isExpanded ? '#F8F8F9' : 'transparent',
+                    backgroundColor: '#F8F8F9',
                     padding: '10px 12px',
                     fontSize: 17,
                     fontWeight: 600,
                     fontFamily: 'inherit',
-                    color: isExpanded ? '#1E1E2C' : textColor,
-                    // Closed = non-interactive; parent's onClick toggles expand.
-                    pointerEvents: isExpanded ? 'auto' : 'none',
-                    cursor: isExpanded ? 'text' : 'pointer',
+                    color: '#1E1E2C',
+                    pointerEvents: 'auto',
+                    cursor: 'text',
                     minWidth: 0,
                   }}
                 />
@@ -1938,7 +1907,7 @@ export default function WheelEditor({
       <SwipeableActionCell
         key={segment.id}
         disabled={grabbedIndex === index}
-        bottomPeek={5}
+        bottomPeek={0}
         onOffsetChange={(offset, dragging) => {
           const el = haloElsRef.current.get(segment.id);
           if (!el) return;

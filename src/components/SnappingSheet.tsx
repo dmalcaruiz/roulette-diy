@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { SURFACE } from '../utils/constants';
-import { oklchShadow, oklchHighlight } from '../utils/colorUtils';
 
 interface SnappingSheetProps {
   /** Snap positions in px from bottom of viewport, ascending order */
@@ -194,37 +193,6 @@ export default function SnappingSheet({
     onHeightChangeRef.current?.(visible ? (snapPositions[initialSnap] ?? 0) : 0, true);
   }, [visible, disableHeightTransition, initialSnap, snapPositions]);
 
-  // Solapa stagger — when the sheet flips visible, delay 90ms then
-  // slide the close-tab up into view. Short delay + tight animation
-  // keeps it feeling like a single coordinated reveal rather than a
-  // distracting second beat. When the sheet hides, the tab hides
-  // instantly (no exit animation, since the sheet's height collapse
-  // already removes the tab from view by carrying it down).
-  const [solapaShown, setSolapaShown] = useState(false);
-  // True for the one frame when the X-close fires — suppresses the
-  // height transition so the sheet collapses instantly. Reset on the
-  // next animation frame so subsequent opens/drags animate normally.
-  const [instantClose, setInstantClose] = useState(false);
-  useEffect(() => {
-    if (visible) {
-      const t = setTimeout(() => setSolapaShown(true), 90);
-      return () => clearTimeout(t);
-    } else {
-      setSolapaShown(false);
-    }
-  }, [visible]);
-
-  // 100ms debounce on the combined show/hide condition (visibility +
-  // snap position) — gives the solapa a small lag relative to snap
-  // transitions so it doesn't fight the sheet's own slide animation
-  // when the user is moving between snaps quickly.
-  const shouldShowSolapa = solapaShown && currentSnap !== snapPositions.length - 1;
-  const [shouldShowSolapaDelayed, setShouldShowSolapaDelayed] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setShouldShowSolapaDelayed(shouldShowSolapa), 50);
-    return () => clearTimeout(t);
-  }, [shouldShowSolapa]);
-
   // Keep mounted while a close animation runs so the height transition can
   // play out instead of unmounting the sheet immediately when visible flips.
   const [keepMounted, setKeepMounted] = useState(false);
@@ -397,124 +365,10 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: (dragging || isScrollDraggingRef.current || instantClose || disableHeightTransition) ? 'none' : 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
-        // overflow:visible so the close-button solapa can peek ABOVE
-        // the sheet's top edge without being clipped.
+        transition: (dragging || isScrollDraggingRef.current || disableHeightTransition) ? 'none' : 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
         overflow: 'visible',
       }}
     >
-      {/* Close-button solapa — rendered BEFORE the sheet container so
-          the sheet's opaque bg paints over its lower half (DOM order =
-          stacking order at the same z level). The upper portion peeks
-          above the sheet's rounded top edge, on the right side. Tapping
-          snaps to 0 (fires onCollapsed). */}
-      <button
-        // The X doubles as a grab point: the handle's drag handlers move the
-        // sheet when you drag from it, and onClick only closes on a clean tap
-        // (didDragRef guards against a drag-release also firing close).
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onClick={() => {
-          if (didDragRef.current) { didDragRef.current = false; return; }
-          // X-press = instant close, no animation. Flip the instantClose
-          // flag and the solapa state in the same batch as snapToNearest,
-          // then rAF-reset instantClose so subsequent opens/drags animate
-          // normally again. Fire onHeightChange(0) synchronously too —
-          // RouletteScreen's imperative handler resets the wheel scale /
-          // marginBottom right now instead of waiting for the rAF tracker
-          // to poll the new offsetHeight on the next frame.
-          setSolapaShown(false);
-          setInstantClose(true);
-          // Tell the parent's snap-target listener that this snap is
-          // instant (no transition) — flag is consumed by the useLayout-
-          // Effect that fires onSnapTargetChange when currentSnap below
-          // updates to 0.
-          pendingInstantSnapRef.current = true;
-          onHeightChangeRef.current?.(0, true);
-          snapToNearest(0);
-          requestAnimationFrame(() => setInstantClose(false));
-        }}
-        aria-label="Close"
-        style={{
-          position: 'absolute',
-          // Height = the visible peek only. Positioned so the bottom
-          // sits exactly at the sheet's top edge (y=0), no hidden
-          // overlap — so a manual drag-down can never expose any
-          // extra solapa underneath.
-          top: -36,
-          right: 20,
-          width: 40,
-          height: 36,
-          // Drag from the X must not get hijacked by the browser as a scroll/
-          // gesture — same as the grab handle.
-          touchAction: 'none',
-          borderRadius: '999px 999px 0 0',
-          backgroundColor: oklchShadow(SURFACE, 0.02),
-          // 3px inner stroke, lighter than the sheet bg (OKLCh-highlight
-          // of SURFACE) so the tab edge reads as a raised pill on the
-          // darker bg below. Bottom stroke removed so the tab visually
-          // fuses with the sheet's top edge.
-          borderTop: `3px solid ${oklchHighlight(SURFACE, 0.02)}`,
-          borderLeft: `3px solid ${oklchHighlight(SURFACE, 0.02)}`,
-          borderRight: `3px solid ${oklchHighlight(SURFACE, 0.02)}`,
-          padding: 0,
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'center',
-          paddingTop: 9,
-          cursor: 'pointer',
-          // Stagger entrance — start hidden below the sheet's top edge
-          // (translateY pushes the whole pill down into the sheet), then
-          // slide up to its natural position after the 220ms delay set
-          // in the effect above. The sheet's own open animation runs
-          // first, then the tab pops up over it for a layered reveal.
-          // Hidden state pushes the tab 120px down — enough that it
-          // ends up below the chip bar (off-screen) even after the
-          // sheet's height collapses to 0 and the outer container's
-          // top drops onto the chip bar's level. translateY(50) was
-          // only enough to land it INSIDE the chip bar area, where it
-          // lingered visibly during the 0.45s height transition.
-          // At the upper snap the solapa also hides — the same
-          // translateY(120) slide-down — so it doesn't clutter the
-          // fully-expanded sheet's header area.
-          // When solapaShown is false (sheet is closing / collapsed),
-          // jump to the hidden translateY directly — bypass the debounced
-          // shouldShowSolapaDelayed so the solapa snaps off-screen
-          // instead of lingering visible during the 50ms debounce.
-          transform: (solapaShown && shouldShowSolapaDelayed)
-            ? 'translateY(0)'
-            : 'translateY(120px)',
-          // Only animate while solapaShown is true (i.e. the sheet is
-          // open and not closing). That way:
-          //  - Reveal animates (ease-out, 0.35s).
-          //  - Hide due to reaching the upper snap animates (ease-in-out,
-          //    0.5s) — the only case where a slow deliberate exit reads.
-          //  - Hide due to drag-down / tap-to-close snaps off instantly
-          //    (transition:none), matching the sheet's own collapse
-          //    rather than dragging out a separate fade-away.
-          transition: solapaShown
-            ? (shouldShowSolapaDelayed
-                ? 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)'
-                : 'transform 0.5s cubic-bezier(0.4, 0, 0.6, 1)')
-            : 'none',
-        }}
-      >
-        <div style={{
-          width: 22,
-          height: 22,
-          backgroundColor: '#FFFFFF',
-          WebkitMaskImage: 'url(/images/close.svg)',
-          WebkitMaskRepeat: 'no-repeat',
-          WebkitMaskSize: 'contain',
-          WebkitMaskPosition: 'center',
-          maskImage: 'url(/images/close.svg)',
-          maskRepeat: 'no-repeat',
-          maskSize: 'contain',
-          maskPosition: 'center',
-        }} />
-      </button>
       {/* Sheet container — 3px black-20% inner stroke on top + sides
           only; no bottom border so the sheet blends straight into the
           edge of the viewport / chip bar beneath. */}
