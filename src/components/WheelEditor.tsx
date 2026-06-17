@@ -273,7 +273,7 @@ export function buildInitialState(config?: WheelConfig | null, wheelId?: string)
     showBackgroundCircle: config?.showBackgroundCircle ?? true,
     wheelBaseColor: config?.wheelBaseColor ?? '#FFFFFF',
     markerDiameter: config?.markerDiameter ?? 60,
-    markerPeek: config?.markerPeek ?? 4,
+    markerPeek: config?.markerPeek ?? 0,
     showPin: config?.showPin ?? false,
     innerCornerStyle: config?.innerCornerStyle ?? 'none',
     centerInset: config?.centerInset ?? 50,

@@ -74,7 +74,7 @@ interface CustomMarkerProps {
 export default function CustomMarker({
   size,
   markerDiameter = 60,
-  markerPeek = 4,
+  markerPeek = 0,
   markerBaseColor = '#FFFFFF',
   roughSeed = 0,
   showPin = false,
