@@ -28,6 +28,10 @@ interface SnappingSheetProps {
    *  scrollable content (absolute — doesn't affect sheet height or the scroll
    *  area). Give the scrollable content enough bottom padding to clear it. */
   footer?: React.ReactNode;
+  /** Optional title section fixed to the TOP of the sheet (above the scroll
+   *  area, never scrolls). It's wired as a drag handle so dragging it moves the
+   *  sheet reliably. */
+  header?: React.ReactNode;
   visible: boolean;
   /** Optional ref exposing the sheet's outer container — used by
    *  external debug code that needs to read live bounding rects. */
@@ -73,6 +77,7 @@ export default function SnappingSheet({
   isDragLocked,
   children,
   footer,
+  header,
   visible,
   outerRef,
   keepAlive = false,
@@ -406,6 +411,20 @@ export default function SnappingSheet({
             margin: '0 auto',
           }} />
         </div>
+
+        {/* Fixed title section — never scrolls; wired as a drag handle (same
+            pointer handlers as the grab bar) so dragging it moves the sheet. */}
+        {header && (
+          <div
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            style={{ flexShrink: 0, touchAction: 'none', cursor: 'grab' }}
+          >
+            {header}
+          </div>
+        )}
 
         {/* Scrollable content */}
         <div

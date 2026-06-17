@@ -1,5 +1,5 @@
 import { WheelItem } from '../models/types';
-import { hexToRgba, lerpColor, withAlpha, oklchShade, oklchMix, readableTextColor } from '../utils/colorUtils';
+import { hexToRgba, lerpColor, withAlpha, oklchShade, oklchMix, readableTextColor, tintedTextColor } from '../utils/colorUtils';
 import { drawIconNode, getSegmentImage, drawSegmentImageCover } from './segmentVisuals';
 
 // Preset segment textures — a repeating pattern overlaid on the fill colour.
@@ -779,8 +779,9 @@ export function paintWheel(
       ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
 
       // Draw text — per-segment fitted size + (optional) two lines from the
-      // cached auto-fit layout. Colour flips to black on light fills (OKLCH L).
-      ctx.fillStyle = readableTextColor(effectiveColor);
+      // cached auto-fit layout. On light fills the colour is a dark TINT of the
+      // slice (not pure black); on dark fills it's white.
+      ctx.fillStyle = tintedTextColor(effectiveColor);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
 
@@ -902,7 +903,7 @@ export function paintWheel(
       ctx.translate(center.x, center.y);
       ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);
 
-      ctx.fillStyle = readableTextColor(winItem.color);
+      ctx.fillStyle = tintedTextColor(winItem.color);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       // Same fitted size + lines as the wheel, so the win overlay matches.

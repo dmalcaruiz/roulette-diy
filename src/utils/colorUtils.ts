@@ -73,6 +73,51 @@ export function oklchShadow(hexColor: string, delta = 0.05, lightBoost = 2, topB
   return rgbaToHex(rFinal, gFinal, bFinal, a);
 }
 
+// Icon tint (card grip + chevron): darkens like oklchShadow AND nudges the hue
+// slightly COLDER (toward blue ~264°). Exception: hues near yellow read greenish
+// when cooled, so those nudge WARMER instead (toward orange ~50°). The shift is
+// small and along the shortest hue arc.
+export function oklchIconTint(hexColor: string, delta = 0.11): string {
+  const { r, g, b, a } = hexToRgba(hexColor);
+  const lr = gammaExpansion(r / 255);
+  const lg = gammaExpansion(g / 255);
+  const lb = gammaExpansion(b / 255);
+  const lCone = cubeRoot(0.412221469470763 * lr + 0.5363325372617348 * lg + 0.0514459932675022 * lb);
+  const mCone = cubeRoot(0.2119034958178252 * lr + 0.6806995506452344 * lg + 0.1073969535369406 * lb);
+  const sCone = cubeRoot(0.0883024591900564 * lr + 0.2817188391361215 * lg + 0.6299787016738222 * lb);
+  const okL = 0.210454268309314 * lCone + 0.7936177747023054 * mCone - 0.0040720430116193 * sCone;
+  const okA = 1.9779985324311684 * lCone - 2.4285922420485799 * mCone + 0.450593709617411 * sCone;
+  const okB = 0.0259040424655478 * lCone + 0.7827717124575296 * mCone - 0.8086757549230774 * sCone;
+  const c = Math.sqrt(okA * okA + okB * okB);
+  let hDeg = (Math.atan2(okB, okA) * 180 / Math.PI + 360) % 360;
+  // Near yellow → warm; otherwise cold. Shift along the shortest arc toward target.
+  const nearYellow = hDeg >= 70 && hDeg <= 130;
+  const target = nearYellow ? 50 : 264;
+  const amount = nearYellow ? 16 : 12;
+  const diff = ((target - hDeg + 540) % 360) - 180;
+  hDeg = (hDeg + Math.sign(diff) * Math.min(amount, Math.abs(diff)) + 360) % 360;
+  const h = hDeg * Math.PI / 180;
+
+  const drop = delta * (1 + 2 * okL);
+  const newL = Math.max(0, Math.min(1, okL - drop));
+  const newA = c * Math.cos(h);
+  const newB = c * Math.sin(h);
+
+  const l2 = newL + 0.3963377773761749 * newA + 0.2158037573099136 * newB;
+  const m2 = newL - 0.1055613458156586 * newA - 0.0638541728258133 * newB;
+  const s2 = newL - 0.0894841775298119 * newA - 1.2914855480194092 * newB;
+  const l3 = l2 * l2 * l2;
+  const m3 = m2 * m2 * m2;
+  const s3 = s2 * s2 * s2;
+  const rOut = 4.0767416360759574 * l3 - 3.3077115392580616 * m3 + 0.2309699031821044 * s3;
+  const gOut = -1.2684379732850317 * l3 + 2.6097573492876887 * m3 - 0.3413193760026573 * s3;
+  const bOut = -0.0041960761386756 * l3 - 0.7034186179359362 * m3 + 1.7076146940746117 * s3;
+  const rFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(rOut))) * 255);
+  const gFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(gOut))) * 255);
+  const bFinal = Math.round(Math.max(0, Math.min(1, gammaCorrection(bOut))) * 255);
+  return rgbaToHex(rFinal, gFinal, bFinal, a);
+}
+
 // Like oklchShadow (darken via OKLCh lightness), but ALSO eases chroma down a
 // little so derived shades stay distinct on saturated bases. The reduction is
 // PROPORTIONAL — a small fraction (≈ `delta · SHADE_CHROMA_RATIO`) of the
@@ -343,6 +388,17 @@ export function oklchLightness(hexColor: string): number {
 // sits a hair ABOVE #ffd500's own lightness, so #ffd500 itself (and anything
 // darker) keeps white text; only fills lighter than it get black.
 const TEXT_FLIP_LIGHTNESS = oklchLightness('#ffd500') + 0.02;
+// True when a colour is light enough that the wheel flips to DARK text on it.
+// Exported so the editor's stroke/tint decisions use the EXACT same threshold.
+export function isLightColor(hex: string): boolean {
+  return oklchLightness(hex) > TEXT_FLIP_LIGHTNESS;
+}
 export function readableTextColor(bgHex: string): string {
-  return oklchLightness(bgHex) > TEXT_FLIP_LIGHTNESS ? '#000000' : '#FFFFFF';
+  return isLightColor(bgHex) ? '#000000' : '#FFFFFF';
+}
+// Like readableTextColor, but the DARK case is a DARKENED version of the bg — it
+// keeps the bg's exact hue + chroma (so the text reads as the slice colour, fully
+// saturated), rather than mixing toward navy (which desaturates + shifts hue).
+export function tintedTextColor(bgHex: string): string {
+  return isLightColor(bgHex) ? oklchShadow(bgHex, 0.2) : '#FFFFFF';
 }

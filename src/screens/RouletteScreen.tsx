@@ -6,7 +6,7 @@ import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../c
 import { PushDownButton } from '../components/PushDownButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
@@ -26,8 +26,15 @@ import { useScrollSpy } from '../hooks/useScrollSpy';
 
 // The four editor sections, top-to-bottom in the continuous sheet (= chip
 // order). The scroll-spy highlights whichever section is in view.
-const SECTION_KEYS = ['templates', 'segments', 'style', 'settings'] as const;
+const SECTION_KEYS = ['segments', 'style', 'settings', 'templates'] as const;
 type Section = (typeof SECTION_KEYS)[number];
+// Display titles for the fixed sheet header (driven by the active chip / section).
+const SECTION_LABELS: Record<Section, string> = {
+  templates: 'Templates',
+  segments: 'Slices',
+  style: 'Style',
+  settings: 'Settings',
+};
 
 interface RouletteScreenProps {
   block: Block;
@@ -1986,6 +1993,37 @@ export default function RouletteScreen({
                 innerRef={chipBarDbgRef}
               />
             ) : undefined}
+            header={!isPlayMode ? (
+              <div style={{ padding: '2px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 20, fontWeight: 800, color: ON_SURFACE }}>
+                  {SECTION_LABELS[currentSection]}
+                  {currentSection === 'segments' && (
+                    <span style={{ fontSize: 16, fontWeight: 700, color: withAlpha(ON_SURFACE, 0.4), marginLeft: 6 }}>
+                      {editorHistory.state.segments.length}
+                    </span>
+                  )}
+                </span>
+                {currentSection === 'segments' && (
+                  // Card/list toggle (moved here from the Slices inline header).
+                  // stopPropagation so tapping it doesn't start a sheet drag.
+                  <button
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => wrappedEditorHistory.set({ ...editorHistory.state, segmentsMode: editorHistory.state.segmentsMode === 'cards' ? 'list' : 'cards' })}
+                    aria-label={`Slice view: ${editorHistory.state.segmentsMode}. Tap to switch.`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      padding: '6px 12px', borderRadius: 999,
+                      border: `1.5px solid ${BORDER}`, backgroundColor: SURFACE_ELEVATED,
+                      color: ON_SURFACE, fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+                      textTransform: 'capitalize', cursor: 'pointer',
+                    }}
+                  >
+                    {editorHistory.state.segmentsMode === 'cards' ? <LayoutGrid size={15} /> : <List size={15} />}
+                    {editorHistory.state.segmentsMode}
+                  </button>
+                )}
+              </div>
+            ) : undefined}
             visible={sheetOpen}
             snapPositions={[0, midSnap, wheelMidSnap, upperSnapH]}
             initialSnap={2}
@@ -2032,32 +2070,6 @@ export default function RouletteScreen({
                 instead of the SnappingSheet scroller, so chip autoslide silently
                 does nothing. `clip` clips horizontally without that side effect. */}
             <div style={{ overflowX: 'clip', paddingBottom: 56 }}>
-              <section ref={spy.register('templates')}>
-                <TemplatesPane
-                  name={editorHistory.state.name}
-                  onNameChange={(name) => wrappedEditorHistory.patch({ name })}
-                  onNameCommit={() => wrappedEditorHistory.commit()}
-                  sliceColors={editorHistory.state.segments.map(s => s.color)}
-                  onApplyVibe={(v) => {
-                    const cols = recolorWithVibe(v, editorHistory.state.segments.length);
-                    wrappedEditorHistory.set({ ...editorHistory.state, segments: editorHistory.state.segments.map((s, i) => ({ ...s, color: cols[i] })) });
-                  }}
-                  onApplyIdea={(idea) => {
-                    // Replace the whole wheel with the idea's themed set (title +
-                    // slices), colouring the new slices with the ACTIVE vibe so
-                    // Surprise me keeps whatever vibe is defined (not reset to classic).
-                    const cols = recolorWithVibe(activeVibe(editorHistory.state.segments.map(s => s.color)), idea.options.length);
-                    const segs = idea.options.map((text, i) => ({
-                      id: crypto.randomUUID(),
-                      text,
-                      color: cols[i],
-                      weight: 1,
-                    }));
-                    wrappedEditorHistory.set({ ...editorHistory.state, name: idea.title, segments: segs });
-                  }}
-                  onReorderActiveChange={handleEditorReorderingChange}
-                />
-              </section>
               {/* Slices + Style render stacked inside WheelEditor; it tags those
                   two section anchors via registerSection. */}
               <WheelEditor
@@ -2083,6 +2095,31 @@ export default function RouletteScreen({
                   spinIntensity={spinIntensity} onSpinIntensityChange={setSpinIntensity}
                   showWinAnimation={showWinAnimation} onShowWinAnimationChange={setShowWinAnimation}
                   showSpinButton={showSpinButton} onShowSpinButtonChange={setShowSpinButton}
+                />
+              </section>
+              {/* Templates (Vibe + Ideas) — at the bottom of the scroll content. */}
+              <section ref={spy.register('templates')}>
+                <TemplatesPane
+                part="extras"
+                sliceColors={editorHistory.state.segments.map(s => s.color)}
+                onApplyVibe={(v) => {
+                  const cols = recolorWithVibe(v, editorHistory.state.segments.length);
+                  wrappedEditorHistory.set({ ...editorHistory.state, segments: editorHistory.state.segments.map((s, i) => ({ ...s, color: cols[i] })) });
+                }}
+                onApplyIdea={(idea) => {
+                  // Replace the whole wheel with the idea's themed set (title +
+                  // slices), colouring the new slices with the ACTIVE vibe so
+                  // Surprise me keeps whatever vibe is defined (not reset to classic).
+                  const cols = recolorWithVibe(activeVibe(editorHistory.state.segments.map(s => s.color)), idea.options.length);
+                  const segs = idea.options.map((text, i) => ({
+                    id: crypto.randomUUID(),
+                    text,
+                    color: cols[i],
+                    weight: 1,
+                  }));
+                  wrappedEditorHistory.set({ ...editorHistory.state, name: idea.title, segments: segs });
+                }}
+                onReorderActiveChange={handleEditorReorderingChange}
                 />
               </section>
             </div>
@@ -2380,10 +2417,10 @@ function PinnedChipBar({
   // as CSS masks (via the SvgMaskIcon helper below) so a single asset
   // can be tinted any colour — supports the active/inactive chip colours.
   const items: { key: 'segments' | 'style' | 'settings' | 'templates'; label: string; iconSrc: string }[] = [
-    { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
     { key: 'segments', label: 'Slices', iconSrc: '/images/segments.svg' },
     { key: 'style', label: 'Style', iconSrc: '/images/style.svg' },
     { key: 'settings', label: 'Settings', iconSrc: '/images/settings.svg' },
+    { key: 'templates', label: 'Templates', iconSrc: '/images/template.svg' },
   ];
   // ── Bar spacing recipe ────────────────────────────────────────────────
   // Bar height: 56px. alignItems: 'flex-end' bottom-aligns every child so

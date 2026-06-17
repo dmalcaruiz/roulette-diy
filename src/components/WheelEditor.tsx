@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, createElement, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
-import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, readableTextColor } from '../utils/colorUtils';
+import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, oklchIconTint, oklchMix, isLightColor, readableTextColor } from '../utils/colorUtils';
 import { HexColorPicker } from 'react-colorful';
 import { SEGMENT_COLORS, ON_SURFACE, BORDER, PRIMARY, BG, SURFACE_ELEVATED } from '../utils/constants';
 import { activeVibe } from './editor/vibes';
@@ -9,7 +9,7 @@ import {
   GripVertical, ChevronDown, Plus, Minus, Palette, Image, Trash2,
   Copy, CopyPlus, ClipboardPaste, Circle, Settings,
   PieChart, Disc, MapPin, Volume2, PartyPopper,
-  LayoutGrid, List,
+  LayoutGrid,
 } from 'lucide-react';
 import SwipeableActionCell, { closeActiveSwipeCell } from './SwipeableActionCell';
 import DraggableSheet from './DraggableSheet';
@@ -397,11 +397,6 @@ export default function WheelEditor({
   // Mode lives on EditorState so it persists per-wheel through the same
   // save cycle as everything else (Firestore round-trip, undo/redo).
   const segmentsMode = state.segmentsMode;
-  const setSegmentsMode = (v: 'list' | 'cards') => {
-    if (v !== stateRef.current.segmentsMode) {
-      set({ ...stateRef.current, segmentsMode: v });
-    }
-  };
   const [colorPickerSegment, setColorPickerSegment] = useState<number | null>(null);
   const [texturePickerSegment, setTexturePickerSegment] = useState<number | null>(null);
   const [imagePickerSegment, setImagePickerSegment] = useState<number | null>(null);
@@ -1089,6 +1084,39 @@ export default function WheelEditor({
     window.addEventListener('pointercancel', onUp);
   }, [handleGrabStart]);
 
+  // Like handleGripPointerDown but for the text-field area of a COLLAPSED card:
+  // a vertical drag starts a reorder, while a plain tap still focuses the input.
+  // (So, unlike the grip, we must NOT preventDefault — that would block focus.)
+  const handleFieldPointerDown = useCallback((sourceIndex: number, e: React.PointerEvent) => {
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const target = e.target as HTMLElement;
+    let activated = false;
+    const onMove = (me: PointerEvent) => {
+      if (activated) return;
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+      if (Math.abs(dy) > 8) {
+        activated = true;
+        cleanup();
+        target?.blur?.();              // drop focus/keyboard before the reorder
+        handleGrabStart(sourceIndex, startX, startY);
+      } else if (Math.abs(dx) > 8) {
+        cleanup();                      // horizontal → let the field handle it
+      }
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    const onUp = () => cleanup();       // tap (no drag) → field focuses to edit
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }, [handleGrabStart]);
+
   // Recompute which rows fall inside the render window from the scroll
   // ancestor's live position. Uniform row height makes this exact; the
   // generous buffer absorbs the small offset introduced by the single
@@ -1215,8 +1243,24 @@ export default function WheelEditor({
     // inner stroke + halo still derive from segment.color so the card's
     // colour identity is preserved.
     const surfaces = deriveCardSurfaces(segment.color);
-    const bgColor = isExpanded ? '#FFFFFF' : surfaces.top;
-    const borderColor = surfaces.innerStroke;
+    // Top section looks identical open or closed — it never swaps to white.
+    const bgColor = surfaces.top;
+    // Inner stroke: normally a soft LIGHTER rim, but on a too-light base a lighter
+    // rim vanishes — so darken it there instead. Same lightness threshold the
+    // wheel uses to flip its text colour, for perfect consistency.
+    const borderColor = isLightColor(segment.color)
+      ? oklchShadow(segment.color, 0.025)
+      : surfaces.innerStroke;
+    // Slice-name text: a DARKENED segment colour (keeps its hue + chroma — a
+    // saturated dark, not a desaturated navy mix). Matches the wheel's tintedTextColor.
+    const textTint = oklchShadow(segment.color, 0.2);
+    // Pale tint of the segment colour for the weight +/- buttons (fill + stroke).
+    const btnTint = oklchMix(segment.color, '#FFFFFF', 0.8);
+    const btnStroke = isLightColor(segment.color)
+      ? withAlpha(oklchShadow(segment.color, 0.07), 0.28)   // light base → darken so it shows
+      : withAlpha(oklchMix(segment.color, '#FFFFFF', 0.45), 0.5);
+    // Shared icon colour (drag grip, chevron, +/-): darker + warm/cold-tinted.
+    const iconColor = oklchIconTint(segment.color, 0.11);
     const bottomColor = surfaces.bottom;
     const textColor = isExpanded ? '#1E1E2C' : readableTextColor(surfaces.top);
 
@@ -1228,7 +1272,10 @@ export default function WheelEditor({
       // halo extends past the SwipeableActionCell entirely.
       <div
         key={segment.id}
-        style={{ paddingBottom: 0 }}
+        // Stack: a base layer (child 1) with the content column (child 2) stacked
+        // ON TOP of it. The base's 6px inner stroke frames the content without
+        // displacing it — they're separate layers, not nested.
+        style={{ position: 'relative' }}
         // Desktop right-click → segment actions sheet (mirrors the preview
         // tiles). Only while collapsed, so right-clicking an expanded card's
         // text field still gives the native copy/paste menu during editing.
@@ -1237,6 +1284,31 @@ export default function WheelEditor({
           setSegmentActionsIndex(index);
         }}
       >
+        {/* Base (child 1) — white bg + 6px coloured INNER stroke, behind
+            everything. `inset: 0` sizes it to the column, so it's the top-section
+            height when closed and top + bottom when open. The content stacks on
+            top, so the inner stroke never displaces it. */}
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          borderRadius: 22,
+          backgroundColor: '#FFFFFF',
+          boxShadow: `inset 0 0 0 6px ${bottomColor}`,
+          zIndex: 0,
+          pointerEvents: 'none',
+        }} />
+        {/* Content column (child 2) — top card + (open) bottom controls, stacked
+            FULL-SIZE on top of the base (no padding, so the stroke never insets
+            them). The top card (opaque) covers the base in its area; the stroke
+            shows through the transparent bottom controls, which keep their own
+            inner padding to clear it. */}
+        <div style={{
+          position: 'relative',
+          zIndex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}>
         {/* 3D Card */}
         <div style={{ position: 'relative' }}>
           {/* Bottom face — flush behind the top face (peek removed), so the card
@@ -1244,7 +1316,7 @@ export default function WheelEditor({
           <div style={{
             position: 'absolute',
             left: 0, right: 0, top: 0, bottom: 0,
-            borderRadius: 21,
+            borderRadius: 16,
             backgroundColor: bottomColor,
           }} />
           {/* Top face — 3px inner stroke (matches the BlocksList recipe;
@@ -1252,7 +1324,7 @@ export default function WheelEditor({
               still feel coherent). */}
           <div style={{
             position: 'relative',
-            borderRadius: 21,
+            borderRadius: 16,
             backgroundColor: bgColor,
             border: `3px solid ${borderColor}`,
             overflow: 'hidden',
@@ -1289,7 +1361,7 @@ export default function WheelEditor({
                 // text input on its left side. Pair any change here
                 // with an equal reduction on the chevron container's
                 // right padding to keep the text centred.
-                style={{ padding: '0 10px 0 10px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
+                style={{ padding: '0 8px 0 8px', touchAction: 'none', cursor: isExpanded ? 'default' : 'grab' }}
                 onPointerDown={isExpanded ? undefined : (e) => handleGripPointerDown(index, e)}
               >
                 <div style={{
@@ -1300,7 +1372,7 @@ export default function WheelEditor({
                   // clearly against the card's bright top face. Open:
                   // the existing dark-grey alpha that contrasts on the
                   // white expanded card.
-                  backgroundColor: isExpanded ? withAlpha('#1E1E2C', 0.35) : oklchShadow(segment.color, 0.07),
+                  backgroundColor: iconColor,
                   WebkitMaskImage: 'url(/images/drag.svg)',
                   WebkitMaskRepeat: 'no-repeat',
                   WebkitMaskSize: 'contain',
@@ -1312,12 +1384,13 @@ export default function WheelEditor({
                 }} />
               </div>
               <div
-                style={{ flex: 1 }}
-                // The text field behaves identically open or closed: tapping it
-                // edits inline (native focus + keyboard), never toggles expand —
-                // so swallow the click/pointer here in both states.
+                // touchAction:none while collapsed so a vertical drag here can
+                // start a reorder (instead of the browser scrolling/selecting).
+                style={{ flex: 1, touchAction: isExpanded ? undefined : 'none' }}
+                // Tap edits inline (never toggles expand) in both states; while
+                // collapsed, a vertical DRAG from here grabs the card to reorder.
                 onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={isExpanded ? (e) => e.stopPropagation() : (e) => handleFieldPointerDown(index, e)}
               >
                 {/* Always an active, visible field — same in the closed card as
                     the open one. */}
@@ -1339,7 +1412,7 @@ export default function WheelEditor({
                     fontSize: 17,
                     fontWeight: 600,
                     fontFamily: 'inherit',
-                    color: '#1E1E2C',
+                    color: textTint,
                     pointerEvents: 'auto',
                     cursor: 'text',
                     minWidth: 0,
@@ -1347,7 +1420,7 @@ export default function WheelEditor({
                 />
               </div>
               <div style={{
-                padding: '0 11px 0 9px',
+                padding: '0 8px 0 8px',
               }}>
                 {(() => {
                   // Faux SVG stroke via 8 layered masked-div copies
@@ -1367,7 +1440,8 @@ export default function WheelEditor({
                   // When the card is expanded the chevron sits on a
                   // white surface and the segment-coloured stroke
                   // would clash, so we skip the stroke layers entirely.
-                  const fillColor = isExpanded ? withAlpha('#1E1E2C', 0.4) : '#FFFFFF';
+                  // Same colour as the drag/grip icon, no outer stroke.
+                  const fillColor = iconColor;
                   // Light OKLCh darken — keeps the outline subtle so it
                   // doesn't overpower the chevron's white fill. Used
                   // only in the closed state (strokeOffsets is empty
@@ -1388,16 +1462,14 @@ export default function WheelEditor({
                   // 3px cardinal + 2.12px diagonal (3 / √2) → all 8
                   // strokes sit exactly 3px from the centre. Thicker
                   // outline than the previous 2px setup.
-                  const strokeOffsets: [number, number][] = isExpanded ? [] : [
-                    [3, 0], [-3, 0], [0, 3], [0, -3],
-                    [2.12, 2.12], [-2.12, 2.12], [2.12, -2.12], [-2.12, -2.12],
-                  ];
+                  const strokeOffsets: [number, number][] = [];
                   return (
                     <div style={{
                       position: 'relative',
                       width: 26,
                       height: 26,
-                      transform: `rotate(${isExpanded ? 180 : 0}deg)`,
+                      // Point to the side (▸) when closed; flips UP (⌃) when open.
+                      transform: `rotate(${isExpanded ? -180 : -90}deg)`,
                       transition: 'transform 0.2s',
                     }}>
                       {strokeOffsets.map(([dx, dy], i) => (
@@ -1413,12 +1485,16 @@ export default function WheelEditor({
                 })()}
               </div>
             </div>
+          </div>{/* top face */}
+        </div>{/* 3D card — the complete top section (own rounding + stroke) */}
 
-            {/* Expanded content */}
+            {/* Expanded controls (bottom child) — NO bg of its own; the base
+                layer behind provides the white. Column padding already insets it
+                from the stroke, so only inner spacing for the controls here. */}
             {isExpanded && (
               <div
                 onClick={e => e.stopPropagation()}
-                style={{ padding: '0 14px 14px' }}
+                style={{ padding: '4px 14px 14px' }}
               >
                 {/* Weight controls — label left + percentage right on top,
                     [−] slider [+] row below for both granular taps and
@@ -1449,15 +1525,16 @@ export default function WheelEditor({
                       })()}
                     </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                     <PushDownButton
-                      color={'#F8F8F9'}
-                      innerStrokeColor={'#E5E5E5'}
+                      color={btnTint}
+                      innerStrokeColor={btnStroke}
                       innerStrokeWidth={3}
                       bottomBorderColor={'#B5B5B5'}
-                      borderRadius={10}
+                      borderRadius={14}
                       height={44}
-                      bottomBorderWidth={5}
+                      bottomBorderWidth={0}
+                      haloColor="transparent"
                       repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                       onTap={() => {
                         const cur = stateRef.current;
@@ -1471,13 +1548,13 @@ export default function WheelEditor({
                         );
                         set({ ...cur, segments: newSegs });
                       }}
-                      style={{ width: 39 }}
+                      style={{ width: 44 }}
                     >
                       {(pressed) => (
                         <div style={{
-                          width: 25,
-                          height: 25,
-                          backgroundColor: withAlpha(pressed ? oklchHighlight('#1E1E2C', 0.20) : '#1E1E2C', 0.5),
+                          width: 28,
+                          height: 28,
+                          backgroundColor: pressed ? oklchHighlight(iconColor, 0.12) : iconColor,
                           WebkitMaskImage: 'url(/images/subtractl.svg)',
                           WebkitMaskRepeat: 'no-repeat',
                           WebkitMaskSize: 'contain',
@@ -1501,8 +1578,18 @@ export default function WheelEditor({
                       const surfaces = deriveCardSurfaces(segment.color);
                       const top = segment.color;
                       const bot = surfaces.bottom;
-                      const stroke = surfaces.innerStroke;
+                      // Thumb inner stroke: same rule as the card — darken on a
+                      // too-light base, keep the lighter rim when the base is dark.
+                      const stroke = isLightColor(top) ? oklchShadow(top, 0.015) : surfaces.innerStroke;
                       const pillColor = oklchShadow(top, 0.05, 1.2);
+                      // Thumb-shadow sliver (just left of the thumb): darker than
+                      // the base, warm near yellow / colder otherwise (icon tint).
+                      const fillTint = oklchIconTint(top, 0.11);
+                      // The dark band at ~70% opacity over the base (pre-blended,
+                      // since a gradient stop can't composite over its neighbour).
+                      const bandColor = oklchMix(top, fillTint, 0.35);
+                      // Unfilled track: grey with a faint segment tint.
+                      const greyTint = oklchMix('#B4B4B4', top, 0.12);
                       // Piecewise weight↔position mapping. The slider's
                       // value range (0.1–10) is unchanged, but its
                       // VISUAL distribution is split so the balanced
@@ -1520,13 +1607,19 @@ export default function WheelEditor({
                       };
                       const percentFrac = Math.max(0, Math.min(1, weightToFrac(segment.weight)));
                       const percent = percentFrac * 100;
+                      // Thumb LEFT edge (also the filled/grey boundary). The thumb is
+                      // contained in the track — it travels [0, width − 20px] — so its
+                      // centre tracks the cursor in the usable range without sliding
+                      // off the ends. (CSS calc expression, composed below.)
+                      const edge = `${percentFrac} * (100% - 20px)`;
                       // Snap detent at the balanced weight (1), which the
                       // piecewise mapping places at the 1/4 mark.
                       const SNAP_FRAC = 0.25;
                       const SNAP_THRESHOLD = 0.035;
                       const updateFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
                         const rect = e.currentTarget.getBoundingClientRect();
-                        const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        // Map to the thumb's CONTAINED centre range [10, width−10].
+                        const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left - 10) / (rect.width - 20)));
                         const weight = Math.abs(fraction - SNAP_FRAC) < SNAP_THRESHOLD
                           ? 1
                           : fracToWeight(fraction);
@@ -1565,13 +1658,17 @@ export default function WheelEditor({
                               recipe as the thumb / +/- buttons. */}
                           <div style={{
                             position: 'absolute',
-                            left: 8,
-                            right: 8,
+                            left: 0,
+                            right: 0,
                             top: '50%',
-                            transform: 'translateY(calc(-50% + 3px))',
-                            height: 6,
+                            transform: 'translateY(-50%)',
+                            height: 14,
                             borderRadius: 4,
-                            background: `linear-gradient(to right, ${top} 0%, ${top} ${percent}%, #C4C4C4 ${percent}%, #C4C4C4 100%)`,
+                            // Full-width track so its % matches the thumb (which is
+                            // centred on the cursor). Base fill, then an 8px dark
+                            // "thumb shadow" band ending exactly at the thumb's left
+                            // edge (percent − 10px = half thumb), then the grey track.
+                            background: `linear-gradient(to right, ${top} 0%, ${top} calc(${edge} - 5px), ${bandColor} calc(${edge} - 5px), ${bandColor} calc(${edge} + 1px), ${greyTint} calc(${edge} + 1px), ${greyTint} 100%)`,
                             boxShadow: '0 0 0 3.5px #00000012',
                             pointerEvents: 'none',
                           }} />
@@ -1580,8 +1677,8 @@ export default function WheelEditor({
                           {[-1, 1].map(dir => (
                             <div key={dir} style={{
                               position: 'absolute',
-                              left: `calc(${SNAP_FRAC} * (100% - 28px) + 14px)`,
-                              top: `calc(50% + 3px + ${dir * 13}px)`,
+                              left: `calc(${SNAP_FRAC} * (100% - 20px) + 10px)`,
+                              top: `calc(50% + ${dir * 13}px)`,
                               transform: 'translate(-50%, -50%)',
                               width: 4,
                               height: 9,
@@ -1590,13 +1687,12 @@ export default function WheelEditor({
                               pointerEvents: 'none',
                             }} />
                           ))}
-                          {/* Thumb — `left` formula maps percent ∈ [0,1]
-                              into [4, slot-26] so the thumb stays
-                              4px inside the slot at min/max (slight
-                              inset). */}
+                          {/* Thumb — centred on the cursor: left = percent − half
+                              the thumb width, matching the full-width track % and
+                              the cursor mapping. (Overflows ~10px at the extremes.) */}
                           <div style={{
                             position: 'absolute',
-                            left: `calc(${percentFrac} * (100% - 28px) + 4px)`,
+                            left: `calc(${edge})`,
                             top: '50%',
                             transform: `translateY(-50%) scale(${weightThumbDrag ? 1.18 : 1})`,
                             transformOrigin: 'center',
@@ -1605,18 +1701,16 @@ export default function WheelEditor({
                             height: 44,
                             pointerEvents: 'none',
                           }}>
-                            {/* Bottom layer (peek) — 5px shorter from
-                                the top of the thumb so the top face
-                                hangs over it; halo wraps just this. */}
+                            {/* Bottom layer — flush behind the top face (peek +
+                                halo removed). */}
                             <div style={{
                               position: 'absolute',
-                              top: 5,
+                              top: 0,
                               left: 0,
                               right: 0,
                               bottom: 0,
                               borderRadius: 5,
                               backgroundColor: bot,
-                              boxShadow: '0 0 0 3.5px #00000012',
                             }} />
                             {/* Top face — colored fill + 3px inner
                                 stroke (border), two grip pills centered
@@ -1626,7 +1720,7 @@ export default function WheelEditor({
                               top: 0,
                               left: 0,
                               width: 20,
-                              height: 39,
+                              height: 44,
                               borderRadius: 5,
                               backgroundColor: top,
                               border: `3px solid ${stroke}`,
@@ -1644,13 +1738,14 @@ export default function WheelEditor({
                       );
                     })()}
                     <PushDownButton
-                      color={'#F8F8F9'}
-                      innerStrokeColor={'#E5E5E5'}
+                      color={btnTint}
+                      innerStrokeColor={btnStroke}
                       innerStrokeWidth={3}
                       bottomBorderColor={'#B5B5B5'}
-                      borderRadius={10}
+                      borderRadius={14}
                       height={44}
-                      bottomBorderWidth={5}
+                      bottomBorderWidth={0}
+                      haloColor="transparent"
                       repeatHold={{ delayMs: 700, intervalMs: 150, maxIntervalMs: 50, rampMs: 900 }}
                       onTap={() => {
                         const cur = stateRef.current;
@@ -1664,13 +1759,13 @@ export default function WheelEditor({
                         );
                         set({ ...cur, segments: newSegs });
                       }}
-                      style={{ width: 39 }}
+                      style={{ width: 44 }}
                     >
                       {(pressed) => (
                         <div style={{
-                          width: 25,
-                          height: 25,
-                          backgroundColor: withAlpha(pressed ? oklchHighlight('#1E1E2C', 0.20) : '#1E1E2C', 0.5),
+                          width: 28,
+                          height: 28,
+                          backgroundColor: pressed ? oklchHighlight(iconColor, 0.12) : iconColor,
                           WebkitMaskImage: 'url(/images/addl.svg)',
                           WebkitMaskRepeat: 'no-repeat',
                           WebkitMaskSize: 'contain',
@@ -1897,8 +1992,7 @@ export default function WheelEditor({
                 )}
               </div>
             )}
-          </div>
-        </div>
+        </div>{/* content column */}
       </div>
     );
 
@@ -1926,9 +2020,9 @@ export default function WheelEditor({
               position: 'absolute',
               left: 0,
               right: 0,
-              top: 5,
+              top: 0,
               bottom: 0,
-              borderRadius: 21,
+              borderRadius: 16,
               boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.36)`,
               pointerEvents: 'none',
             }}
@@ -2254,40 +2348,8 @@ export default function WheelEditor({
         style={stacked ? { order: 1 } : { display: selectedTab === 0 ? 'block' : 'none' }}
       >
         <>
-          {/* Section header: title + a chip that toggles Cards ↔ List. */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 14,
-            paddingLeft: 2,
-          }}>
-            <span style={{ fontWeight: 800, fontSize: 20, color: ON_SURFACE }}>
-              Slices <span style={{ fontSize: 16, fontWeight: 700, color: withAlpha(ON_SURFACE, 0.4) }}>{segments.length}</span>
-            </span>
-            <button
-              onClick={() => setSegmentsMode(segmentsMode === 'cards' ? 'list' : 'cards')}
-              aria-label={`Slice view: ${segmentsMode}. Tap to switch.`}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '6px 12px',
-                borderRadius: 999,
-                border: `1.5px solid ${BORDER}`,
-                backgroundColor: SURFACE_ELEVATED,
-                color: ON_SURFACE,
-                fontSize: 13,
-                fontWeight: 700,
-                fontFamily: 'inherit',
-                textTransform: 'capitalize',
-                cursor: 'pointer',
-              }}
-            >
-              {segmentsMode === 'cards' ? <LayoutGrid size={15} /> : <List size={15} />}
-              {segmentsMode}
-            </button>
-          </div>
+          {/* (Section title + count + card/list toggle now live in the sheet's
+              fixed header — see RouletteScreen.) */}
           {/* Heavy segment list is gated on renderRows: while the sheet is
               closed (renderRows=false) we render a cheap spacer instead of
               the N segment rows, so switching wheels costs nothing. The

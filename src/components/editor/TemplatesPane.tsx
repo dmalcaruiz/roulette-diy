@@ -11,13 +11,18 @@ import { randomIdea, randomTitle, type WheelIdea } from './ideas';
 // + an Ideas button. `onApplyVibe` recolours the slices; `onApplyIdea` fills the
 // wheel with a themed starter set — the host owns the history for both.
 interface TemplatesPaneProps {
-  name: string;
-  onNameChange: (name: string) => void;
-  onNameCommit: () => void;
-  sliceColors: string[];
-  onApplyVibe: (vibe: SliceVibe) => void;
-  onApplyIdea: (idea: WheelIdea) => void;
+  // All data props optional so a 'name'-only or 'extras'-only instance can pass
+  // just the props its part uses.
+  name?: string;
+  onNameChange?: (name: string) => void;
+  onNameCommit?: () => void;
+  sliceColors?: string[];
+  onApplyVibe?: (vibe: SliceVibe) => void;
+  onApplyIdea?: (idea: WheelIdea) => void;
   onReorderActiveChange?: (active: boolean) => void;
+  // Which part to render: 'name' (top of the sheet), 'extras' (vibe + ideas, moved
+  // to the bottom of the scroll), or 'all' (everything — the default).
+  part?: 'name' | 'extras' | 'all';
 }
 
 const LABEL: React.CSSProperties = {
@@ -25,16 +30,20 @@ const LABEL: React.CSSProperties = {
   color: withAlpha(ON_SURFACE, 0.5), paddingLeft: 2,
 };
 
-export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, onApplyVibe, onApplyIdea, onReorderActiveChange }: TemplatesPaneProps) {
+export function TemplatesPane({ name = '', onNameChange = () => {}, onNameCommit = () => {}, sliceColors = [], onApplyVibe = () => {}, onApplyIdea = () => {}, onReorderActiveChange, part = 'all' }: TemplatesPaneProps) {
   const [lastIdea, setLastIdea] = useState<WheelIdea | null>(null);
   // Name field sits slightly DARKER than the sheet surface (a recessed look),
   // not lighter.
   const nameFieldBg = oklchShadow(SURFACE, 0.015);
+  const showName = part !== 'extras';
+  const showExtras = part !== 'name';
   return (
-    <div style={{ padding: '0 20px 32px' }}>
+    <div style={{ padding: part === 'name' ? '0 20px 4px' : '0 20px 32px' }}>
+      {showName && (
+      <>
       {/* Title — the wheel's name (same value as the top-bar pill). The
           sparkles button drops in a random fun name. */}
-      <div style={{ marginTop: 4, marginBottom: 22 }}>
+      <div style={{ marginTop: 4, marginBottom: part === 'name' ? 4 : 22 }}>
         <div style={{ ...LABEL, marginBottom: 8 }}>NAME</div>
         <div style={{ position: 'relative' }}>
           <input
@@ -66,6 +75,10 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
           </button>
         </div>
       </div>
+      </>
+      )}
+      {showExtras && (
+      <>
       {/* Vibe — a reorderable, scrollable row of slice-card-style palette tiles.
           Tap one to recolour all slices; long-press to reorder. */}
       <div style={{ marginBottom: 8 }}>
@@ -94,6 +107,8 @@ export function TemplatesPane({ name, onNameChange, onNameCommit, sliceColors, o
             : 'Fills the wheel with a fun ready-made set.'}
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }
