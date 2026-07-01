@@ -297,6 +297,14 @@ export interface WheelPainterConfig {
   // Per-wheel roughness seed (stable, e.g. roughSeedFromId(config.id)). Varies
   // the hand-drawn wobble between wheels. Omitted → 0 (a fixed base pattern).
   roughSeed?: number;
+  // Skip the expensive palette-vote quantization for this bake and use the cheap
+  // nearest pixelate instead. Set during the win-overlay FADE frames (motion, many
+  // per second) so they stay smooth; the held + rest frames quantize for real.
+  fastPixelate?: boolean;
+  // Render ONLY the win dim mask (rough disc minus the winning wedge), opaque, so
+  // it can be composited OVER the already-baked wheel as a separate layer whose
+  // opacity is CSS-animated — no per-frame wheel re-bake. Uses winningIndex.
+  dimMaskOnly?: boolean;
 }
 
 // A point on a segment's outline plus the divider stroke-width MULTIPLIER at that
@@ -515,11 +523,140 @@ function computeFittedText(
 let _ftKey = '';
 let _ftVal: FittedText[] = [];
 
+// ── Pixelate post-process ───────────────────────────────────────────────────
+// Retro "lo-fi" filter applied AFTER the wheel is fully drawn: smooth-downsample
+// the whole canvas to a coarse grid, then upscale back with nearest-neighbour →
+// chunky, averaged pixels (nicer than rendering low-res directly, which just
+// aliases). This is the "post-process pass" — done in Canvas-2D rather than a
+// separate WebGL canvas because the spin is a CSS transform on THIS element, so
+// a second GL canvas would mean rerouting the whole transform pipeline for the
+// identical nearest-neighbour result. Cost is bake-time only (spins are GPU
+// rotations of the baked bitmap), so it's free per spin frame.
+// PIXEL_SCALE = CSS px per block; 1 = off. Wire to a WheelConfig flag to expose.
+// NOTE: when > 1 the displayed ART <canvas> MUST carry `image-rendering: pixelated`
+// (labels render on a SEPARATE smooth canvas so they stay crisp), or the GPU
+// bilinear-smooths the baked blocks back into AA during the CSS-rotate spin and
+// the dpr downscale. SpinningWheel keys the split + that CSS off this export.
+export const PIXEL_SCALE = 2;
+let _pixelTmp: HTMLCanvasElement | null = null;
+let _pixelBig: HTMLCanvasElement | null = null;
+// Palette entry: [r, g, b]. When a palette is supplied, pixelateCanvas snaps every
+// block to its nearest colour → true fixed-palette 8-bit, which hardens even
+// COLOUR-on-colour edges (segment dividers, text-on-fill) that plain nearest
+// sampling can't. Without a palette it's a simple hard nearest downsample.
+export type Palette = [number, number, number][];
+
+// keepTranslucent: when true the per-block vote is THREE-way (opaque / translucent
+// / empty) — opaque blocks snap hard to the palette, translucent blocks keep their
+// own colour+alpha (blocky, NOT thresholded away), and only truly-empty blocks
+// drop. Use it for art with intentional semi-transparent layers (e.g. the marker's
+// shadow halos) that must survive the pixelation. Default (false) thresholds alpha
+// on/off for a fully hard silhouette (wheel/button).
+export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH: number, scale: number, palette?: Palette, keepTranslucent = false): void {
+  const canvas = ctx.canvas;
+  if (canvas.width === 0 || canvas.height === 0) return;
+  const sw = Math.max(1, Math.round(cssW / scale));
+  const sh = Math.max(1, Math.round(cssH / scale));
+  if (!_pixelTmp) _pixelTmp = document.createElement('canvas');
+  if (_pixelTmp.width !== sw || _pixelTmp.height !== sh) { _pixelTmp.width = sw; _pixelTmp.height = sh; }
+  const tctx = _pixelTmp.getContext('2d');
+  if (!tctx) return;
+
+  tctx.clearRect(0, 0, sw, sh);
+  if (palette && palette.length) {
+    // MODE-VOTE each block: point-sample a K×K grid, snap each sample to the
+    // nearest palette colour, and take the most common. A lone anti-aliased seam
+    // pixel (a blend that would snap to an unrelated third colour) is always
+    // outvoted by the real colour filling the block → no edge colour noise. The
+    // transparent-vs-opaque vote also gives a coverage-based (clean) silhouette.
+    const K = 3;
+    const bw = sw * K, bh = sh * K;
+    if (!_pixelBig) _pixelBig = document.createElement('canvas');
+    if (_pixelBig.width !== bw || _pixelBig.height !== bh) { _pixelBig.width = bw; _pixelBig.height = bh; }
+    const bctx = _pixelBig.getContext('2d');
+    if (!bctx) return;
+    bctx.imageSmoothingEnabled = false;
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, bw, bh);
+    const src = bctx.getImageData(0, 0, bw, bh).data;
+    const out = tctx.createImageData(sw, sh);
+    const od = out.data;
+    const P = palette.length;
+    const counts = new Int32Array(P);
+    for (let by = 0; by < sh; by++) {
+      for (let bx = 0; bx < sw; bx++) {
+        counts.fill(0);
+        let opaqueN = 0, transN = 0, emptyN = 0;
+        // Representative for a translucent-dominated block: the sample with the
+        // highest alpha (uniform halos make any sample equivalent).
+        let repA = 0, repR = 0, repG = 0, repB = 0;
+        for (let dy = 0; dy < K; dy++) {
+          for (let dx = 0; dx < K; dx++) {
+            const si = (((by * K + dy) * bw) + (bx * K + dx)) * 4;
+            const a = src[si + 3];
+            if (a < 8) { emptyN++; continue; }
+            if (a >= 128) {
+              opaqueN++;
+              const r = src[si], g = src[si + 1], b = src[si + 2];
+              let best = 0, bestDist = Infinity;
+              for (let p = 0; p < P; p++) {
+                const pr = palette[p][0] - r, pg = palette[p][1] - g, pb = palette[p][2] - b;
+                const dist = pr * pr + pg * pg + pb * pb;
+                if (dist < bestDist) { bestDist = dist; best = p; }
+              }
+              counts[best]++;
+            } else {
+              transN++;
+              if (keepTranslucent && a > repA) { repA = a; repR = src[si]; repG = src[si + 1]; repB = src[si + 2]; }
+            }
+          }
+        }
+        let win = -1, wc = 0;
+        for (let p = 0; p < P; p++) { if (counts[p] > wc) { wc = counts[p]; win = p; } }
+        const oi = ((by * sw) + bx) * 4;
+        if (keepTranslucent) {
+          // Three-way majority: opaque > translucent > empty.
+          if (opaqueN > 0 && opaqueN >= transN && opaqueN >= emptyN) {
+            od[oi] = palette[win][0]; od[oi + 1] = palette[win][1]; od[oi + 2] = palette[win][2]; od[oi + 3] = 255;
+          } else if (transN > 0 && transN >= emptyN) {
+            od[oi] = repR; od[oi + 1] = repG; od[oi + 2] = repB; od[oi + 3] = repA;
+          } else {
+            od[oi + 3] = 0;
+          }
+        } else {
+          // Two-way: opaque palette colour, else transparent (hard silhouette).
+          const trans = transN + emptyN;
+          if (win < 0 || trans > wc) { od[oi + 3] = 0; }
+          else { od[oi] = palette[win][0]; od[oi + 1] = palette[win][1]; od[oi + 2] = palette[win][2]; od[oi + 3] = 255; }
+        }
+      }
+    }
+    tctx.putImageData(out, 0, 0);
+  } else {
+    // No palette → point-sampled hard nearest (fast; flat-shape silhouettes only).
+    tctx.imageSmoothingEnabled = false;
+    tctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, sw, sh);
+  }
+
+  // Upscale back nearest-neighbour → blocky. ctx is dpr-scaled, so we draw in CSS
+  // px and it fills the whole backing store. save/restore keeps smoothing default.
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.drawImage(_pixelTmp, 0, 0, sw, sh, 0, 0, cssW, cssH);
+  ctx.restore();
+}
+
 export function paintWheel(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   config: WheelPainterConfig,
+  // Optional second context for the crisp text/visual pass. When the pixelate
+  // pass is on, labels go here (a smooth overlay canvas) instead of onto the
+  // pixelated art canvas. Caller sets its dpr transform + clears it. If omitted,
+  // text is drawn on `ctx` as before (pixelated with everything else).
+  textCtx?: CanvasRenderingContext2D | null,
 ): void {
   const { items, rotation, cornerRadius, strokeWidth, showBackgroundCircle,
           imageSize, overlayColor, textVerticalOffset, innerCornerStyle,
@@ -601,6 +738,32 @@ export function paintWheel(
     layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth, outline));
     layout.outlines.push(outline);
     startAngle += segmentSize;
+  }
+
+  // Win DIM MASK mode: draw ONLY the dark tint — a rough disc with the winning
+  // wedge punched out — opaque, then blocky-pixelate it. The caller composites
+  // this over the already-baked wheel as a separate layer and fades its CSS
+  // opacity, so the win dim never re-bakes/re-quantizes the wheel itself.
+  if (config.dimMaskOnly) {
+    ctx.clearRect(0, 0, width, height);
+    const strokeHalf = strokeWidth > 0 ? strokeWidth / 2 : 0;
+    const inkMax = ROUGHNESS.enabled && ROUGHNESS.strokeWidthVar > 0 ? 1 + ROUGHNESS.strokeWidthVar : 1;
+    const overlayRadius = radius + (strokeHalf + outerStrokeWidth) * inkMax + 1;
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(rotation);
+    ctx.translate(-center.x, -center.y);
+    ctx.fillStyle = overlayColor;
+    if (ROUGHNESS.enabled) ctx.fill(roughCirclePath(center.x, center.y, overlayRadius, radius));
+    else { ctx.beginPath(); ctx.arc(center.x, center.y, overlayRadius, 0, Math.PI * 2); ctx.fill(); }
+    if (winningIndex >= 0 && winningIndex < layout.paths.length) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fill(layout.paths[winningIndex]); // keep the winner bright (hole in the dim)
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.restore();
+    if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE);
+    return;
   }
 
   // Auto-fit text layout (per-segment size + lines). Memoized on everything
@@ -743,60 +906,9 @@ export function paintWheel(
       }
     }
 
-    // Text — always drawn, regardless of how thin the slice is. The
-    // wedge clip below crops anything that would overflow the slice (both
-    // radially AND across the slice's angular thickness), so a label that's
-    // taller/longer than a thin wedge is trimmed at the segment boundary
-    // instead of spilling into the neighbouring segments.
-    {
-      // Fade text in / out for segments mid-add or mid-remove (one side
-      // of the transition has near-zero weight). The interpolated wedge
-      // already grows / shrinks naturally from the weight lerp; this just
-      // keeps the text from popping at full opacity over a tiny slice.
-      let contentOpacity = 1;
-      if (fromItems && i < fromItems.length && transition < 1) {
-        const fromWeight = fromItems[i].weight;
-        const toWeight = items[i].weight;
-        // Threshold is just above the near-zero override weight WheelEditor
-        // sends on add/remove (0.001), so segments mid-fade pick up a
-        // smooth opacity ramp instead of holding text full-bright over a
-        // sliver-thin slice.
-        if (fromWeight <= 0.002) contentOpacity = transition;
-        else if (toWeight <= 0.002) contentOpacity = 1 - transition;
-      }
-
-      ctx.save();
-      ctx.globalAlpha = contentOpacity;
-
-      // Clip to the segment's exact wedge. Done here — still in the wheel's
-      // rotated frame, the same one the fill above used — so the path lines
-      // up with the slice and rounded corners / inner style are respected.
-      // The clip locks to device space, so the per-segment rotate below only
-      // positions the text; it can't drag the clip region off the wedge.
-      ctx.clip(path);
-
-      ctx.translate(center.x, center.y);
-      ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
-
-      // Draw text — per-segment fitted size + (optional) two lines from the
-      // cached auto-fit layout. On light fills the colour is a dark TINT of the
-      // slice (not pure black); on dark fills it's white.
-      ctx.fillStyle = tintedTextColor(effectiveColor);
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-
-      const ft = _ftVal[i];
-      // Per-segment visual (image/icon) at the outer edge; text sits inboard.
-      drawSegmentVisual(ctx, item, textX, imageSize, scale, effectiveColor);
-      ctx.font = `600 ${ft.fontSize}px Inter, sans-serif`;
-      const lineH = ft.fontSize * 1.05;
-      const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
-      for (let li = 0; li < ft.lines.length; li++) {
-        ctx.fillText(ft.lines[li], ft.textX, y0 + li * lineH);
-      }
-
-      ctx.restore();
-    }
+    // Text + per-slice visuals are NOT drawn here. They're deferred to a crisp
+    // pass AFTER the pixelate post-process (see paintSegmentContent below), so
+    // the labels stay sharp while the wheel art gets the lo-fi blocks.
   }
 
   ctx.restore(); // remove rotation
@@ -893,35 +1005,132 @@ export function paintWheel(
     ctx.fill(layout.paths[winningIndex]);
     if (winItem.texture) drawSegmentTexture(ctx, layout.paths[winningIndex], center.x, center.y, radius, winItem.texture, textureOverlayColor(winItem.color));
 
-    // Winning segment text — always drawn (the wedge clip below crops
-    // anything that would overflow a too-thin slice into its neighbours).
-    {
-      ctx.save();
-      // Clip to the winning slice's exact wedge (same rotated frame the fill
-      // above used), then rotate to lay the text along the slice centreline.
-      ctx.clip(layout.paths[winningIndex]);
-      ctx.translate(center.x, center.y);
-      ctx.rotate(layout.startAngles[winningIndex] + layout.segmentSizes[winningIndex] / 2);
-
-      ctx.fillStyle = tintedTextColor(winItem.color);
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      // Same fitted size + lines as the wheel, so the win overlay matches.
-      const wft = _ftVal[winningIndex];
-      drawSegmentVisual(ctx, winItem, textX, imageSize, scale, winItem.color);
-      ctx.font = `600 ${wft.fontSize}px Inter, sans-serif`;
-      const wLineH = wft.fontSize * 1.05;
-      const wy0 = -textVerticalOffset - ((wft.lines.length - 1) * wLineH) / 2;
-      for (let li = 0; li < wft.lines.length; li++) {
-        ctx.fillText(wft.lines[li], wft.textX, wy0 + li * wLineH);
-      }
-
-      ctx.restore();
-    }
+    // Winning segment text is deferred to the crisp content pass below.
 
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+
+  // Pixelate the ART (fills, strokes, rings, dots, win highlight), THEN lay the
+  // text + per-slice visuals on top crisp — on the separate text canvas when one
+  // was supplied (so it escapes the art canvas's nearest-neighbour scaling).
+  // Build a fixed palette (segment fills + chrome) so blocks snap to real colours
+  // → hard segment dividers, zero AA. Skipped during the win overlay, whose dark
+  // dimming produces blended tints that aren't in the palette.
+  let palette: Palette | undefined;
+  if (PIXEL_SCALE > 1 && !config.fastPixelate) {
+    const seen = new Set<string>();
+    palette = [];
+    const add = (hex?: string) => {
+      if (!hex || hex[0] !== '#' || seen.has(hex)) return;
+      seen.add(hex);
+      const { r, g, b } = hexToRgba(hex);
+      palette!.push([r, g, b]);
+    };
+    for (const it of items) add(it.color);
+    add(wheelBaseColor);
+    add('#808080'); // rough backing fill used in the no-stroke/no-round bg case
+    if (overlayOpacity > 0) {
+      // Win overlay dims everything toward overlayColor by a = opacity*0.7. Add
+      // those dimmed variants so the win state quantises hard too (the winning
+      // slice stays its bright, un-dimmed colour — already added above).
+      const a = overlayOpacity * 0.7;
+      for (const it of items) add(lerpColor(it.color, overlayColor, a));
+      add(lerpColor(wheelBaseColor, overlayColor, a));
+      add(overlayColor);
+    }
+  }
+  if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE, palette);
+
+  paintSegmentContent(textCtx ?? ctx, items, layout, {
+    center, rotation, textX, imageSize, scale, textVerticalOffset,
+    fromItems, transition, overlayOpacity, winningIndex,
+  });
+}
+
+// Crisp content layer — per-slice labels + visuals — drawn AFTER the pixelate
+// pass so text stays sharp over the lo-fi wheel art. Reproduces the same clip /
+// rotate / fade the interleaved draw used, plus the win-state dimming (the dark
+// overlay is already baked into the pixelated art, so here we just fade the
+// non-winning labels to match and redraw the winner bright).
+interface SegmentContentCtx {
+  center: { x: number; y: number };
+  rotation: number;
+  textX: number;
+  imageSize: number;
+  scale: number;
+  textVerticalOffset: number;
+  fromItems?: WheelItem[] | null;
+  transition: number;
+  overlayOpacity: number;
+  winningIndex: number;
+}
+
+function paintSegmentContent(
+  ctx: CanvasRenderingContext2D,
+  items: WheelItem[],
+  layout: CachedLayout,
+  c: SegmentContentCtx,
+): void {
+  const { center, rotation, textX, imageSize, scale, textVerticalOffset,
+          fromItems, transition, overlayOpacity, winningIndex } = c;
+  const won = overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length;
+
+  const drawLabel = (i: number, alpha: number) => {
+    const ft = _ftVal[i];
+    if (!ft) return;
+    const item = items[i];
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // Clip to the slice's exact wedge (same rotated frame the fill used) so
+    // over-long labels crop at the boundary instead of spilling.
+    ctx.clip(layout.paths[i]);
+    ctx.translate(center.x, center.y);
+    ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
+    ctx.fillStyle = tintedTextColor(item.color);
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    drawSegmentVisual(ctx, item, textX, imageSize, scale, item.color);
+    ctx.font = `600 ${ft.fontSize}px Inter, sans-serif`;
+    const lineH = ft.fontSize * 1.05;
+    const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
+    for (let li = 0; li < ft.lines.length; li++) {
+      ctx.fillText(ft.lines[li], ft.textX, y0 + li * lineH);
+    }
+    ctx.restore();
+  };
+
+  ctx.save();
+  ctx.translate(center.x, center.y);
+  ctx.rotate(rotation);
+  ctx.translate(-center.x, -center.y);
+
+  for (let i = 0; i < items.length; i++) {
+    if (layout.segmentSizes[i] < 0.005) continue;
+    // The winner is redrawn bright below; its dimmed copy would just sit under
+    // the bright win fill, so skip it here.
+    if (won && i === winningIndex) continue;
+
+    // Add/remove fade: labels on a sliver-thin (near-zero-weight) slice fade
+    // rather than pop at full opacity.
+    let alpha = 1;
+    if (fromItems && i < fromItems.length && transition < 1) {
+      const fromWeight = fromItems[i].weight;
+      const toWeight = items[i].weight;
+      if (fromWeight <= 0.002) alpha = transition;
+      else if (toWeight <= 0.002) alpha = 1 - transition;
+    }
+    // The pixelated art already carries the dark win overlay; fade non-winning
+    // labels by the same amount so they recede with it.
+    if (won) alpha *= 1 - overlayOpacity * 0.7;
+    if (alpha <= 0) continue;
+    drawLabel(i, alpha);
+  }
+
+  // Winner, bright, on top — matches the old overlay's globalAlpha = overlayOpacity.
+  if (won) drawLabel(winningIndex, overlayOpacity);
+
+  ctx.restore();
 }
 
 // ── Hand-drawn "rough" wheel geometry ───────────────────────────────────────

@@ -4,6 +4,7 @@ import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
+import { PixelButton } from '../components/PixelButton';
 import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -1650,11 +1651,9 @@ export default function RouletteScreen({
               overflow: 'hidden',
               transition: wheelTransitionCss,
             }}>
-              {/* Matches the Add Segment button's style (rounded, 3px stroke,
-                  height 54), but keeps SPIN's larger 24px label. */}
-              <PushDownButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} borderRadius={32} innerStrokeWidth={3} height={54} bottomBorderWidth={6}>
-                <span style={{ color: '#FFF', fontSize: 24, fontWeight: 800, letterSpacing: 2 }}>SPIN</span>
-              </PushDownButton>
+              {/* PROTOTYPE: full pixel-art button — rough + pixelated as one unit
+                  (label included, no AA). Swap back to PushDownButton to revert. */}
+              <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={16} />
             </div>
           )}
 

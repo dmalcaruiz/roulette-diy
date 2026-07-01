@@ -326,10 +326,11 @@ function playWinChord(): void {
   }
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig } from './WheelCanvas';
+import { paintWheel, WheelPainterConfig, PIXEL_SCALE } from './WheelCanvas';
 export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
+import PixelatedMarker from './PixelatedMarker';
 import DotCelebration, { DotCelebrationHandle } from './DotCelebration';
 
 // Evaluate a CSS cubic-bezier(x1,y1,x2,y2) timing function in JS, so audio
@@ -494,6 +495,17 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Pixelate mode splits the wheel across two stacked canvases so text stays
+  // crisp: the ART canvas (canvasRef) carries `image-rendering: pixelated`, the
+  // TEXT canvas (labels/visuals) renders smooth. Both live inside the rotor div,
+  // which is what the spin/decay transforms rotate — so they turn as one and the
+  // marker (rotor's sibling) stays put.
+  const textCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Win DIM layer: a dark mask (rough disc minus the winning wedge) composited
+  // OVER the baked wheel and faded via CSS opacity — so the win dim tints the
+  // already-rendered pixels instead of re-baking the wheel per frame.
+  const dimCanvasRef = useRef<HTMLCanvasElement>(null);
+  const rotorRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
   const rotationRef = useRef(0);
   const isSpinningRef = useRef(false);
@@ -533,6 +545,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // natural fade-out) — NOT during a user-triggered dismiss fade. A tap stops an
   // active overlay; once it's being dismissed, the next tap spins normally.
   const winOverlayActiveRef = useRef(false);
+  // True during the win-overlay FADE frames → paint() skips the heavy palette-vote
+  // quantization (cheap nearest instead) so the fade stays smooth. Cleared for the
+  // held (full-opacity) + rest frames so those quantize crisply.
+  const overlayFadingRef = useRef(false);
   // Result dialog + dot celebration, revealed as the win overlay fades out.
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -663,40 +679,16 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
-  // Paint implementation. Rebuilds whenever size/items/etc. change so it
-  // reads the latest props and resizes the canvas's internal pixel buffer
-  // to match.
-  const paintImpl = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
+  // Build the painter config from the current props + refs. Shared by the wheel
+  // bake (paintImpl) and the win dim-mask bake (paintDimMask) so both use the
+  // exact same geometry (winner wedge aligns with the baked wheel).
+  const buildWheelConfig = useCallback((): WheelPainterConfig => {
     const displaySize = size;
-
-    if (canvas.width !== displaySize * dpr || canvas.height !== displaySize * dpr) {
-      canvas.width = displaySize * dpr;
-      canvas.height = displaySize * dpr;
-      ctx.scale(dpr, dpr);
-    }
-
-    // Font size scales with wheel display size AND tapers down as segment
-    // count grows past 16 (each slice gets thinner so text needs to follow).
-    // The previous formula hard-coded 24px for `items.length >= 16`, which
-    // (a) created a visible jump at 15→16 segments on small wheels and
-    // (b) stopped scaling with displaySize entirely past 16 — text stayed
-    // big when the wheel shrunk. `displaySize / Math.max(16, items.length)`
-    // gives identical output for ≤16 segments and a smooth taper after.
-    // Map the Segment Text slider's DISPLAY value to the actual render
-    // multiplier, so the UI numbers stay clean while the text is sized right:
-    //   display 0.1 (min)  → 0.30  (smallest, still readable)
-    //   display 1.0 (deflt) → 0.95  (the calibrated neutral)
-    // linear between (and extrapolated above 1.0).
+    // Segment-text auto-fit target: scales with wheel size, tapers past 16 slices.
+    // Maps the slider's display value (0.1→0.30 … 1.0→0.95) to the render multiplier.
     const textMult = 0.3 + (textSizeMultiplier - 0.1) * (0.95 - 0.3) / (1.0 - 0.1);
     const fontSize = displaySize / Math.max(16, items.length) * textMult;
-
-    const config: WheelPainterConfig = {
+    return {
       items,
       rotation: bakedRotationRef.current,
       fontSize,
@@ -723,14 +715,74 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       fromItems: fromItemsRef.current,
       transition: transitionRef.current,
       roughSeed,
+      fastPixelate: overlayFadingRef.current,
     };
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    paintWheel(ctx, displaySize, displaySize, config);
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
       bezelDotsColorMode, bezelDotsCustomColor, textWrap, markerDiameter,
       showBackgroundCircle, imageSize, overlayColor, innerCornerStyle, centerInset,
       wheelBaseColor, roughSeed]);
+
+  // Render ONLY the win dim mask onto the dedicated dim canvas, composited over the
+  // baked wheel. Called ONCE per win — its opacity is then CSS-animated (no re-bake).
+  const paintDimMask = useCallback(() => {
+    const canvas = dimCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const displaySize = size;
+    if (canvas.width !== displaySize * dpr || canvas.height !== displaySize * dpr) {
+      canvas.width = displaySize * dpr;
+      canvas.height = displaySize * dpr;
+    }
+    const config = buildWheelConfig();
+    config.dimMaskOnly = true;
+    config.winningIndex = winningIndexRef.current;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintWheel(ctx, displaySize, displaySize, config);
+  }, [size, buildWheelConfig]);
+
+  // Paint implementation. Rebuilds whenever size/items/etc. change so it
+  // reads the latest props and resizes the canvas's internal pixel buffer
+  // to match.
+  const paintImpl = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const displaySize = size;
+
+    if (canvas.width !== displaySize * dpr || canvas.height !== displaySize * dpr) {
+      canvas.width = displaySize * dpr;
+      canvas.height = displaySize * dpr;
+      ctx.scale(dpr, dpr);
+    }
+
+    const config = buildWheelConfig();
+
+    // When pixelating, route labels/visuals to the smooth text canvas so they
+    // don't inherit the art canvas's nearest-neighbour `image-rendering`.
+    let textCtx: CanvasRenderingContext2D | null = null;
+    if (PIXEL_SCALE > 1) {
+      const textCanvas = textCanvasRef.current;
+      if (textCanvas) {
+        textCtx = textCanvas.getContext('2d');
+        if (textCtx) {
+          if (textCanvas.width !== displaySize * dpr || textCanvas.height !== displaySize * dpr) {
+            textCanvas.width = displaySize * dpr;
+            textCanvas.height = displaySize * dpr;
+          }
+          textCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          textCtx.clearRect(0, 0, displaySize, displaySize);
+        }
+      }
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paintWheel(ctx, displaySize, displaySize, config, textCtx);
+  }, [size, buildWheelConfig]);
 
   // Public `paint` is *stable* (never changes identity) but always invokes
   // the latest paintImpl via a ref. The spin/decay rAF callbacks capture
@@ -754,7 +806,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (gpuSpinActiveRef.current) return;
     bakedRotationRef.current = rotationRef.current;
     paintImplRef.current();
-    const c = canvasRef.current;
+    const c = rotorRef.current;
     // Clear any spin transition + transform so the just-baked bitmap shows at
     // identity. NO translateZ/will-change here: the live drag repaints the
     // bitmap every move, and forcing the canvas onto its own GPU layer makes
@@ -762,6 +814,16 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // tap/decay CSS transitions self-promote a layer via the translateZ(0) in
     // THEIR transforms, only while they run.
     if (c) { c.style.transition = 'none'; c.style.transform = 'none'; }
+  }, []);
+
+  // Keep the wheel canvas on its own GPU layer (identity transform) during the win
+  // overlay / result dialog. paint() resets the transform to 'none' (no layer), and
+  // when the dialog's translucent layer composites over an un-layered pixelated
+  // canvas the browser re-rasterizes it — which read as a "wiggle" while the aviso
+  // was up. translateZ(0) is visually identity but forces a stable cached layer.
+  const keepWheelLayer = useCallback(() => {
+    const r = rotorRef.current;
+    if (r) r.style.transform = 'translateZ(0)';
   }, []);
 
   // Like paint(), but safe to call WHILE a GPU tap-spin is animating. paint() is
@@ -829,10 +891,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       // instant you grab ("harsh"). Read the live transform matrix and rebuild
       // the absolute rotation: the matrix gives the angle mod 2π, the estimate
       // supplies the turn count.
-      const canvas = canvasRef.current;
-      if (canvas) {
+      const rotor = rotorRef.current;
+      if (rotor) {
         try {
-          const m = new DOMMatrixReadOnly(getComputedStyle(canvas).transform);
+          const m = new DOMMatrixReadOnly(getComputedStyle(rotor).transform);
           const matrixTheta = Math.atan2(m.b, m.a);
           const approxDelta = rotationRef.current - bakedRotationRef.current;
           const k = Math.round((approxDelta - matrixTheta) / (2 * Math.PI));
@@ -856,88 +918,70 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // grabs the wheel mid-win-animation: we don't want the dark tint to
   // sit on top of their drag, but we also don't want a hard cut.
   const WIN_INTERRUPT_FADE_MS = 180;
+  const OVERLAY_FADE_MS = 400;
+  const DIM_MAX = 0.7;              // matches the old overlayOpacity * 0.7 dim cap
+
+  // Fade the dim layer out, then un-promote + settle to the plain rest frame.
   const cancelWinOverlay = useCallback(() => {
-    // Nothing in flight: nothing to do.
-    if (overlayOpacityRef.current === 0 && winningIndexRef.current === -1) return;
-    // The overlay is now being dismissed (no longer actively playing) — a tap
-    // from here should spin normally rather than "stop" again.
+    if (winningIndexRef.current === -1) return; // nothing in flight
     winOverlayActiveRef.current = false;
     cancelAnimationFrame(winAnimRef.current);
-    if (winHoldTimerRef.current) {
-      clearTimeout(winHoldTimerRef.current);
+    if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
+    const dim = dimCanvasRef.current;
+    if (dim) { dim.style.transition = `opacity ${WIN_INTERRUPT_FADE_MS}ms ease`; dim.style.opacity = '0'; }
+    winHoldTimerRef.current = setTimeout(() => {
       winHoldTimerRef.current = null;
-    }
-    const startOpacity = overlayOpacityRef.current;
-    const fadeStart = performance.now();
-    const tick = (t1: number) => {
-      const t = Math.min(1, (t1 - fadeStart) / WIN_INTERRUPT_FADE_MS);
-      overlayOpacityRef.current = startOpacity * (1 - easeInOut(t));
-      paint();
-      if (t < 1) {
-        winAnimRef.current = requestAnimationFrame(tick);
-      } else {
-        overlayOpacityRef.current = 0;
-        winningIndexRef.current = -1;
-        paint();
-      }
-    };
-    winAnimRef.current = requestAnimationFrame(tick);
+      winningIndexRef.current = -1;
+      paint(); // un-promote the wheel layer; back to the plain rest frame
+    }, WIN_INTERRUPT_FADE_MS);
   }, [paint]);
 
+  // Win flash. The wheel is already baked (at rest), so we render the dim MASK once
+  // (dark disc with the winning wedge punched out) onto its own canvas and animate
+  // ITS opacity via CSS — the dim tints the already-rendered pixels with ZERO
+  // per-frame wheel re-bake.
   const playWinOverlay = useCallback((idx: number) => {
     playWinChord();
     cancelAnimationFrame(winAnimRef.current);
-    if (winHoldTimerRef.current) {
-      clearTimeout(winHoldTimerRef.current);
-      winHoldTimerRef.current = null;
-    }
+    if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
     winningIndexRef.current = idx;
     winOverlayActiveRef.current = true;
-    const overlayDuration = 400;
-    const overlayStart = performance.now();
-    const animateOverlayIn = (t0: number) => {
-      const t = Math.min(1, (t0 - overlayStart) / overlayDuration);
-      overlayOpacityRef.current = easeInOut(t);
-      paint();
-      if (t < 1) {
-        winAnimRef.current = requestAnimationFrame(animateOverlayIn);
-      } else if (resultDialogRef.current) {
-        // Dialog mode: a short beat after the flash fades in, reveal the dialog
-        // + celebration and FREEZE the flash at full opacity. The fade-out is
-        // deferred until the dialog is dismissed (Done) — or killed instantly on
-        // "Spin again". So the flash is "paused" behind the dialog meanwhile.
+    keepWheelLayer();   // promote the wheel group so the dialog can't re-raster it
+    paintDimMask();     // render the dim mask once for this winner
+    const dim = dimCanvasRef.current;
+    if (dim) {
+      dim.style.transition = 'none';
+      dim.style.opacity = '0';
+      void dim.offsetWidth;   // commit the 0 before transitioning in
+      dim.style.transition = `opacity ${OVERLAY_FADE_MS}ms ease`;
+      dim.style.opacity = String(DIM_MAX);
+    }
+    if (resultDialogRef.current) {
+      // Dialog mode: after the fade-in + a beat, reveal the dialog + celebration.
+      // The dim HOLDS at full opacity until the dialog is dismissed (cancelWinOverlay).
+      winHoldTimerRef.current = setTimeout(() => {
+        winHoldTimerRef.current = null;
+        const its = itemsRef.current;
+        setResultText(its[winningIndexRef.current]?.text ?? '');
+        const cols = Array.from(new Set(its.map((it) => it.color)));
+        cols.push('#FFD23D', '#FFFFFF');
+        celebrationRef.current?.burst(cols);
+      }, OVERLAY_FADE_MS + 250);
+    } else {
+      // No dialog: hold the flash, then fade it out.
+      winHoldTimerRef.current = setTimeout(() => {
+        winHoldTimerRef.current = null;
+        const d = dimCanvasRef.current;
+        if (d) { d.style.transition = `opacity ${OVERLAY_FADE_MS}ms ease`; d.style.opacity = '0'; }
         winHoldTimerRef.current = setTimeout(() => {
           winHoldTimerRef.current = null;
-          const its = itemsRef.current;
-          setResultText(its[winningIndexRef.current]?.text ?? '');
-          const cols = Array.from(new Set(its.map((it) => it.color)));
-          cols.push('#FFD23D', '#FFFFFF');
-          celebrationRef.current?.burst(cols);
-        }, 250);
-      } else {
-        // No dialog: hold the flash, then fade it out (the usual win flash).
-        winHoldTimerRef.current = setTimeout(() => {
-          winHoldTimerRef.current = null;
-          const fadeStart = performance.now();
-          const animateOverlayOut = (t1: number) => {
-            const t = Math.min(1, (t1 - fadeStart) / overlayDuration);
-            overlayOpacityRef.current = 1 - easeInOut(t);
-            paint();
-            if (t < 1) {
-              winAnimRef.current = requestAnimationFrame(animateOverlayOut);
-            } else {
-              overlayOpacityRef.current = 0;
-              winningIndexRef.current = -1;
-              winOverlayActiveRef.current = false;
-              paint();
-            }
-          };
-          winAnimRef.current = requestAnimationFrame(animateOverlayOut);
-        }, 2000);
-      }
-    };
-    winAnimRef.current = requestAnimationFrame(animateOverlayIn);
-  }, [paint]);
+          winningIndexRef.current = -1;
+          winOverlayActiveRef.current = false;
+          paint(); // un-promote, settle to rest
+        }, OVERLAY_FADE_MS);
+      }, OVERLAY_FADE_MS + 2000);
+    }
+  }, [playWinChord, paintDimMask, keepWheelLayer, paint]);
 
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
@@ -1017,16 +1061,20 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // smooth even under main-thread load. Phase 1 (wind-up) starts now; phase 2
     // (main spin) is flipped on by the read-only loop once the wind-up elapses.
     // That loop also drives the header — like Spinly's tickLoop. ─────────────
+    // Bake at the FINAL orientation up front, then let the CSS transform UNWIND to
+    // identity. The wheel lands on this exact screen-aligned, hard-pixel frame with
+    // no end-of-spin re-bake and no tilted-pixel landing. The transform carries the
+    // whole rotation as an offset (start angle = −finalRotation, rest = 0), so the
+    // visible trajectory is unchanged — only the resting frame is now pixel-clean.
+    const finalAbs = startRotation + finalRotation;
     rotationRef.current = startRotation;
-    paint();                          // bake at start; transition none; transform 0
-    bakedRotationRef.current = startRotation;
+    paint();                          // bake at START for the wind-up (near-still, so keep it clean)
     gpuSpinActiveRef.current = true;
     spinStartPerfRef.current = performance.now();
 
-    const canvasEl = canvasRef.current;
+    const canvasEl = rotorRef.current;
     if (canvasEl) {
-      // Commit the start state with no transition, force a reflow so the browser
-      // registers it, then start the wind-up transition.
+      // Wind-up runs on the START-orientation bake, transform from identity.
       canvasEl.style.transition = 'none';
       canvasEl.style.transform = 'rotate(0rad) translateZ(0)';
       void canvasEl.offsetWidth;
@@ -1107,8 +1155,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       if (!phase2Started && elapsed >= pullbackDurationMs) {
         phase2Started = true;
         if (canvasEl) {
+          // End of wind-up: re-bake at the FINAL orientation, then unwind the
+          // transform to identity so the main spin LANDS on that pixel-clean frame.
+          // paint() is guarded mid-spin, so drive the painter directly.
+          bakedRotationRef.current = finalAbs;
+          paintImplRef.current();
+          // Hold the current wind-up-end angle (start − pullback) under the new
+          // bake — transform = (start−pullback) − finalAbs — with no transition,
+          // force a reflow, then animate to identity.
+          canvasEl.style.transition = 'none';
+          canvasEl.style.transform = `rotate(${-pullbackAmount - finalRotation}rad) translateZ(0)`;
+          void canvasEl.offsetWidth;
           canvasEl.style.transition = `transform ${durationMs / 1000}s ${SPIN_EASE_CSS}`;
-          canvasEl.style.transform = `rotate(${finalRotation}rad) translateZ(0)`;
+          canvasEl.style.transform = `rotate(0rad) translateZ(0)`;
         }
       }
       rotationRef.current = rotAtElapsed(elapsed);
@@ -1150,6 +1209,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     overlayOpacityRef.current = 0;
     winningIndexRef.current = -1;
     winOverlayActiveRef.current = false;
+    if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
+    if (dimCanvasRef.current) { dimCanvasRef.current.style.transition = 'none'; dimCanvasRef.current.style.opacity = '0'; }
 
     const current = rotationRef.current;
     const fullRotation = 2 * Math.PI;
@@ -1471,22 +1532,25 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const decayDelta = (Math.sign(velocity) * STOP_VELOCITY - velocity) / lnF;
     const decayTarget = decayStartRotation + decayDelta;
 
-    // Re-bake at the current dragged rotation, then hand the wind-down to the
-    // compositor (the drag left us in transform mode at bakedRotation = grab).
+    // Bake at the FINAL (rest) orientation, then let the transform unwind to
+    // identity so the fling lands on a pixel-clean, screen-aligned frame.
     gpuSpinActiveRef.current = false;
+    rotationRef.current = decayTarget;   // paint() bakes at rotationRef → bake the FINAL orientation
+    paint();                          // bakedRotationRef ← decayTarget; transform cleared to none (= rest)
     rotationRef.current = decayStartRotation;
-    paint();                          // bake current; transition none; transform 0
-    bakedRotationRef.current = decayStartRotation;
     gpuSpinActiveRef.current = true;
     spinStartPerfRef.current = performance.now();
 
-    const decayCanvas = canvasRef.current;
+    const decayCanvas = rotorRef.current;
     if (decayCanvas) {
-      void decayCanvas.offsetWidth;   // commit the transform:0 start state
+      // paint() left transform at none (= rest); set the start offset first.
+      decayCanvas.style.transition = 'none';
+      decayCanvas.style.transform = `rotate(${-decayDelta}rad) translateZ(0)`;
+      void decayCanvas.offsetWidth;   // commit the start-offset state
       requestAnimationFrame(() => {
         if (!gpuSpinActiveRef.current) return; // grabbed/cancelled before it began
         decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${DECAY_EASE_CSS}`;
-        decayCanvas.style.transform = `rotate(${decayDelta}rad) translateZ(0)`;
+        decayCanvas.style.transform = `rotate(0rad) translateZ(0)`;
       });
     }
 
@@ -1586,6 +1650,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     overlayOpacityRef.current = 0;
     winningIndexRef.current = -1;
     winOverlayActiveRef.current = false;
+    if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
+    if (dimCanvasRef.current) { dimCanvasRef.current.style.transition = 'none'; dimCanvasRef.current.style.opacity = '0'; }
     setResultText(null);
     spin();
   };
@@ -1645,14 +1711,41 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
       >
-        <canvas
-          ref={canvasRef}
-          // No persistent will-change: the live drag repaints the bitmap each
-          // move, and a forced compositor layer would re-upload the texture
-          // every frame. The tap/decay CSS transitions promote a layer on their
-          // own (via translateZ(0) in their transforms) only while animating.
-          style={{ width: size, height: size, display: 'block' }}
-        />
+        {/* Rotor — the spin/decay transforms rotate THIS, so the art + text
+            canvases turn together. The marker below is its sibling, so it
+            doesn't rotate. */}
+        <div ref={rotorRef} style={{ position: 'relative', width: size, height: size }}>
+          <canvas
+            ref={canvasRef}
+            // No persistent will-change: the live drag repaints the bitmap each
+            // move, and a forced compositor layer would re-upload the texture
+            // every frame. The tap/decay CSS transitions promote a layer on their
+            // own (via translateZ(0) in their transforms) only while animating.
+            // Pixelate mode: force nearest-neighbour sampling so the GPU keeps the
+            // baked blocks crisp through the CSS-rotate spin + dpr downscale
+            // instead of bilinear-smoothing them back into AA. Labels live on the
+            // separate smooth canvas above, so this never jags text.
+            style={{ width: size, height: size, display: 'block', imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined }}
+          />
+          {PIXEL_SCALE > 1 && (
+            <canvas
+              ref={textCanvasRef}
+              // Smooth (default image-rendering) overlay carrying only the crisp
+              // labels + per-slice visuals, aligned exactly over the art canvas.
+              style={{ position: 'absolute', top: 0, left: 0, width: size, height: size, display: 'block', pointerEvents: 'none' }}
+            />
+          )}
+          {/* Win DIM layer — dark mask (winner punched out) composited over the
+              baked wheel + labels, faded via CSS opacity. Starts invisible. */}
+          <canvas
+            ref={dimCanvasRef}
+            style={{
+              position: 'absolute', top: 0, left: 0, width: size, height: size, display: 'block',
+              pointerEvents: 'none', opacity: 0, willChange: 'opacity',
+              imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined,
+            }}
+          />
+        </div>
         {/* Center marker */}
         <div style={{
           position: 'absolute',
@@ -1661,14 +1754,27 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           transform: 'translate(-50%, -50%)',
           pointerEvents: 'none',
         }}>
-          <CustomMarker
-            size={size * (250 / 700)}
-            markerDiameter={markerDiameter}
-            markerPeek={markerPeek}
-            markerBaseColor={markerBaseColor}
-            roughSeed={roughSeed}
-            showPin={showPin}
-          />
+          {/* Pixelate mode uses the canvas marker so the centre matches the
+              wheel's lo-fi look. The pin (default off) isn't ported to canvas
+              yet, so fall back to the SVG marker when it's on. */}
+          {PIXEL_SCALE > 1 && !showPin ? (
+            <PixelatedMarker
+              size={size * (250 / 700)}
+              markerDiameter={markerDiameter}
+              markerPeek={markerPeek}
+              markerBaseColor={markerBaseColor}
+              roughSeed={roughSeed}
+            />
+          ) : (
+            <CustomMarker
+              size={size * (250 / 700)}
+              markerDiameter={markerDiameter}
+              markerPeek={markerPeek}
+              markerBaseColor={markerBaseColor}
+              roughSeed={roughSeed}
+              showPin={showPin}
+            />
+          )}
         </div>
       </div>
 
