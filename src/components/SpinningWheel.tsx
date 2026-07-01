@@ -1034,8 +1034,117 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     }
   }, [playWinChord, paintDimMask, keepWheelLayer, paint]);
 
+  // ── Momentum decay launcher ──
+  // The flick physics as ONE compositor CSS transition (smooth even under
+  // main-thread load — a per-frame rAF version stuttered). Exponential
+  // friction has a closed form, so the rest point + stop time are computed
+  // analytically and we transition there with a decel curve. A read-only rAF
+  // tracks the angle for the header, ticks, the win check, and momentum carry.
+  // Shared by the drag release (handlePointerUp) and the mid-spin SPIN-press
+  // boost. Caller must have frozen/committed the current rotation first.
+  const launchDecay = useCallback((velocity: number) => {
+    if (Math.abs(velocity) < STOP_VELOCITY) { paint(); return; } // nothing to launch
+    const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
+    isSpinningRef.current = true;
+    decayInterruptedRef.current = false;
+    momentumVelocityRef.current = velocity;
+    const decayStartRotation = rotationRef.current;
+
+    // Closed form of `rotation += v·dt; v *= F^dt`: rotation(t) = r0 + v0·(Fᵗ−1)/lnF.
+    // Stops when |v| dips below STOP_VELOCITY.
+    const lnF = Math.log(FRICTION_PER_MS);
+    const decayDurationMs = Math.log(STOP_VELOCITY / Math.abs(velocity)) / lnF;
+    const decayDelta = (Math.sign(velocity) * STOP_VELOCITY - velocity) / lnF;
+    const decayTarget = decayStartRotation + decayDelta;
+
+    // Bake at the FINAL (rest) orientation, then let the transform unwind to
+    // identity so the fling lands on a pixel-clean, screen-aligned frame.
+    gpuSpinActiveRef.current = false;
+    rotationRef.current = decayTarget;   // paint() bakes at rotationRef → bake the FINAL orientation
+    // A brisk fling's target bake is only ever seen in motion (finishDecay
+    // re-quantizes the true rest frame) — skip the palette-vote for it. Slow
+    // nudges keep the full bake: their whole decay is a visible crawl.
+    fastBakeRef.current = isSpinAttempt;
+    paint();                          // bakedRotationRef ← decayTarget; transform cleared to none (= rest)
+    fastBakeRef.current = false;
+    rotationRef.current = decayStartRotation;
+    gpuSpinActiveRef.current = true;
+    spinStartPerfRef.current = performance.now();
+
+    const decayCanvas = rotorRef.current;
+    if (decayCanvas) {
+      // paint() left transform at none (= rest); set the start offset first.
+      decayCanvas.style.transition = 'none';
+      decayCanvas.style.transform = `rotate(${-decayDelta}rad) translateZ(0)`;
+      void decayCanvas.offsetWidth;   // commit the start-offset state
+      requestAnimationFrame(() => {
+        if (!gpuSpinActiveRef.current) return; // grabbed/cancelled before it began
+        decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${DECAY_EASE_CSS}`;
+        decayCanvas.style.transform = `rotate(0rad) translateZ(0)`;
+      });
+    }
+
+    let lastSegment = segmentAtRotation(decayStartRotation);
+
+    const finishDecay = () => {
+      gpuSpinActiveRef.current = false;
+      cancelAnimationFrame(headerRafRef.current);
+      rotationRef.current = decayTarget;
+      paint();                        // commit the rest rotation
+      isSpinningRef.current = false;
+      momentumVelocityRef.current = 0;
+      if (decayInterruptedRef.current) { decayInterruptedRef.current = false; return; }
+      if (!isSpinAttempt) return;
+      // Natural stop after a real spin attempt → fire the win flow, gated on a
+      // minimum travel so a lazy flick doesn't earn a celebration.
+      const idx = getWinningIndex();
+      onFinished(idx);
+      const MIN_WIN_REVOLUTIONS = 1.3;
+      if (showWinAnimation && Math.abs(decayDelta) / (2 * Math.PI) >= MIN_WIN_REVOLUTIONS) playWinOverlay(idx);
+    };
+
+    const decayTick = () => {
+      const elapsed = performance.now() - spinStartPerfRef.current;
+      const p = Math.min(1, elapsed / decayDurationMs);
+      rotationRef.current = decayStartRotation + decayDelta * DECAY_EASE_FN(p);
+      // Momentum carry for re-grab: numeric derivative of the curve (rad/ms).
+      const epsMs = 8;
+      const pPrev = Math.max(0, (elapsed - epsMs) / decayDurationMs);
+      momentumVelocityRef.current = (decayDelta * (DECAY_EASE_FN(p) - DECAY_EASE_FN(pPrev))) / epsMs;
+      const seg = segmentAtRotation(rotationRef.current);
+      if (seg !== lastSegment) {
+        lastSegment = seg;
+        lastRenderedSegmentRef.current = seg;
+        setCurrentSegment(seg);
+        playTickInline(tickFnRef.current);
+      }
+      if (elapsed < decayDurationMs && !decayInterruptedRef.current) {
+        headerRafRef.current = requestAnimationFrame(decayTick);
+      } else {
+        finishDecay();
+      }
+    };
+    headerRafRef.current = requestAnimationFrame(decayTick);
+  }, [paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay]);
+
   const spin = useCallback(() => {
-    if (isSpinningRef.current) return;
+    if (isSpinningRef.current) {
+      // Mid-spin press ADDS momentum instead of being ignored: freeze the
+      // live motion at its exact angle (cheap bake — it's transient), add a
+      // button-press worth of velocity in the direction of travel, and
+      // relaunch as a physics decay — the winner then resolves from the
+      // actual resting rotation, exactly like a re-flick. Capped at
+      // MAX_VELOCITY, the same ceiling as every other spin source.
+      const v0 = momentumVelocityRef.current;
+      cancelInFlight();
+      // Direction of travel. The tap-spin's brief wind-up (a small NEGATIVE
+      // velocity right before the forward launch) counts as forward, so a
+      // rapid double-press can't fire the wheel backwards.
+      const dir = v0 < -0.006 ? -1 : 1;
+      const v = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v0 + dir * SPIN_PRESS_BOOST));
+      launchDecay(v);
+      return;
+    }
     // A compositor settle animation (reset / focusSegment) may be mid-flight —
     // freeze it at its exact visual angle before reading rotationRef, and kill
     // its pending settle watcher so it can't fire into THIS spin. (The gesture
@@ -1227,6 +1336,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         }
       }
       rotationRef.current = rotAtElapsed(elapsed);
+      // Live velocity (rad/ms) — lets a mid-spin SPIN press (and a re-grab)
+      // carry the current momentum. Numeric derivative, like the decay tick.
+      momentumVelocityRef.current = (rotationRef.current - rotAtElapsed(Math.max(0, elapsed - 8))) / 8;
       const seg = segmentAtRotation(rotationRef.current);
       if (seg !== lastSegment) {
         lastSegment = seg;
@@ -1240,7 +1352,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       }
     };
     headerRafRef.current = requestAnimationFrame(tickLoop);
-  }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint, cancelInFlight,
+  }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint, cancelInFlight, launchDecay,
       segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playWinOverlay]);
 
   const reset = useCallback(() => {
@@ -1453,6 +1565,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // 12-segment wheel — still inside WebAudio's comfort zone but high
   // enough that aggressive flicks have meaningful headroom.
   const MAX_VELOCITY = 0.035;
+  // Velocity added by pressing SPIN while the wheel is already in motion —
+  // roughly one mid-intensity button-spin's mean speed. Repeated presses
+  // accumulate toward MAX_VELOCITY, the same ceiling every spin source has.
+  const SPIN_PRESS_BOOST = 0.012; // rad/ms
 
   // (cancelInFlight + playWinOverlay are declared before spin() so that
   // spin's useCallback can include playWinOverlay in its deps.)
@@ -1690,92 +1806,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       return;
     }
 
-    // Momentum decay as ONE compositor CSS transition (smooth even under
-    // main-thread load — the per-frame rAF version stuttered). Exponential
-    // friction has a closed form, so the rest point + stop time are computed
-    // analytically and we transition there with a decel curve. A read-only rAF
-    // tracks the angle for the header, ticks, the win check, and momentum carry.
-    isSpinningRef.current = true;
-    decayInterruptedRef.current = false;
-    momentumVelocityRef.current = velocity;
-    const decayStartRotation = rotationRef.current;
-
-    // Closed form of `rotation += v·dt; v *= F^dt`: rotation(t) = r0 + v0·(Fᵗ−1)/lnF.
-    // Stops when |v| dips below STOP_VELOCITY.
-    const lnF = Math.log(FRICTION_PER_MS);
-    const decayDurationMs = Math.log(STOP_VELOCITY / Math.abs(velocity)) / lnF;
-    const decayDelta = (Math.sign(velocity) * STOP_VELOCITY - velocity) / lnF;
-    const decayTarget = decayStartRotation + decayDelta;
-
-    // Bake at the FINAL (rest) orientation, then let the transform unwind to
-    // identity so the fling lands on a pixel-clean, screen-aligned frame.
-    gpuSpinActiveRef.current = false;
-    rotationRef.current = decayTarget;   // paint() bakes at rotationRef → bake the FINAL orientation
-    // A brisk fling's target bake is only ever seen in motion (finishDecay
-    // re-quantizes the true rest frame) — skip the palette-vote for it. Slow
-    // nudges keep the full bake: their whole decay is a visible crawl.
-    fastBakeRef.current = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
-    paint();                          // bakedRotationRef ← decayTarget; transform cleared to none (= rest)
-    fastBakeRef.current = false;
-    rotationRef.current = decayStartRotation;
-    gpuSpinActiveRef.current = true;
-    spinStartPerfRef.current = performance.now();
-
-    const decayCanvas = rotorRef.current;
-    if (decayCanvas) {
-      // paint() left transform at none (= rest); set the start offset first.
-      decayCanvas.style.transition = 'none';
-      decayCanvas.style.transform = `rotate(${-decayDelta}rad) translateZ(0)`;
-      void decayCanvas.offsetWidth;   // commit the start-offset state
-      requestAnimationFrame(() => {
-        if (!gpuSpinActiveRef.current) return; // grabbed/cancelled before it began
-        decayCanvas.style.transition = `transform ${decayDurationMs / 1000}s ${DECAY_EASE_CSS}`;
-        decayCanvas.style.transform = `rotate(0rad) translateZ(0)`;
-      });
-    }
-
-    let lastSegment = segmentAtRotation(decayStartRotation);
-
-    const finishDecay = () => {
-      gpuSpinActiveRef.current = false;
-      cancelAnimationFrame(headerRafRef.current);
-      rotationRef.current = decayTarget;
-      paint();                        // commit the rest rotation
-      isSpinningRef.current = false;
-      momentumVelocityRef.current = 0;
-      if (decayInterruptedRef.current) { decayInterruptedRef.current = false; return; }
-      if (!isSpinAttempt) return;
-      // Natural stop after a real spin attempt → fire the win flow, gated on a
-      // minimum travel so a lazy flick doesn't earn a celebration.
-      const idx = getWinningIndex();
-      onFinished(idx);
-      const MIN_WIN_REVOLUTIONS = 1.3;
-      if (showWinAnimation && Math.abs(decayDelta) / (2 * Math.PI) >= MIN_WIN_REVOLUTIONS) playWinOverlay(idx);
-    };
-
-    const decayTick = () => {
-      const elapsed = performance.now() - spinStartPerfRef.current;
-      const p = Math.min(1, elapsed / decayDurationMs);
-      rotationRef.current = decayStartRotation + decayDelta * DECAY_EASE_FN(p);
-      // Momentum carry for re-grab: numeric derivative of the curve (rad/ms).
-      const epsMs = 8;
-      const pPrev = Math.max(0, (elapsed - epsMs) / decayDurationMs);
-      momentumVelocityRef.current = (decayDelta * (DECAY_EASE_FN(p) - DECAY_EASE_FN(pPrev))) / epsMs;
-      const seg = segmentAtRotation(rotationRef.current);
-      if (seg !== lastSegment) {
-        lastSegment = seg;
-        lastRenderedSegmentRef.current = seg;
-        setCurrentSegment(seg);
-        playTickInline(tickFnRef.current);
-      }
-      if (elapsed < decayDurationMs && !decayInterruptedRef.current) {
-        headerRafRef.current = requestAnimationFrame(decayTick);
-      } else {
-        finishDecay();
-      }
-    };
-    headerRafRef.current = requestAnimationFrame(decayTick);
-  }, [spin, paint, segmentAtRotation, getWinningIndex, onFinished, showWinAnimation, playWinOverlay, onSegmentLongPress, segmentIndexAtPos]);
+    launchDecay(velocity);
+  }, [spin, paint, launchDecay, onSegmentLongPress, segmentIndexAtPos]);
 
   const handlePointerCancel = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
