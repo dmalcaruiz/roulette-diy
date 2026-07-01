@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
@@ -9,7 +9,7 @@ import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
-import SnappingSheet from '../components/SnappingSheet';
+import SnappingSheet, { SHEET_EASE, SHEET_EASE_BOUNCE } from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
 import { useHistory } from '../hooks/useHistory';
 import WheelThumbnail from '../components/WheelThumbnail';
@@ -275,7 +275,40 @@ export default function RouletteScreen({
   // scroll-drag handoff. During drag we disable the wheel's CSS
   // transition and update its size imperatively per pointermove so it
   // tracks the finger 1:1 instead of easing toward a snap target.
-  const [isSheetDragging, setIsSheetDragging] = useState(false);
+  // NOTE: sheet-drag activity is tracked ONLY in a ref (below) — it used to be
+  // React state, which re-rendered this whole screen (editor included) on
+  // every drag start AND release, right as the snap transition needed the main
+  // thread. Nothing render-time depends on it anymore: wheelStyleState keys
+  // off sheetHeight, which equals the snap target at rest and the quantized
+  // anticipated snap during drags.
+  // Pre-warm the editor's heavy segment rows while the app is IDLE and the
+  // sheet is closed, so opening finds them already mounted — content is
+  // visible the instant the sheet rises AND the open commit does no mount
+  // work. The warm flag resets in the same render as a wheel switch (the
+  // editor remounts via its key, so the swap stays cheap with just the
+  // spacer) and re-arms on idle for the new wheel. Opening before the
+  // warm-up fires mounts rows with the open itself (legacy behavior).
+  const [rowsWarm, setRowsWarm] = useState(false);
+  const [prevWarmBlockId, setPrevWarmBlockId] = useState(block.id);
+  if (prevWarmBlockId !== block.id) {
+    setPrevWarmBlockId(block.id);
+    setRowsWarm(false);
+  }
+  useEffect(() => {
+    type IdleWindow = Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const w = window as IdleWindow;
+    let idleId: number | undefined;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    if (w.requestIdleCallback) idleId = w.requestIdleCallback(() => setRowsWarm(true), { timeout: 2500 });
+    else timerId = setTimeout(() => setRowsWarm(true), 800);
+    return () => {
+      if (idleId !== undefined) w.cancelIdleCallback?.(idleId);
+      if (timerId !== undefined) clearTimeout(timerId);
+    };
+  }, [block.id]);
   // Ref mirror of isSheetDragging — read synchronously by
   // handleSheetHeightChange (a useCallback) without needing it as a
   // dependency. Lets us skip the per-rAF setSheetHeight calls during a
@@ -293,9 +326,21 @@ export default function RouletteScreen({
   //   • snap commit (`committed=true`) — sets the React truth for
   //     spacerProgress-driven props (header opacity etc.) at the start
   //     of an open/close, so they're correct for the CSS transition.
-  //   • drag (`isSheetDraggingRef.current`) — finger tracks 1:1.
+  //   • drag — but QUANTIZED, not 1:1: the live height maps to the
+  //     anticipated snap (closed vs mid) and commits only when that
+  //     bucket flips. Tracking the finger 1:1 re-rendered this whole
+  //     screen + relayouted the wheel column on every pointer frame —
+  //     that was the manual-drag lag. The wheel now ANTICIPATES the
+  //     snap with its normal 0.28s lockstep transition (kept enabled
+  //     during drags) while the sheet itself still tracks 1:1.
   const handleSheetHeightChange = useCallback((h: number, committed?: boolean) => {
     if (!committed && !isSheetDraggingRef.current) return;
+    if (!committed) {
+      const mid = window.innerWidth < 900 ? 380 : 400; // = midSnap (declared later; same formula as openSheetTo)
+      const bucket = h >= mid / 2 ? mid : 0;
+      setSheetHeight(prev => ((prev >= mid / 2 ? mid : 0) === bucket ? prev : bucket));
+      return;
+    }
     setSheetHeight(h);
   }, []);
   // [SHEET-DBG] refs for the chip bar + sheet so the debug effect can
@@ -313,6 +358,8 @@ export default function RouletteScreen({
   const handleEditorReorderingChange = useCallback((active: boolean) => {
     editorReorderingRef.current = active;
   }, []);
+  // Stable identity so it doesn't break WheelEditor's memo (setter is stable).
+  const clearPendingScroll = useCallback(() => setPendingScrollSegment(null), []);
   // Sheet drag is suppressed while EITHER a segment reorder OR a
   // SwipeableActionCell horizontal swipe is in progress — both
   // gestures compete for the same vertical pointer movement and we
@@ -501,22 +548,41 @@ export default function RouletteScreen({
     syncOpFlags();
   };
 
+  // Latest implementations for the memoized history facade below — assigned
+  // every render (after everything is declared, further down), read at CALL
+  // time. This keeps the facade's method identities STABLE, which is what lets
+  // React.memo skip WheelEditor on renders where nothing it displays changed
+  // (e.g. the sheet-release commits: re-rendering the whole editor there
+  // stalled the main-thread height transition — the "freeze then resnap").
+  const historyOpsRef = useRef<{
+    editorHistory: typeof editorHistory;
+    pushOp: (kind: OpKind) => void;
+    syncOpFlags: () => void;
+    unifiedUndo: () => void;
+    unifiedRedo: () => void;
+  } | null>(null);
+
   // Wrapped editor history used by WheelEditor. set / first patch / commit
-  // record an 'editor' op so unified undo knows what to pop.
-  const wrappedEditorHistory: typeof editorHistory = {
-    ...editorHistory,
-    set: (next) => { editorHistory.set(next); pushOp('editor'); },
-    patch: (partial) => { editorHistory.patch(partial); editorDirtyRef.current = true; syncOpFlags(); },
+  // record an 'editor' op so unified undo knows what to pop. Memoized on the
+  // VALUES the editor renders from; methods route through historyOpsRef.
+  const wrappedEditorHistory = useMemo<typeof editorHistory>(() => ({
+    state: editorHistory.state,
+    canUndo: editorHistory.canUndo,
+    canRedo: editorHistory.canRedo,
+    set: (next) => { const o = historyOpsRef.current!; o.editorHistory.set(next); o.pushOp('editor'); },
+    patch: (partial) => { const o = historyOpsRef.current!; o.editorHistory.patch(partial); editorDirtyRef.current = true; o.syncOpFlags(); },
     commit: () => {
-      editorHistory.commit();
+      const o = historyOpsRef.current!;
+      o.editorHistory.commit();
       if (editorDirtyRef.current) {
         editorDirtyRef.current = false;
-        pushOp('editor');
+        o.pushOp('editor');
       }
     },
-    undo: () => unifiedUndo(),
-    redo: () => unifiedRedo(),
-  };
+    undo: () => historyOpsRef.current!.unifiedUndo(),
+    redo: () => historyOpsRef.current!.unifiedRedo(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [editorHistory.state, editorHistory.canUndo, editorHistory.canRedo]);
 
   const unifiedUndo = () => {
     // Pending (uncommitted) edits are their own undo step — handled by the
@@ -550,6 +616,9 @@ export default function RouletteScreen({
     else flowHistory.redo();
     syncOpFlags();
   };
+
+  // Feed the facade its latest implementations (declared just above).
+  historyOpsRef.current = { editorHistory, pushOp, syncOpFlags, unifiedUndo, unifiedRedo };
 
   // Helper for flow mutations: applies the snapshot via history.set (onChange
   // takes care of both local state and Firestore delta) and records the op.
@@ -1255,8 +1324,10 @@ export default function RouletteScreen({
   const wheelStateForSnap = (h: number) =>
     h >= upperSnapH ? upperWheelState : h >= midSnap ? midWheelState : closedWheelState;
   // Which wheel state drives the JSX style this render:
-  //   • during drag → live (derived from per-frame sheetHeight), zero
-  //     CSS transition so the wheel tracks the finger 1:1
+  //   • during drag → the ANTICIPATED snap state (sheetHeight is quantized to
+  //     closed/mid by handleSheetHeightChange), animated by the CSS transition
+  //     below — the wheel leads the sheet to where it will land instead of
+  //     resizing per pointer frame (which relayouted the column every frame).
   //   • otherwise → the snap-target state (closed / mid / upper),
   //     and the CSS transition below interpolates to it
   // Freeze wheel sizing at the mid snap: from mid → upper the wheel stays
@@ -1264,43 +1335,28 @@ export default function RouletteScreen({
   // it. Clamping the sizing input at midSnap means React re-renders with the
   // identical wheel style above mid (no DOM change → no wheel re-layout/paint),
   // which is cheaper and reads better than animating it out of view.
-  const wheelStyleState = isSheetDragging
-    ? wheelStateAt(Math.min(sheetHeight, midSnap))
-    : wheelStateForSnap(Math.min(sheetSnapTargetH, midSnap));
+  const wheelStyleState = wheelStateForSnap(Math.min(sheetHeight, midSnap));
   // Match the sheet's own height transition exactly so wheel + sheet
-  // arrive at their targets on the same frame. `disableHeightTransition`
-  // / drag both kill the transition for the cases where the sheet does
-  // the same.
-  // 0.28s + cubic-bezier(0.32, 0.72, 0, 1) — tighter than the prior
-  // 0.45s + (0.16, 1, 0.3, 1) which had a long settling tail that read
-  // as lag. Must stay in sync with the sheet's own transition (see
-  // SnappingSheet.tsx) or wheel and sheet drift apart.
-  const wheelTransitionCss = (isSheetDragging || skipSheetOpenAnim)
+  // arrive at their targets on the same frame. Must stay in sync with the
+  // sheet's own transition (see SnappingSheet.tsx) or wheel and sheet drift
+  // apart — including the easing PAIR: a rising sheet uses the slight
+  // back-out bounce, so the wheel mirrors it (it over-shrinks a touch and
+  // settles, in lockstep with the sheet's overshoot). The prev-target ref
+  // lags one commit, so exactly the render that raises the target renders
+  // the bounce curve; running transitions keep the curve they started with.
+  // NOTE: stays ENABLED during drags — the wheel animates between anticipated
+  // snap states while the finger drags; only instant snaps disable it.
+  const prevSheetSnapHRef = useRef(0);
+  const sheetRising = sheetSnapTargetH > prevSheetSnapHRef.current;
+  useEffect(() => { prevSheetSnapHRef.current = sheetSnapTargetH; });
+  const wheelEase = sheetRising ? SHEET_EASE_BOUNCE : SHEET_EASE;
+  const wheelTransitionCss = skipSheetOpenAnim
     ? 'none'
-    : 'width 0.28s cubic-bezier(0.32, 0.72, 0, 1), height 0.28s cubic-bezier(0.32, 0.72, 0, 1), transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), margin-bottom 0.28s cubic-bezier(0.32, 0.72, 0, 1), padding-top 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.28s cubic-bezier(0.32, 0.72, 0, 1), flex-grow 0.28s cubic-bezier(0.32, 0.72, 0, 1)';
+    : `width 0.28s ${wheelEase}, height 0.28s ${wheelEase}, transform 0.28s ${wheelEase}, margin-bottom 0.28s ${wheelEase}, padding-top 0.28s ${wheelEase}, opacity 0.28s ${wheelEase}, flex-grow 0.28s ${wheelEase}`;
 
-  // [SHEET-DBG] On every sheetHeight commit, measure the chip bar and
-  // sheet's live bounding rects and log them. Dedups against the
-  // last-logged sheetHeight + chipBar-top combo so frame-by-frame ticks
-  // during a snap animation only log at points where SOMETHING actually
-  // changed — but the initial measurement always logs.
-  const lastDbgSigRef = useRef<string | null>(null);
-  useEffect(() => {
-    const chip = chipBarDbgRef.current?.getBoundingClientRect();
-    const sheet = sheetDbgRef.current?.getBoundingClientRect();
-    const chipTop = chip ? Math.round(chip.top * 10) / 10 : null;
-    const sheetTop = sheet ? Math.round(sheet.top * 10) / 10 : null;
-    const sig = `${Math.round(sheetHeight)}|${chipTop}|${sheetTop}`;
-    if (sig === lastDbgSigRef.current) return;
-    lastDbgSigRef.current = sig;
-    // Flat log so the console doesn't collapse nested objects to {…}.
-    const sB = sheet ? Math.round(sheet.bottom * 10) / 10 : null;
-    const sH = sheet ? Math.round(sheet.height * 10) / 10 : null;
-    const cB = chip ? Math.round(chip.bottom * 10) / 10 : null;
-    const cH = chip ? Math.round(chip.height * 10) / 10 : null;
-    // eslint-disable-next-line no-console
-    console.log(`[SHEET-DBG] state=${sheetHeight} sheet[top=${sheetTop} bot=${sB} h=${sH}] chip[top=${chipTop} bot=${cB} h=${cH}] vp[innerH=${window.innerHeight} vvH=${window.visualViewport?.height ?? '∅'}] screenH=${screenHeight}`);
-  }, [sheetHeight, screenHeight]);
+  // ([SHEET-DBG] effect removed: it forced two getBoundingClientRect layout
+  // passes + a console.log on every sheetHeight commit — right when the open/
+  // close/drag-flip transitions start.)
 
   // Index of the active wheel within the flow (-1 if not in a flow).
   const flowIdx = flowSteps ? flowSteps.findIndex(s => s.id === block.id) : -1;
@@ -1670,7 +1726,16 @@ export default function RouletteScreen({
               <div style={{ display: 'flex', gap: 12, height: 54 }}>
                 <PixelButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={54} label="" radius={18} roughAmp={3.5} seed={3} style={{ width: 54, flexShrink: 0 }} />
                 <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={30} radius={18} roughAmp={3.5} seed={7} style={{ flex: 1, minWidth: 0 }} />
-                <PixelButton color={PRIMARY} height={54} label="" radius={18} roughAmp={3.5} seed={11} style={{ width: 54, flexShrink: 0 }} />
+                <PixelButton
+                  color={PRIMARY}
+                  // Toggle the edit sheet at its TOP scroll position — same
+                  // single-commit open path the chip bar uses (seeded snap
+                  // height + instant scroll on fresh open), so it feels
+                  // identical to the rest of the app. Segments is the first
+                  // section, i.e. scroll top.
+                  onTap={() => { if (sheetOpen) closeSheet(); else openSheetTo('segments'); }}
+                  height={54} label="" radius={18} roughAmp={3.5} seed={11} style={{ width: 54, flexShrink: 0 }}
+                />
               </div>
             </div>
           )}
@@ -2090,8 +2155,8 @@ export default function RouletteScreen({
               // transition kicks off.
               setSheetHeight(h);
             }}
-            onDragStart={() => { setIsSheetDragging(true); isSheetDraggingRef.current = true; }}
-            onDragEnd={() => { setIsSheetDragging(false); isSheetDraggingRef.current = false; }}
+            onDragStart={() => { isSheetDraggingRef.current = true; }}
+            onDragEnd={() => { isSheetDraggingRef.current = false; }}
           >
             {/* Continuous scroll-spy column: Templates → (Slices + Style, stacked
                 INSIDE WheelEditor) → Settings. Each section is tagged via the
@@ -2115,9 +2180,13 @@ export default function RouletteScreen({
                 registerSection={spy.registerEl}
                 onReorderActiveChange={handleEditorReorderingChange}
                 scrollToSegmentIndex={pendingScrollSegment}
-                onScrollToSegmentConsumed={() => setPendingScrollSegment(null)}
-                renderRows={sheetOpen}
-                sheetHeight={sheetHeight}
+                onScrollToSegmentConsumed={clearPendingScroll}
+                renderRows={sheetOpen || rowsWarm}
+                // Only LIST mode sizes its textarea off the live sheet height;
+                // in cards mode pass a constant so snap-height changes don't
+                // break the editor's memo (a full editor re-render at release
+                // stalls the sheet's height transition).
+                sheetHeight={editorHistory.state.segmentsMode === 'list' ? sheetHeight : 0}
                 isMobile={isMobile}
                 showSegmentHeader={showSegmentHeader}
                 onToggleSegmentHeader={setShowSegmentHeader}

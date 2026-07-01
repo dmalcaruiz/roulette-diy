@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect, createElement, type ReactNode } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, createElement, memo, type ReactNode } from 'react';
 import { WheelConfig, WheelItem } from '../models/types';
 import { InsetTextField, PushDownButton } from './PushDownButton';
 import { deriveCardSurfaces, withAlpha, colorToHex, hexStringToColor, oklchShadow, oklchHighlight, oklchIconTint, oklchMix, isLightColor, readableTextColor } from '../utils/colorUtils';
@@ -337,7 +337,12 @@ export function stateToConfig(state: EditorState, id: string): WheelConfig {
   };
 }
 
-export default function WheelEditor({
+// Memoized (see export at the bottom): RouletteScreen re-renders on every
+// sheet snap/height commit, and reconciling this whole editor there stalled
+// the sheet's main-thread height transition. All props are identity-stable
+// across those commits (history is a memoized facade; callbacks are
+// useCallbacks), so the memo turns them into skips.
+function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, layout = 'tabs', registerSection, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
@@ -546,6 +551,10 @@ export default function WheelEditor({
   // easeOutCubic — same curve as the "scroll to Add Segment" tween.
   useEffect(() => {
     if (scrollToSegmentIndex == null) return;
+    // Rows not mounted yet (they mount AFTER the sheet's open transition
+    // settles) → leave the pending index un-consumed; the renderRows dep
+    // refires this effect once they exist and the scroll lands then.
+    if (!renderRows) return;
     const idx = scrollToSegmentIndex;
     const cancel = requestAnimationFrame(() => {
       // List mode: focus the textarea, select the matching line, and
@@ -647,7 +656,7 @@ export default function WheelEditor({
       requestAnimationFrame(tick);
     });
     return () => cancelAnimationFrame(cancel);
-  }, [scrollToSegmentIndex, onScrollToSegmentConsumed]);
+  }, [scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows]);
 
   // Push the current state out as a config preview on every change. Mount
   // fires it once (initial state). Subsequent state changes — style
@@ -676,13 +685,7 @@ export default function WheelEditor({
     // flashes the wrong content in active-tile thumbnails. The next
     // render (after useHistory's reset propagates to state) re-fires
     // this effect with matching ids and the preview lands then.
-    // eslint-disable-next-line no-console
-    console.log(`[WE-DBG] useEffect fires: originWheelId=${state.originWheelId ?? 'UNDEF'} wheelId=${wheelId ?? 'UNDEF'} segmentsLen=${state.segments.length}`);
-    if (wheelId && state.originWheelId && state.originWheelId !== wheelId) {
-      // eslint-disable-next-line no-console
-      console.log(`[WE-DBG] SKIPPED: origin=${state.originWheelId} vs wheelId=${wheelId}`);
-      return;
-    }
+    if (wheelId && state.originWheelId && state.originWheelId !== wheelId) return;
     onPreviewRef.current(stateToConfig(state, configId));
   }, [state, configId, wheelId]);
 
@@ -3089,3 +3092,5 @@ function SettingSlider({ label, value, min, max, step, onChange, onChangeEnd, sn
     </div>
   );
 }
+
+export default memo(WheelEditor);

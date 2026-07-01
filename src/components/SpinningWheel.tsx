@@ -802,17 +802,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       }
     }
 
-    // DEBUG: every canvas bake funnels through here — drags are supposed to be
-    // bake-free, so any hit while a drag is active is a frame-skip suspect.
-    // The trimmed stack names the caller. Remove once drag jank is resolved.
-    if (dragRef.current) {
-      const stack = new Error().stack?.split('\n').slice(2, 7).join('\n');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[wheel] BAKE during drag @${performance.now().toFixed(0)}ms `
-        + `fast=${fastBakeRef.current} rot=${rotationRef.current.toFixed(3)}\n${stack}`,
-      );
-    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config, textCtx);
   }, [size, buildWheelConfig]);

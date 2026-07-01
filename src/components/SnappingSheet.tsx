@@ -1,6 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { SURFACE } from '../utils/constants';
 
+// Snap easing pair — exported so lockstep siblings (RouletteScreen's wheel
+// transition) can mirror the sheet exactly, bounce included, or the two
+// visibly drift apart mid-animation.
+export const SHEET_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+// Rising snaps only: slight back-out overshoot (~5%) for the game-feel bounce.
+export const SHEET_EASE_BOUNCE = 'cubic-bezier(0.32, 1.3, 0.42, 1)';
+
 interface SnappingSheetProps {
   /** Snap positions in px from bottom of viewport, ascending order */
   snapPositions: number[];
@@ -112,7 +119,6 @@ export default function SnappingSheet({
   const didDragRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const rafRef = useRef(0);
 
   // Scroll-to-drag handoff state
   const isScrollDraggingRef = useRef(false);
@@ -135,25 +141,14 @@ export default function SnappingSheet({
   const onHeightChangeRef = useRef(onHeightChange);
   onHeightChangeRef.current = onHeightChange;
 
-  // After release, poll the actual rendered height during CSS transition
-  const startAnimationTracking = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-    const el = containerRef.current;
-    if (!el || !onHeightChange) return;
-    let lastH = -1;
-    const tick = () => {
-      const h = el.offsetHeight;
-      if (h !== lastH) {
-        lastH = h;
-        onHeightChange(h);
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    setTimeout(() => cancelAnimationFrame(rafRef.current), 500);
-  }, [onHeightChange]);
-
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+  // NOTE: the old post-release "animation tracking" rAF poller is gone. It
+  // read offsetHeight every frame for 500ms after EVERY snap — a forced
+  // style+layout pass of the transitioning sheet (whole mounted editor) per
+  // frame — purely to feed non-committed onHeightChange ticks that the
+  // consumer drops anyway (RouletteScreen ignores per-rAF ticks outside
+  // drags). Snap values are delivered by onSnapTargetChange plus the
+  // committed onHeightChange at release/flip, all of which fire in the same
+  // commit the CSS transition starts.
 
   // Sync currentSnap with `visible` during render (not in useEffect) so
   // it lands in the same React commit as the parent's prop changes —
@@ -182,11 +177,6 @@ export default function SnappingSheet({
     onSnapTargetChangeRef.current?.(effectiveSnapTargetH, instant);
   }, [effectiveSnapTargetH]);
 
-  // Kick the rAF height-polling tracker on every visibility flip — this
-  // is a side effect, not derived state, so it stays in useEffect.
-  useEffect(() => {
-    requestAnimationFrame(() => startAnimationTracking());
-  }, [visible, startAnimationTracking]);
 
   // When `disableHeightTransition` is set during a visibility flip, fire
   // onHeightChange synchronously with the target height so the parent's
@@ -346,12 +336,23 @@ export default function SnappingSheet({
     // (onSnapTargetChange fires automatically via the useLayoutEffect
     // on currentSnap above.)
     onHeightChangeRef.current?.(snapPositions[bestIndex] ?? 0, true);
-    startAnimationTracking();
 
     if (bestIndex === 0) {
       onCollapsed?.();
     }
-  }, [snapPositions, onCollapsed, startAnimationTracking]);
+  }, [snapPositions, onCollapsed]);
+
+  // Slight game-feel bounce on RISING height changes (opens / snap-ups): a
+  // back-out overshoot eases past the target then settles. Falling keeps the
+  // plain decel — an overshoot on the way down would dip below the target
+  // (or 0) and read as a glitch. The ref lags one commit behind, so the
+  // render that raises the height sees rising=true; a RUNNING transition
+  // keeps the curve it started with, so later renders flipping the string
+  // are harmless. Lockstep siblings (RouletteScreen's wheel) mirror the
+  // exported pair.
+  const prevHeightRef = useRef(0);
+  const rising = displayHeight > prevHeightRef.current;
+  useEffect(() => { prevHeightRef.current = displayHeight; });
 
   if (!visible && !keepMounted && !keepAlive && displayHeight <= 0) return null;
 
@@ -370,7 +371,7 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: (dragging || isScrollDraggingRef.current || disableHeightTransition) ? 'none' : 'height 0.28s cubic-bezier(0.32, 0.72, 0, 1)',
+        transition: (dragging || isScrollDraggingRef.current || disableHeightTransition) ? 'none' : `height 0.28s ${rising ? SHEET_EASE_BOUNCE : SHEET_EASE}`,
         overflow: 'visible',
       }}
     >
