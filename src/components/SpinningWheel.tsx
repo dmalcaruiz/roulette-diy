@@ -1580,7 +1580,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // re-arms the timer, so a wheel that keeps moving never re-bakes — quality is
   // only restored when the user actually stops. Skips entirely when nothing is
   // owed (bitmap already quantized and at identity transform).
-  const STILL_COMMIT_MS = 50;
+  const STILL_COMMIT_MS = 25;
   // Rotation across a whole quiet window that still counts as "still". Judged
   // per WINDOW, not per pointer event — a per-event delta threshold reads any
   // slow drag as stillness (event rate ≫ motion rate) and committed mid-drag,
