@@ -420,7 +420,7 @@ function computeFittedText(
   // Using the full font size over-shrinks labels that actually fit; 0.82 keeps
   // uniform wheels at the target while the wedge clip still catches any sliver.
   const GLYPH_H = 0.82;
-  ctx.font = `600 ${targetFont}px Inter, sans-serif`;
+  ctx.font = `600 ${targetFont}px ${WHEEL_FONT}`;
 
   return items.map((it) => {
     const half = Math.min(((2 * Math.PI * it.weight) / total) / 2, Math.PI / 2);
@@ -518,6 +518,12 @@ function computeFittedText(
     return { fontSize: f, lines, textX: itemTextX };
   });
 }
+
+// Font for the wheel's crisp label pass (the app's default pixel face).
+// WHEEL_FONT_FAMILY alone is what fonts.load()/check() need; WHEEL_FONT is the
+// full ctx.font stack with fallbacks for while it loads.
+export const WHEEL_FONT_FAMILY = "'LoRes12OT-Bold'";
+export const WHEEL_FONT = `${WHEEL_FONT_FAMILY}, Inter, sans-serif`;
 
 // Memoize-last: only one wheel animates at a time, so a single-entry cache hits
 // every spin frame (key omits rotation). Thumbnails draw no text, so they
@@ -846,7 +852,11 @@ export function paintWheel(
     // (box = size·250/700, circle = box·markerDiameter/100), centred.
     const markerDiameter = config.markerDiameter ?? 0;
     const markerRadius = (width * (250 / 700) * (markerDiameter / 100)) / 2;
-    const key = `${width}|${strokeWidth}|${outerStrokeWidth}|${centerInset}|${markerDiameter}|${config.fontSize}|${textWrap ? 1 : 0}|${imageSize}|`
+    // Font-ready bit: measurements taken while the pixel face is still loading
+    // use the fallback's metrics — once it lands (SpinningWheel repaints on
+    // fonts.load), the changed key forces a re-measure in the real face.
+    const fontReady = typeof document !== 'undefined' && !!document.fonts?.check(`600 12px ${WHEEL_FONT_FAMILY}`);
+    const key = `${fontReady ? 'F' : 'f'}|${width}|${strokeWidth}|${outerStrokeWidth}|${centerInset}|${markerDiameter}|${config.fontSize}|${textWrap ? 1 : 0}|${imageSize}|`
       + items.map((it) => `${it.text}${it.weight}${(it.iconName || it.imagePath) ? 'V' : '_'}`).join('');
     if (key !== _ftKey) {
       _ftVal = computeFittedText(ctx, items, config.fontSize, textX, scale, centerInset, markerRadius, textWrap, imageSize);
@@ -1162,7 +1172,7 @@ function paintSegmentContent(
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     drawSegmentVisual(ctx, item, textX, imageSize, scale, item.color);
-    ctx.font = `600 ${ft.fontSize}px Inter, sans-serif`;
+    ctx.font = `600 ${ft.fontSize}px ${WHEEL_FONT}`;
     const lineH = ft.fontSize * 1.05;
     const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
     for (let li = 0; li < ft.lines.length; li++) {

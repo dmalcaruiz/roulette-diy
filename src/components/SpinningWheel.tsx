@@ -326,7 +326,7 @@ function playWinChord(): void {
   }
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig, PIXEL_SCALE } from './WheelCanvas';
+import { paintWheel, WheelPainterConfig, PIXEL_SCALE, WHEEL_FONT_FAMILY } from './WheelCanvas';
 export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
@@ -907,6 +907,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Repaint when a segment's custom image finishes decoding. The painter skips
   // not-yet-loaded images (showing a faint placeholder); this brings them in.
   useEffect(() => onVisualLoaded(() => repaint()), [repaint]);
+
+  // Re-bake once the wheel label font finishes loading: the fitted-text memo
+  // keys on fonts.check(), so this repaint re-measures + redraws every label
+  // in the real pixel face instead of the fallback's metrics.
+  useEffect(() => {
+    const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+    if (!fonts) return;
+    let cancelled = false;
+    fonts.load(`600 16px ${WHEEL_FONT_FAMILY}`)
+      .then(() => { if (!cancelled) repaint(); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [repaint]);
 
   // Update segment on mount
   useEffect(() => {
@@ -1796,7 +1809,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     let velocity = dragVelocity * RELEASE_BOOST + carried;
     if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
     else if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
-    const isSpinAttempt = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
 
     // No spin → just leave the wheel where the user dropped it. Commit the
     // dragged rotation into the bitmap and exit transform mode.

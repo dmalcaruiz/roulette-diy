@@ -1652,8 +1652,14 @@ export default function RouletteScreen({
               transition: wheelTransitionCss,
             }}>
               {/* PROTOTYPE: full pixel-art button — rough + pixelated as one unit
-                  (label included, no AA). Swap back to PushDownButton to revert. */}
-              <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={16} />
+                  (label included, no AA). Swap back to PushDownButton to revert.
+                  Two empty square buttons flank SPIN; distinct seeds vary the
+                  hand-drawn roughness so they don't look cloned. */}
+              <div style={{ display: 'flex', gap: 12, height: 54 }}>
+                <PixelButton color={PRIMARY} height={54} label="" radius={18} roughAmp={3.5} seed={3} style={{ width: 54, flexShrink: 0 }} />
+                <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={30} radius={18} roughAmp={3.5} seed={7} style={{ flex: 1, minWidth: 0 }} />
+                <PixelButton color={PRIMARY} height={54} label="" radius={18} roughAmp={3.5} seed={11} style={{ width: 54, flexShrink: 0 }} />
+              </div>
             </div>
           )}
 

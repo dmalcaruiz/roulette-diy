@@ -8,7 +8,7 @@ import { pixelateCanvas, PIXEL_SCALE, type Palette } from './WheelCanvas';
 // the text (the label is NOT crisp DOM here; that was the last AA source).
 // Rough hand-drawn edges match the wheel silhouette.
 
-const PIXEL_FONT = "'Press Start 2P'";
+const PIXEL_FONT = "'LoRes9OTWide-Bold'";
 
 interface RoughPt { x: number; y: number; nx: number; ny: number }
 
@@ -39,12 +39,18 @@ function roundedRectOutline(x0: number, y0: number, x1: number, y1: number, r: n
 function roughRectPath(x0: number, y0: number, x1: number, y1: number, r: number, amp: number, seed: number): Path2D {
   const pts = roundedRectOutline(x0, y0, x1, y1, r, 3);
   const ph = (c: number) => { const x = Math.sin(seed * 127.1 + c * 311.7 + 0.5) * 43758.5453; return (x - Math.floor(x)) * Math.PI * 2; };
-  const p0 = ph(0), p1 = ph(1), p2 = ph(2);
+  const p0 = ph(0), p1 = ph(1), p2 = ph(2), p3 = ph(3);
   const N = pts.length;
   const path = new Path2D();
   for (let i = 0; i < N; i++) {
     const t = i / N;
-    const n = Math.sin(2 * Math.PI * t * 3 + p0) * 0.6 + Math.sin(2 * Math.PI * t * 5 + p1) * 0.3 + Math.sin(2 * Math.PI * t * 9 + p2) * 0.1;
+    // Weighted toward HIGH harmonics → fine micro-grain rather than big
+    // low-frequency (macro) wobble. The old 0.6·h3 dominant made the whole
+    // edge bow; here the macro term is small and the energy sits in h9/h15.
+    const n = Math.sin(2 * Math.PI * t * 3 + p0) * 0.18
+            + Math.sin(2 * Math.PI * t * 6 + p1) * 0.24
+            + Math.sin(2 * Math.PI * t * 9 + p2) * 0.30
+            + Math.sin(2 * Math.PI * t * 15 + p3) * 0.28;
     const P = pts[i];
     const x = P.x + P.nx * amp * n, y = P.y + P.ny * amp * n;
     if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
@@ -62,7 +68,6 @@ interface PixelButtonProps {
   radius?: number;
   roughAmp?: number;
   seed?: number;
-  borderWidth?: number;
   textColor?: string;
   fontSize?: number;
   letterSpacing?: number;
@@ -78,7 +83,6 @@ export function PixelButton({
   radius = 10,
   roughAmp = 2,
   seed = 7,
-  borderWidth = 3,
   textColor = '#FFFFFF',
   fontSize = 16,
   letterSpacing = 1,
@@ -91,7 +95,6 @@ export function PixelButton({
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const bottomColor = oklchShade(color, 0.09);
-  const strokeColor = oklchShade(color, 0.16);
   const faceHeight = height - depth;
 
   useLayoutEffect(() => {
@@ -127,13 +130,11 @@ export function PixelButton({
     ctx.clearRect(0, 0, width, height);
 
     const topOffset = pressed ? depth : 0;
-    // Rough faces: depth, then the stroked top face, then the inset fill.
+    // Rough faces: depth, then the plain top face (no stroke ring).
     ctx.fillStyle = bottomColor;
     ctx.fill(roughRectPath(0, depth, width, height, radius, roughAmp, seed));
-    ctx.fillStyle = strokeColor;
-    ctx.fill(roughRectPath(0, topOffset, width, topOffset + faceHeight, radius, roughAmp, seed));
     ctx.fillStyle = color;
-    ctx.fill(roughRectPath(borderWidth, topOffset + borderWidth, width - borderWidth, topOffset + faceHeight - borderWidth, radius, roughAmp, seed + 1.3));
+    ctx.fill(roughRectPath(0, topOffset, width, topOffset + faceHeight, radius, roughAmp, seed));
 
     // Label — drawn INTO the canvas so it pixelates with the rest (no AA).
     ctx.fillStyle = textColor;
@@ -143,14 +144,14 @@ export function PixelButton({
     (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${letterSpacing}px`;
     ctx.fillText(label, width / 2, topOffset + faceHeight / 2 + 1);
 
-    // Fixed palette (fill / stroke / depth / text) → every block snaps to a real
-    // colour, hardening the fill↔stroke and text↔fill edges. Zero AA.
-    const palette: Palette = [color, strokeColor, bottomColor, textColor].map(h => {
+    // Fixed palette (fill / depth / text) → every block snaps to a real
+    // colour, hardening the text↔fill and face↔depth edges. Zero AA.
+    const palette: Palette = [color, bottomColor, textColor].map(h => {
       const { r, g, b } = hexToRgba(h);
       return [r, g, b] as [number, number, number];
     });
     if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE, palette);
-  }, [width, height, depth, radius, roughAmp, seed, borderWidth, color, bottomColor, strokeColor, faceHeight, pressed, label, textColor, fontSize, letterSpacing, fontReady]);
+  }, [width, height, depth, radius, roughAmp, seed, color, bottomColor, faceHeight, pressed, label, textColor, fontSize, letterSpacing, fontReady]);
 
   const release = () => setPressed(false);
 

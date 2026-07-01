@@ -1,5 +1,35 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
+/* ── LoRes pixel fonts (public/fonts) ──
+   One family per file, named after the file. `font-weight: 100 900` makes each
+   face serve every requested weight, so existing font-weight: 600/700 rules
+   map onto the real face instead of triggering synthetic (blurry) faux-bold. */
+@font-face { font-family: 'LoRes12OT-Bold'; src: url('/fonts/LoRes12OT-Bold.woff2') format('woff2'), url('/fonts/LoRes12OT-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes12OT-Regular'; src: url('/fonts/LoRes12OT-Regular.woff2') format('woff2'), url('/fonts/LoRes12OT-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes12OTAltOakland-Bold'; src: url('/fonts/LoRes12OTAltOakland-Bold.woff2') format('woff2'), url('/fonts/LoRes12OTAltOakland-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes12OTNarrow-Regular'; src: url('/fonts/LoRes12OTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes12OTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes15OT-Bold'; src: url('/fonts/LoRes15OT-Bold.woff2') format('woff2'), url('/fonts/LoRes15OT-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes15OTAltOakland-Bold'; src: url('/fonts/LoRes15OTAltOakland-Bold.woff2') format('woff2'), url('/fonts/LoRes15OTAltOakland-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes15OTNarrow-Regular'; src: url('/fonts/LoRes15OTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes15OTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes21OTSerif-Regular'; src: url('/fonts/LoRes21OTSerif-Regular.woff2') format('woff2'), url('/fonts/LoRes21OTSerif-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes22OTNarrow-Regular'; src: url('/fonts/LoRes22OTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes22OTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes22OTOakland-Bold'; src: url('/fonts/LoRes22OTOakland-Bold.woff2') format('woff2'), url('/fonts/LoRes22OTOakland-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes22OTSerif-Bold'; src: url('/fonts/LoRes22OTSerif-Bold.woff2') format('woff2'), url('/fonts/LoRes22OTSerif-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes28OT-Regular'; src: url('/fonts/LoRes28OT-Regular.woff2') format('woff2'), url('/fonts/LoRes28OT-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes28OTNarrow-Regular'; src: url('/fonts/LoRes28OTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes28OTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9MinusOTNarrow-Regular'; src: url('/fonts/LoRes9MinusOTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes9MinusOTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9MinusOTWide-Regular'; src: url('/fonts/LoRes9MinusOTWide-Regular.woff2') format('woff2'), url('/fonts/LoRes9MinusOTWide-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9OTNarrow-Bold'; src: url('/fonts/LoRes9OTNarrow-Bold.woff2') format('woff2'), url('/fonts/LoRes9OTNarrow-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9OTNarrow-Regular'; src: url('/fonts/LoRes9OTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes9OTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9OTWide-Bold'; src: url('/fonts/LoRes9OTWide-Bold.woff2') format('woff2'), url('/fonts/LoRes9OTWide-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9OTWide-Regular'; src: url('/fonts/LoRes9OTWide-Regular.woff2') format('woff2'), url('/fonts/LoRes9OTWide-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9OTWideAltOakland-Bold'; src: url('/fonts/LoRes9OTWideAltOakland-Bold.woff2') format('woff2'), url('/fonts/LoRes9OTWideAltOakland-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9PlusOTNarrow-Bold'; src: url('/fonts/LoRes9PlusOTNarrow-Bold.woff2') format('woff2'), url('/fonts/LoRes9PlusOTNarrow-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9PlusOTNarrow-Regular'; src: url('/fonts/LoRes9PlusOTNarrow-Regular.woff2') format('woff2'), url('/fonts/LoRes9PlusOTNarrow-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9PlusOTWide-Bold'; src: url('/fonts/LoRes9PlusOTWide-Bold.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWide-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9PlusOTWide-Regular'; src: url('/fonts/LoRes9PlusOTWide-Regular.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWide-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'LoRes9PlusOTWideAlt-Bold'; src: url('/fonts/LoRes9PlusOTWideAlt-Bold.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWideAlt-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -17,7 +47,7 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'LoRes12OT-Bold', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--on-surface);
   background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
