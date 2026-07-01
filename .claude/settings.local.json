@@ -32,7 +32,9 @@
       "Bash(awk 'NR>=1230 && NR<=1933' src/components/WheelEditor.tsx)",
       "Bash(awk 'NR>=2390 && NR<=2560' src/screens/RouletteScreen.tsx)",
       "Bash(awk 'NR>=2515 && NR<=2700' src/screens/RouletteScreen.tsx)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "PowerShell(node \"C:/Users/dmalc/AppData/Local/Temp/claude/c--Users-dmalc-Documents-GitHub-roulette-diy/96c79a2a-39d9-4039-93f3-f3269f88d0ee/scratchpad/bench.mjs\")",
+      "PowerShell(node \"C:\\\\Users\\\\dmalc\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-dmalc-Documents-GitHub-roulette-diy\\\\96c79a2a-39d9-4039-93f3-f3269f88d0ee\\\\scratchpad\\\\bench.mjs\")"
     ]
   }
 }

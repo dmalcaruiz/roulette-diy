@@ -298,8 +298,10 @@ export interface WheelPainterConfig {
   // the hand-drawn wobble between wheels. Omitted → 0 (a fixed base pattern).
   roughSeed?: number;
   // Skip the expensive palette-vote quantization for this bake and use the cheap
-  // nearest pixelate instead. Set during the win-overlay FADE frames (motion, many
-  // per second) so they stay smooth; the held + rest frames quantize for real.
+  // nearest pixelate instead. Set on MOTION frames — live-drag moves and the rAF
+  // settle animations (reset / focusSegment / add-remove transition) — which bake
+  // many times per second; the final settle frame quantizes for real, so the
+  // wheel is always palette-crisp at rest.
   fastPixelate?: boolean;
   // Render ONLY the win dim mask (rough disc minus the winning wedge), opaque, so
   // it can be composited OVER the already-baked wheel as a separate layer whose
@@ -523,6 +525,11 @@ function computeFittedText(
 let _ftKey = '';
 let _ftVal: FittedText[] = [];
 
+// Memoize-last for the segment geometry (paths + rough outlines) — same
+// single-entry idea; key omits rotation. See the build site in paintWheel.
+let _layoutKey = '';
+let _layoutVal: CachedLayout | null = null;
+
 // ── Pixelate post-process ───────────────────────────────────────────────────
 // Retro "lo-fi" filter applied AFTER the wheel is fully drawn: smooth-downsample
 // the whole canvas to a coarse grid, then upscale back with nearest-neighbour →
@@ -540,6 +547,10 @@ let _ftVal: FittedText[] = [];
 export const PIXEL_SCALE = 2;
 let _pixelTmp: HTMLCanvasElement | null = null;
 let _pixelBig: HTMLCanvasElement | null = null;
+// Reused across bakes (the vote output + flat palette) so per-frame quantizes
+// don't churn the GC with fresh ImageData / arrays.
+let _pixelOut: ImageData | null = null;
+let _palFlat = new Int32Array(0);
 // Palette entry: [r, g, b]. When a palette is supplied, pixelateCanvas snaps every
 // block to its nearest colour → true fixed-palette 8-bit, which hardens even
 // COLOUR-on-colour edges (segment dividers, text-on-fill) that plain nearest
@@ -573,18 +584,71 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
     const bw = sw * K, bh = sh * K;
     if (!_pixelBig) _pixelBig = document.createElement('canvas');
     if (_pixelBig.width !== bw || _pixelBig.height !== bh) { _pixelBig.width = bw; _pixelBig.height = bh; }
-    const bctx = _pixelBig.getContext('2d');
+    // willReadFrequently keeps this buffer CPU-backed: getImageData below becomes
+    // a memcpy instead of a GPU readback stall. (Attribute binds on first
+    // getContext of the element, which is here.)
+    const bctx = _pixelBig.getContext('2d', { willReadFrequently: true });
     if (!bctx) return;
     bctx.imageSmoothingEnabled = false;
     bctx.clearRect(0, 0, bw, bh);
     bctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, bw, bh);
     const src = bctx.getImageData(0, 0, bw, bh).data;
-    const out = tctx.createImageData(sw, sh);
+    // 32-bit view of the samples — used ONLY for whole-pixel equality (the
+    // uniform-block fast path below), so it's endian-agnostic.
+    const src32 = new Uint32Array(src.buffer, src.byteOffset, bw * bh);
+    if (!_pixelOut || _pixelOut.width !== sw || _pixelOut.height !== sh) _pixelOut = tctx.createImageData(sw, sh);
+    const out = _pixelOut;
     const od = out.data;
     const P = palette.length;
+    // Flat palette + a per-bake colour→index memo. The samples are point-sampled
+    // vector art, so distinct colours number in the dozens: after the first few
+    // blocks every nearest-palette search is one Map hit instead of an O(P) scan.
+    if (_palFlat.length < P * 3) _palFlat = new Int32Array(P * 3);
+    const pal = _palFlat;
+    for (let p = 0; p < P; p++) { pal[p * 3] = palette[p][0]; pal[p * 3 + 1] = palette[p][1]; pal[p * 3 + 2] = palette[p][2]; }
+    const memo = new Map<number, number>();
+    const nearest = (r: number, g: number, b: number): number => {
+      const key = r | (g << 8) | (b << 16);
+      let m = memo.get(key);
+      if (m === undefined) {
+        let best = 0, bestDist = Infinity;
+        for (let p = 0; p < P; p++) {
+          const pr = pal[p * 3] - r, pg = pal[p * 3 + 1] - g, pb = pal[p * 3 + 2] - b;
+          const dist = pr * pr + pg * pg + pb * pb;
+          if (dist < bestDist) { bestDist = dist; best = p; }
+        }
+        memo.set(key, m = best);
+      }
+      return m;
+    };
     const counts = new Int32Array(P);
     for (let by = 0; by < sh; by++) {
+      const row0 = by * K * bw;
       for (let bx = 0; bx < sw; bx++) {
+        const base = row0 + bx * K;
+        const oi = ((by * sw) + bx) * 4;
+        // Fast path: a block whose K×K samples are all the SAME rgba — the flat
+        // interior of a wedge, i.e. the vast majority — needs no vote. Its
+        // outcome is identical to the full vote below (9-0 majority).
+        const v0 = src32[base];
+        let uniform = true;
+        for (let dy = 0; dy < K && uniform; dy++) {
+          const r0 = base + dy * bw;
+          for (let dx = 0; dx < K; dx++) if (src32[r0 + dx] !== v0) { uniform = false; break; }
+        }
+        if (uniform) {
+          const si = base * 4;
+          const a = src[si + 3];
+          if (a >= 128) {
+            const w3 = nearest(src[si], src[si + 1], src[si + 2]) * 3;
+            od[oi] = pal[w3]; od[oi + 1] = pal[w3 + 1]; od[oi + 2] = pal[w3 + 2]; od[oi + 3] = 255;
+          } else if (keepTranslucent && a >= 8) {
+            od[oi] = src[si]; od[oi + 1] = src[si + 1]; od[oi + 2] = src[si + 2]; od[oi + 3] = a;
+          } else {
+            od[oi + 3] = 0;
+          }
+          continue;
+        }
         counts.fill(0);
         let opaqueN = 0, transN = 0, emptyN = 0;
         // Representative for a translucent-dominated block: the sample with the
@@ -592,19 +656,12 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
         let repA = 0, repR = 0, repG = 0, repB = 0;
         for (let dy = 0; dy < K; dy++) {
           for (let dx = 0; dx < K; dx++) {
-            const si = (((by * K + dy) * bw) + (bx * K + dx)) * 4;
+            const si = (base + dy * bw + dx) * 4;
             const a = src[si + 3];
             if (a < 8) { emptyN++; continue; }
             if (a >= 128) {
               opaqueN++;
-              const r = src[si], g = src[si + 1], b = src[si + 2];
-              let best = 0, bestDist = Infinity;
-              for (let p = 0; p < P; p++) {
-                const pr = palette[p][0] - r, pg = palette[p][1] - g, pb = palette[p][2] - b;
-                const dist = pr * pr + pg * pg + pb * pb;
-                if (dist < bestDist) { bestDist = dist; best = p; }
-              }
-              counts[best]++;
+              counts[nearest(src[si], src[si + 1], src[si + 2])]++;
             } else {
               transN++;
               if (keepTranslucent && a > repA) { repA = a; repR = src[si]; repG = src[si + 1]; repB = src[si + 2]; }
@@ -613,11 +670,11 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
         }
         let win = -1, wc = 0;
         for (let p = 0; p < P; p++) { if (counts[p] > wc) { wc = counts[p]; win = p; } }
-        const oi = ((by * sw) + bx) * 4;
         if (keepTranslucent) {
           // Three-way majority: opaque > translucent > empty.
           if (opaqueN > 0 && opaqueN >= transN && opaqueN >= emptyN) {
-            od[oi] = palette[win][0]; od[oi + 1] = palette[win][1]; od[oi + 2] = palette[win][2]; od[oi + 3] = 255;
+            const w3 = win * 3;
+            od[oi] = pal[w3]; od[oi + 1] = pal[w3 + 1]; od[oi + 2] = pal[w3 + 2]; od[oi + 3] = 255;
           } else if (transN > 0 && transN >= emptyN) {
             od[oi] = repR; od[oi + 1] = repG; od[oi + 2] = repB; od[oi + 3] = repA;
           } else {
@@ -627,7 +684,7 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
           // Two-way: opaque palette colour, else transparent (hard silhouette).
           const trans = transN + emptyN;
           if (win < 0 || trans > wc) { od[oi + 3] = 0; }
-          else { od[oi] = palette[win][0]; od[oi + 1] = palette[win][1]; od[oi + 2] = palette[win][2]; od[oi + 3] = 255; }
+          else { const w3 = win * 3; od[oi] = pal[w3]; od[oi + 1] = pal[w3 + 1]; od[oi + 2] = pal[w3 + 2]; od[oi + 3] = 255; }
         }
       }
     }
@@ -720,24 +777,38 @@ export function paintWheel(
   const totalWeight = effectiveWeights.reduce((s, w) => s + w, 0);
   const arcSize = (2 * Math.PI) / totalWeight;
 
-  // Precompute layout
-  const layout: CachedLayout = { paths: [], outlines: [], startAngles: [], segmentSizes: [], effectiveWeights };
-  const n = items.length;
-  const sizes = effectiveWeights.map((w) => arcSize * w);
-  let startAngle = 0;
-  for (let i = 0; i < n; i++) {
-    const segmentSize = sizes[i];
-    layout.startAngles.push(startAngle);
-    layout.segmentSizes.push(segmentSize);
-    // Smooth each edge by the THINNER of the two slices it divides (wrapping at
-    // the seam), so a low-% slice gets near-straight edges. Both slices of a
-    // divider see the same min → the shared edge stays identical.
-    const startEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i - 1 + n) % n]));
-    const endEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i + 1) % n]));
-    const outline: StrokePt[] = [];
-    layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth, outline));
-    layout.outlines.push(outline);
-    startAngle += segmentSize;
+  // Precompute layout — memoize-last, like the fitted text. The geometry is
+  // rotation-INDEPENDENT (rotation is applied as a canvas transform at draw
+  // time), so drag / reset / focus frames — where only rotation changes — reuse
+  // the previous bake's Path2Ds + outlines instead of rebuilding every segment.
+  // Weight transitions change effectiveWeights per frame and rebuild, as they
+  // must. (roughPhases/edgeSoftKnee feed the build but derive purely from
+  // roughSeed/strokeWidth, which are in the key.)
+  const layoutKey = `${width}|${height}|${strokeWidth}|${outerStrokeWidth}|${cornerRadius}|${innerCornerStyle}|${centerInset}|${config.roughSeed ?? 0}|${ROUGHNESS.enabled ? 1 : 0}|` + effectiveWeights.join(',');
+  let layout: CachedLayout;
+  if (_layoutVal && _layoutKey === layoutKey) {
+    layout = _layoutVal;
+  } else {
+    layout = { paths: [], outlines: [], startAngles: [], segmentSizes: [], effectiveWeights };
+    const n = items.length;
+    const sizes = effectiveWeights.map((w) => arcSize * w);
+    let startAngle = 0;
+    for (let i = 0; i < n; i++) {
+      const segmentSize = sizes[i];
+      layout.startAngles.push(startAngle);
+      layout.segmentSizes.push(segmentSize);
+      // Smooth each edge by the THINNER of the two slices it divides (wrapping at
+      // the seam), so a low-% slice gets near-straight edges. Both slices of a
+      // divider see the same min → the shared edge stays identical.
+      const startEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i - 1 + n) % n]));
+      const endEdgeSmooth = edgeSmoothFactor(Math.min(segmentSize, sizes[(i + 1) % n]));
+      const outline: StrokePt[] = [];
+      layout.paths.push(buildSegmentPath(center, radius, startAngle, startAngle + segmentSize, cornerRadius, innerCornerStyle, centerInset, startEdgeSmooth, endEdgeSmooth, outline));
+      layout.outlines.push(outline);
+      startAngle += segmentSize;
+    }
+    _layoutKey = layoutKey;
+    _layoutVal = layout;
   }
 
   // Win DIM MASK mode: draw ONLY the dark tint — a rough disc with the winning

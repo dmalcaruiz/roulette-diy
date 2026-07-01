@@ -545,10 +545,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // natural fade-out) — NOT during a user-triggered dismiss fade. A tap stops an
   // active overlay; once it's being dismissed, the next tap spins normally.
   const winOverlayActiveRef = useRef(false);
-  // True during the win-overlay FADE frames → paint() skips the heavy palette-vote
-  // quantization (cheap nearest instead) so the fade stays smooth. Cleared for the
-  // held (full-opacity) + rest frames so those quantize crisply.
-  const overlayFadingRef = useRef(false);
+  // True while a MOTION frame bakes → the painter skips the heavy palette-vote
+  // quantization (cheap nearest instead) so drag moves and the rAF settle
+  // animations stay smooth. Only ever set synchronously around a single bake
+  // (see paintFrame / the transition tick), so it can never leak into the rest
+  // frame — the final settle bake always quantizes for real.
+  const fastBakeRef = useRef(false);
   // Result dialog + dot celebration, revealed as the win overlay fades out.
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -665,7 +667,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const tick = (now: number) => {
       const tLin = Math.min(1, (now - start) / duration);
       transitionRef.current = ease(tLin);
+      // Mid-transition frames skip the palette-vote (cheap pixelate); the final
+      // repaint below runs with the flag clear, so the settled wheel quantizes.
+      fastBakeRef.current = tLin < 1;
       repaint();
+      fastBakeRef.current = false;
       if (tLin < 1) {
         transitionAnimRef.current = requestAnimationFrame(tick);
       } else {
@@ -715,7 +721,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       fromItems: fromItemsRef.current,
       transition: transitionRef.current,
       roughSeed,
-      fastPixelate: overlayFadingRef.current,
+      fastPixelate: fastBakeRef.current,
     };
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
       bezelDotsColorMode, bezelDotsCustomColor, textWrap, markerDiameter,
@@ -807,14 +813,24 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     bakedRotationRef.current = rotationRef.current;
     paintImplRef.current();
     const c = rotorRef.current;
-    // Clear any spin transition + transform so the just-baked bitmap shows at
-    // identity. NO translateZ/will-change here: the live drag repaints the
-    // bitmap every move, and forcing the canvas onto its own GPU layer makes
-    // each repaint re-upload the whole texture (that was the drag stutter). The
-    // tap/decay CSS transitions self-promote a layer via the translateZ(0) in
-    // THEIR transforms, only while they run.
+    // Clear any spin/drag transition + transform so the just-baked bitmap shows
+    // at identity. NO translateZ/will-change here: painting while layer-promoted
+    // re-uploads the whole texture per bake (that was the historical drag
+    // stutter). The drag/tap/decay transforms self-promote a layer via the
+    // translateZ(0) in THEIR transforms, only while they run — during which
+    // nothing re-bakes.
     if (c) { c.style.transition = 'none'; c.style.transform = 'none'; }
   }, []);
+
+  // paint() for animation frames: `fast` frames (mid-motion) skip the palette-
+  // vote quantization; the caller passes false on the FINAL frame so the wheel
+  // settles on a fully quantized bake. The flag is set only for the duration of
+  // this synchronous call — no stale-flag risk for unrelated paints.
+  const paintFrame = useCallback((fast: boolean) => {
+    fastBakeRef.current = fast;
+    paint();
+    fastBakeRef.current = false;
+  }, [paint]);
 
   // Keep the wheel canvas on its own GPU layer (identity transform) during the win
   // overlay / result dialog. paint() resets the transform to 'none' (no layer), and
@@ -1232,13 +1248,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const t = Math.min(1, (now - startTime) / duration);
       const eased = easeInOut(t);
       rotationRef.current = startRot + (endRot - startRot) * eased;
-      paint();
+      // Mid-motion frames use the cheap pixelate; the final frame quantizes.
+      paintFrame(t < 1);
       if (t < 1) {
         animRef.current = requestAnimationFrame(animate);
       }
     };
     animRef.current = requestAnimationFrame(animate);
-  }, [paint]);
+  }, [paint, paintFrame]);
 
   // Rotate so segment `idx`'s centre lands under the marker (top centre).
   // Animates like reset() — rAF + paint() to the shortest-path target angle.
@@ -1273,12 +1290,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const animate = (now: number) => {
       const t = Math.min(1, (now - startTime) / duration);
       rotationRef.current = startRot + (endRot - startRot) * easeInOut(t);
-      paint();
+      // Mid-motion frames use the cheap pixelate; the final frame quantizes.
+      paintFrame(t < 1);
       updateCurrentSegment();
       if (t < 1) animRef.current = requestAnimationFrame(animate);
     };
     animRef.current = requestAnimationFrame(animate);
-  }, [items, paint, updateCurrentSegment]);
+  }, [items, paint, paintFrame, updateCurrentSegment]);
 
   // ── Drag-to-spin physics ────────────────────────────────────────────
   // Tap on the wheel still calls the deterministic spin() above (with
@@ -1399,11 +1417,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     };
   }, [cancelInFlight, segmentAtRotation]);
 
-  // Live drag: re-paint the wheel BITMAP on each pointermove (rotation baked
-  // into the canvas, element transform left at identity). This is what rendered
-  // perfectly before; manually CSS-transforming the element stuttered here, so
-  // the drag deliberately does NOT enter transform mode. (Tap-spin and the
-  // release/decay still use the compositor CSS transitions.)
+  // Live drag: rotate the ROTOR via its CSS transform — exactly like the
+  // tap-spin/decay — with ZERO canvas re-bakes while the finger is down. The
+  // bitmap stays baked at bakedRotationRef and the per-frame transform supplies
+  // the drag offset, so per-move cost is one compositor-cheap style write
+  // (coalesced to one per rAF; high-Hz pointers deliver several moves per
+  // display frame). The pixel blocks rotate off the screen grid mid-drag, but
+  // that is already the accepted look during CSS-driven spins; every release
+  // path ends in a full-quality paint() that re-quantizes screen-aligned.
+  // (The historical per-move BITMAP repaint was the drag lag: full vector
+  // redraw + pixelate per pointermove. Its stutter note about transforms was
+  // about repainting WHILE layer-promoted — re-uploading the texture each
+  // frame — which transform-only dragging never does.)
+  const dragPaintRafRef = useRef(0);
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
@@ -1437,13 +1463,32 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     drag.samples.push({ time: now, rotation: rotationRef.current });
     while (drag.samples.length > 1 && now - drag.samples[0].time > 80) drag.samples.shift();
 
-    paint();
-  }, [paint, segmentAtRotation]);
+    if (!dragPaintRafRef.current) {
+      dragPaintRafRef.current = requestAnimationFrame(() => {
+        dragPaintRafRef.current = 0;
+        // Released before this frame fired → the pointer-up settle/decay logic
+        // already owns the transform; don't clobber it.
+        if (!dragRef.current) return;
+        const c = rotorRef.current;
+        if (c) {
+          c.style.transition = 'none';
+          // translateZ(0) promotes the rotor to its own layer for the drag
+          // (one texture upload on the first frame, compositor-only after) —
+          // the same self-promotion the tap/decay transforms use.
+          c.style.transform = `rotate(${rotationRef.current - bakedRotationRef.current}rad) translateZ(0)`;
+        }
+      });
+    }
+  }, [segmentAtRotation]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
+    // Drop any pending coalesced drag bake — the settle logic below owns the
+    // canvas from here (its dragRef guard also covers a raced firing).
+    cancelAnimationFrame(dragPaintRafRef.current);
+    dragPaintRafRef.current = 0;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
 
     // The header was written straight to the DOM during the drag; sync React
@@ -1601,10 +1646,17 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
+    // Drop any pending coalesced drag bake — the settle logic below owns the
+    // canvas from here (its dragRef guard also covers a raced firing).
+    cancelAnimationFrame(dragPaintRafRef.current);
+    dragPaintRafRef.current = 0;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
     // If we were dragging via the element transform, commit it into the bitmap.
     if (gpuSpinActiveRef.current) {
       gpuSpinActiveRef.current = false;
+      paint();
+    } else if (drag.crossedThreshold) {
+      // The drag frames baked with the fast pixelate; settle on a quantized bake.
       paint();
     }
   }, [paint]);
