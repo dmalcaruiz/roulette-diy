@@ -1154,6 +1154,11 @@ export default function RouletteScreen({
   // The chip bar is no longer a screen-bottom child — it's overlaid at the bottom
   // of the edit sheet — so it reserves no screen space (CHIP_H = 0).
   // Red container absorbs sheet height so the wheel shrinks in lockstep.
+  // Bottom wheel-picker visibility — hidden by default; the square button to
+  // the LEFT of SPIN toggles it. While hidden the red container collapses to 0
+  // and the wheel algebra below reclaims the space (all CSS-transitioned).
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerVisible = !isPlayMode && pickerOpen;
   const RED_BASE = 136;   // red container minimum (preview row + padding)
   const CHIP_H = 0;       // chip bar moved INSIDE the sheet (no screen reserve)
   const SPIN_H = 66;      // spin button (54) + margin (12)
@@ -1162,8 +1167,8 @@ export default function RouletteScreen({
   const grabbingHeight = 30;
   const midSnap = isMobile ? 380 : 400;
   const spacerProgress = isMobile ? Math.min(sheetHeight / midSnap, 1) : 0;
-  // Red box's actual DOM height — fixed at RED_BASE (not flexible).
-  const redBoxHeight = isPlayMode ? 0 : RED_BASE;
+  // Red box's actual DOM height — RED_BASE while the picker is shown, else 0.
+  const redBoxHeight = pickerVisible ? RED_BASE : 0;
   // Wheel sizing algebra: wheel + 0.03·wheel + 0.015·wheel·headerProg
   // + constHeader + constSpacers = avail — solved inside `wheelStateAt`
   // below for each snap target. The live per-frame chain that used to
@@ -1208,7 +1213,7 @@ export default function RouletteScreen({
       setWheelMidSnap(prev => (Math.abs(prev - clamped) > 2 ? clamped : prev));
     }, 320);
     return () => clearTimeout(id);
-  }, [isMobile, isPlayMode, sheetSnapTargetH, screenHeight, midSnap, upperSnapH, showSegmentHeader]);
+  }, [isMobile, isPlayMode, sheetSnapTargetH, screenHeight, midSnap, upperSnapH, showSegmentHeader, pickerVisible]);
   // Solve wheel-state at any sheetHeight `h` (closed/midSnap/upper) — same
   // algebra as above but parameterised. Used to precompute the three
   // CSS-transition targets.
@@ -1219,8 +1224,12 @@ export default function RouletteScreen({
     // below the 54px bar that the wheel rode up under it. 0.2 keeps the midSnap
     // wheel a touch smaller in exchange for breathing room above it.
     const appBarPad = APP_BAR_PAD * (1 - 0.1 * sp);
-    const spinH = (isPlayMode || !showSpinButton) ? 0 : SPIN_H * Math.max(0, 1 - sp);
-    const bottomCover = isPlayMode ? 0 : Math.max(RED_BASE, h);
+    // +16: matches the spin row's larger bottom margin while the picker is
+    // hidden (28 vs 12) so the reclaimed space stays accounted for.
+    const spinH = (isPlayMode || !showSpinButton) ? 0 : (SPIN_H + (pickerVisible ? 0 : 16)) * Math.max(0, 1 - sp);
+    // Hidden picker → the red box occupies no space, so only the sheet covers.
+    const redH = pickerVisible ? RED_BASE : 0;
+    const bottomCover = isPlayMode ? 0 : Math.max(redH, h);
     const hProg = (isMobile ? Math.max(0, 1 - sp) : 1) * (showSegmentHeader ? 1 : 0);
     const cHeader = (56 * activeConfig.headerTextSize) * hProg + 16 * hProg + 16;
     const avail = isMobile
@@ -1229,7 +1238,7 @@ export default function RouletteScreen({
     const factor = 1 + WHEEL_PADDING_RATIO + HEADER_TEXT_PAD_RATIO * hProg;
     const size = Math.max(80, Math.min(avail / factor, effectiveWheelSize));
     const margin = isMobile
-      ? Math.min(Math.max(0, h - RED_BASE), 450, Math.max(0, screenHeight - CHIP_H - RED_BASE - APP_BAR_PAD))
+      ? Math.min(Math.max(0, h - redH), 450, Math.max(0, screenHeight - CHIP_H - redH - APP_BAR_PAD))
       : 0;
     const opacity = isMobile && h > midSnap
       ? Math.max(0, 1 - 2 * (h - midSnap) / (upperSnap - midSnap))
@@ -1647,7 +1656,10 @@ export default function RouletteScreen({
               flexShrink: 0,
               opacity: Math.max(0, 1 - spacerProgress),
               height: 54 * Math.max(0, 1 - spacerProgress),
-              marginBottom: 12 * Math.max(0, 1 - spacerProgress),
+              // With the picker hidden the button row sits on the screen edge —
+              // give it extra breathing room there (mirrored in wheelStateAt's
+              // spinH so the wheel algebra stays exact).
+              marginBottom: (pickerVisible ? 12 : 28) * Math.max(0, 1 - spacerProgress),
               overflow: 'hidden',
               transition: wheelTransitionCss,
             }}>
@@ -1656,7 +1668,7 @@ export default function RouletteScreen({
                   Two empty square buttons flank SPIN; distinct seeds vary the
                   hand-drawn roughness so they don't look cloned. */}
               <div style={{ display: 'flex', gap: 12, height: 54 }}>
-                <PixelButton color={PRIMARY} height={54} label="" radius={18} roughAmp={3.5} seed={3} style={{ width: 54, flexShrink: 0 }} />
+                <PixelButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={54} label="" radius={18} roughAmp={3.5} seed={3} style={{ width: 54, flexShrink: 0 }} />
                 <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={30} radius={18} roughAmp={3.5} seed={7} style={{ flex: 1, minWidth: 0 }} />
                 <PixelButton color={PRIMARY} height={54} label="" radius={18} roughAmp={3.5} seed={11} style={{ width: 54, flexShrink: 0 }} />
               </div>
@@ -1672,17 +1684,23 @@ export default function RouletteScreen({
             flexShrink: 0,
             width: '100%',
             height: redBoxHeight,
-            opacity: isPlayMode ? 0 : 1,
+            opacity: pickerVisible ? 1 : 0,
             backgroundColor: SURFACE,
-            // visible (not hidden) so the pop-in scale and grabbed box-shadow
-            // can extend past the red box without being clipped.
-            overflow: 'visible',
-            transition: 'height 0.3s ease, opacity 0.3s ease',
+            // visible (not hidden) while shown, so the pop-in scale and grabbed
+            // box-shadow can extend past the red box without being clipped.
+            // Hidden/animating-closed clips so the tiles can't poke out of the
+            // collapsed panel.
+            overflow: pickerVisible ? 'visible' : 'hidden',
+            // Snappy panel reveal (fast start, glide to rest) — the tile row
+            // below adds the springy overshoot on top.
+            transition: 'height 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease, padding 0.3s cubic-bezier(0.22, 1, 0.36, 1)',
             display: 'flex',
             flexDirection: 'column',
             // Center the preview row vertically inside the red box.
             justifyContent: 'center',
-            padding: '12px 0 11px',
+            // Padding must collapse with the panel — border-box would otherwise
+            // keep the box at padding height even at height 0.
+            padding: pickerVisible ? '12px 0 11px' : '0 0 0',
             boxSizing: 'border-box',
           }}>
             {/* Preview row: [wheel 1] … [wheel N] [+ icon].
@@ -1711,6 +1729,16 @@ export default function RouletteScreen({
                 // halo + shadow during reorder. Top padding clears that halo.
                 padding: '34px 14px 13px 14px',
                 cursor: 'grab',
+                // Game-feel reveal: the row pops up from the panel's bottom edge
+                // with a back-out overshoot, slightly staggered behind the panel
+                // height so it reads as "panel opens → tiles spring in". Closing
+                // is a quick drop-and-fade (no bounce) so it feels decisive.
+                transformOrigin: '50% 100%',
+                transform: pickerVisible ? 'none' : 'translateY(26px) scale(0.92)',
+                opacity: pickerVisible ? 1 : 0,
+                transition: pickerVisible
+                  ? 'transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) 0.06s, opacity 0.2s ease 0.06s'
+                  : 'transform 0.2s cubic-bezier(0.55, 0, 0.55, 0.2), opacity 0.16s ease',
               }}
             >
               {flowSteps && flowSteps.length > 0 ? (
