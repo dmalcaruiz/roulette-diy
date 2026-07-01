@@ -657,8 +657,16 @@ export default function WheelEditor({
   // App-level block never received the update and profile thumbnails
   // stayed stale until something else (item edit, sheet close) forced a
   // save. handleWheelPreview in the parent already debounces 500ms.
+  // onPreview is read via a ref, NOT a dep: its identity churns whenever the
+  // parent's `block` updates — which this preview's OWN autosave causes — so
+  // having it in the deps made the effect self-sustaining (preview → 500ms
+  // autosave → block update → new onPreview → preview → …), a permanent
+  // ~600ms re-render heartbeat that re-baked the wheel even mid-drag. Real
+  // state edits (+ id switches) are the only triggers now.
+  const onPreviewRef = useRef(onPreview);
+  onPreviewRef.current = onPreview;
   useEffect(() => {
-    if (!onPreview || !state.name.trim()) return;
+    if (!onPreviewRef.current || !state.name.trim()) return;
     // Mid-switch race guard: state.originWheelId is stamped by
     // buildInitialState with the BLOCK id at reset time. When this
     // effect fires mid-switch the parent has already updated `wheelId`
@@ -675,8 +683,8 @@ export default function WheelEditor({
       console.log(`[WE-DBG] SKIPPED: origin=${state.originWheelId} vs wheelId=${wheelId}`);
       return;
     }
-    onPreview(stateToConfig(state, configId));
-  }, [state, onPreview, configId, wheelId]);
+    onPreviewRef.current(stateToConfig(state, configId));
+  }, [state, configId, wheelId]);
 
   // Lock the parent scroll container while a row is being dragged. Same
   // recipe as BlocksList — walks up to find every scrollable ancestor,

@@ -197,19 +197,19 @@ function synthZapAt(ctx: AudioContext, time: number): AudioScheduledSourceNode[]
   return nodes;
 }
 
-// Soft-clip distortion curve (cached) — drives the "crunch" in the fire tick.
-let crunchCurve: Float32Array | null = null;
-function getCrunchCurve(): Float32Array {
-  if (crunchCurve) return crunchCurve;
+// Soft-clip distortion curve (256 floats, built once at module load) — drives
+// the "crunch" in the fire tick. Inferred type (no bare Float32Array
+// annotation) so TS ≥5.7 keeps it Float32Array<ArrayBuffer>, which
+// WaveShaperNode.curve requires.
+const crunchCurve = (() => {
   const n = 256;
   const c = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
     c[i] = Math.tanh(x * 4); // soft saturation
   }
-  crunchCurve = c;
   return c;
-}
+})();
 
 // "Fire" — a grainy, crunchy crackle (the element, not a gunshot): resonant
 // low-passed noise for the grain + a low square for the body, BOTH pushed
@@ -221,7 +221,7 @@ function synthFireAt(ctx: AudioContext, time: number): AudioScheduledSourceNode[
 
   // Shared crunch stage: everything saturates here, then a master level out.
   const shaper = ctx.createWaveShaper();
-  shaper.curve = getCrunchCurve();
+  shaper.curve = crunchCurve;
   const out = ctx.createGain();
   out.gain.value = 0.2;
   shaper.connect(out).connect(ctx.destination);
@@ -551,6 +551,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // (see paintFrame / the transition tick), so it can never leak into the rest
   // frame — the final settle bake always quantizes for real.
   const fastBakeRef = useRef(false);
+  // Quality of the currently COMMITTED (resting) bitmap: true when the last
+  // paint() was a fast (non-quantized) motion bake, meaning a full-quality
+  // re-bake is still owed once the wheel is genuinely at rest.
+  const restBakeFastRef = useRef(false);
   // Result dialog + dot celebration, revealed as the win overlay fades out.
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -798,6 +802,17 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       }
     }
 
+    // DEBUG: every canvas bake funnels through here — drags are supposed to be
+    // bake-free, so any hit while a drag is active is a frame-skip suspect.
+    // The trimmed stack names the caller. Remove once drag jank is resolved.
+    if (dragRef.current) {
+      const stack = new Error().stack?.split('\n').slice(2, 7).join('\n');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[wheel] BAKE during drag @${performance.now().toFixed(0)}ms `
+        + `fast=${fastBakeRef.current} rot=${rotationRef.current.toFixed(3)}\n${stack}`,
+      );
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paintWheel(ctx, displaySize, displaySize, config, textCtx);
   }, [size, buildWheelConfig]);
@@ -824,6 +839,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (gpuSpinActiveRef.current) return;
     bakedRotationRef.current = rotationRef.current;
     paintImplRef.current();
+    restBakeFastRef.current = fastBakeRef.current; // remember committed quality
     const c = rotorRef.current;
     // Clear any spin/drag transition + transform so the just-baked bitmap shows
     // at identity. NO translateZ/will-change here: painting while layer-promoted
@@ -877,7 +893,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Depends on paintImpl (the actual implementation) so it re-fires on
   // size/items/etc changes; the public `paint` is intentionally stable.
   useEffect(() => {
-    const id = requestAnimationFrame(() => repaint());
+    const id = requestAnimationFrame(() => {
+      // A live drag owns the canvas: skip prop-driven repaints — each is a
+      // full mid-drag bake (= a skipped frame), and the release settle paint()
+      // reads the latest config via paintImplRef anyway, so a config change
+      // that lands mid-drag still shows the moment the finger lifts.
+      if (dragRef.current) return;
+      repaint();
+    });
     return () => cancelAnimationFrame(id);
   }, [repaint, paintImpl]);
 
@@ -922,7 +945,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           rotationRef.current = bakedRotationRef.current + matrixTheta + k * 2 * Math.PI;
         } catch { /* DOMMatrix string ctor unsupported → keep the estimate */ }
       }
+      // Freezing a wheel in LIVE MOTION (spin/decay): the frozen frame is
+      // transient — it's being re-grabbed or immediately re-baked by the
+      // caller — so skip the palette-vote + readback. Full quality is restored
+      // by the next rest-frame paint (stillness commit, release settle,
+      // finishDecay, or the caller's own target bake).
+      fastBakeRef.current = isSpinningRef.current;
       paint();
+      fastBakeRef.current = false;
     }
     for (const s of scheduledSourcesRef.current) {
       try { s.stop(); } catch {}
@@ -1295,7 +1325,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     let delta = targetMod - currentMod;
     if (delta > Math.PI) delta -= 2 * Math.PI;       // shortest direction
     if (delta < -Math.PI) delta += 2 * Math.PI;
-    if (Math.abs(delta) < 0.0005) { updateCurrentSegment(); return; }
+    if (Math.abs(delta) < 0.0005) {
+      // Already in place — but if the freeze above left a cheap motion bake
+      // (grabbed mid-spin), re-quantize the now-resting frame.
+      if (restBakeFastRef.current) paint();
+      updateCurrentSegment();
+      return;
+    }
 
     // Compositor CSS transition, like the tap-spin/decay, instead of the old
     // per-frame re-bake rAF loop. This animation runs exactly when a segment
@@ -1421,6 +1457,44 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // (cancelInFlight + playWinOverlay are declared before spin() so that
   // spin's useCallback can include playWinOverlay in its deps.)
 
+  // ── Stillness commit ──
+  // While a pointer HOLDS the wheel visually still (a paused drag, or a tap
+  // pinning a wheel that was frozen mid-motion), commit ONE full-quality,
+  // screen-aligned bake after a short quiet period. Any noticeable rotation
+  // re-arms the timer, so a wheel that keeps moving never re-bakes — quality is
+  // only restored when the user actually stops. Skips entirely when nothing is
+  // owed (bitmap already quantized and at identity transform).
+  const STILL_COMMIT_MS = 50;
+  // Rotation across a whole quiet window that still counts as "still". Judged
+  // per WINDOW, not per pointer event — a per-event delta threshold reads any
+  // slow drag as stillness (event rate ≫ motion rate) and committed mid-drag,
+  // which was a visible periodic hitch (bake + layer re-promote). Scaled to
+  // the window so the speed cutoff stays put when the window is retuned.
+  const STILL_EPS = 0.08 * (STILL_COMMIT_MS / 1000); // ≈ 0.08 rad/s
+  const stillTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Timestamp of the last drag pointermove — the second stillness signal. A
+  // finger that keeps dragging (any speed) streams move events continuously; a
+  // resting finger goes quiet. Requiring BOTH quiet events AND a quiet rotation
+  // window makes a mid-drag commit (a bake + layer re-promote = visible frame
+  // skip) impossible while the user is actively moving.
+  const lastDragMoveTsRef = useRef(0);
+  const armStillCommit = useCallback(() => {
+    if (stillTimerRef.current) clearTimeout(stillTimerRef.current);
+    const armRotation = rotationRef.current;
+    stillTimerRef.current = setTimeout(() => {
+      stillTimerRef.current = null;
+      if (!dragRef.current) return; // released — the settle paths own the commit
+      // Watch the next window if the pointer or wheel is still active, or if
+      // nothing is owed yet (it may move again and stop again later).
+      const eventsQuiet = performance.now() - lastDragMoveTsRef.current >= STILL_COMMIT_MS * 0.8;
+      if (!eventsQuiet || Math.abs(rotationRef.current - armRotation) > STILL_EPS) { armStillCommit(); return; }
+      const t = rotorRef.current?.style.transform;
+      const hasOffset = !!t && t !== 'none';
+      if (restBakeFastRef.current || hasOffset) paint(); // crisp, aligned commit
+      armStillCommit();
+    }, STILL_COMMIT_MS);
+  }, [paint]);
+
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button === 2) return;
     // Was the win-overlay END animation playing when grabbed? If so a plain tap
@@ -1458,7 +1532,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       lastRenderedSegment: segmentAtRotation(rotationRef.current),
       carriedVelocity: carried,
     };
-  }, [cancelInFlight, segmentAtRotation]);
+    // A grab that just froze a moving wheel holds a cheap (fast-baked) frame;
+    // if the pointer then rests, this commits it crisp after the quiet period.
+    armStillCommit();
+  }, [cancelInFlight, segmentAtRotation, armStillCommit]);
 
   // Live drag: rotate the ROTOR via its CSS transform — exactly like the
   // tap-spin/decay — with ZERO canvas re-bakes while the finger is down. The
@@ -1482,7 +1559,13 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       const dy = e.clientY - drag.startClientPos.y;
       if (Math.hypot(dx, dy) < 6) return; // still might be a tap
       drag.crossedThreshold = true;
+      // Kill any stale transition once for the whole drag — the rAF below then
+      // only writes `transform` per frame. (paint() also resets transition, so
+      // a mid-drag stillness commit re-establishes this invariant itself.)
+      const c = rotorRef.current;
+      if (c) c.style.transition = 'none';
     }
+    lastDragMoveTsRef.current = performance.now();
 
     // Pointer angle around the wheel centre; the delta since last event is how
     // far the wheel rotated under the finger.
@@ -1513,13 +1596,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         // already owns the transform; don't clobber it.
         if (!dragRef.current) return;
         const c = rotorRef.current;
-        if (c) {
-          c.style.transition = 'none';
-          // translateZ(0) promotes the rotor to its own layer for the drag
-          // (one texture upload on the first frame, compositor-only after) —
-          // the same self-promotion the tap/decay transforms use.
-          c.style.transform = `rotate(${rotationRef.current - bakedRotationRef.current}rad) translateZ(0)`;
-        }
+        // translateZ(0) promotes the rotor to its own layer for the drag
+        // (one texture upload on the first frame, compositor-only after) —
+        // the same self-promotion the tap/decay transforms use. transition
+        // was cleared once at threshold-crossing; only transform per frame.
+        if (c) c.style.transform = `rotate(${rotationRef.current - bakedRotationRef.current}rad) translateZ(0)`;
       });
     }
   }, [segmentAtRotation]);
@@ -1528,10 +1609,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
-    // Drop any pending coalesced drag bake — the settle logic below owns the
-    // canvas from here (its dragRef guard also covers a raced firing).
+    // Drop any pending coalesced drag bake + stillness commit — the settle
+    // logic below owns the canvas from here (their dragRef guards also cover a
+    // raced firing).
     cancelAnimationFrame(dragPaintRafRef.current);
     dragPaintRafRef.current = 0;
+    if (stillTimerRef.current) { clearTimeout(stillTimerRef.current); stillTimerRef.current = null; }
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
 
     // The header was written straight to the DOM during the drag; sync React
@@ -1540,8 +1623,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
     if (!drag.crossedThreshold) {
       // A tap that interrupted the END animation just stops it (already
-      // cancelled on pointerdown) — don't do anything else.
-      if (tappedToStopRef.current) return;
+      // cancelled on pointerdown) — the wheel is now at rest, so if the grab
+      // froze it with a cheap motion bake, re-quantize before leaving it.
+      if (tappedToStopRef.current) {
+        if (restBakeFastRef.current) paint();
+        return;
+      }
       if (onSegmentLongPress) {
         // Stationary tap → open the tapped wedge's segment action (it no longer
         // spins; spinning is via the SPIN button or a flick).
@@ -1624,7 +1711,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // identity so the fling lands on a pixel-clean, screen-aligned frame.
     gpuSpinActiveRef.current = false;
     rotationRef.current = decayTarget;   // paint() bakes at rotationRef → bake the FINAL orientation
+    // A brisk fling's target bake is only ever seen in motion (finishDecay
+    // re-quantizes the true rest frame) — skip the palette-vote for it. Slow
+    // nudges keep the full bake: their whole decay is a visible crawl.
+    fastBakeRef.current = Math.abs(velocity) >= SPIN_ATTEMPT_VELOCITY;
     paint();                          // bakedRotationRef ← decayTarget; transform cleared to none (= rest)
+    fastBakeRef.current = false;
     rotationRef.current = decayStartRotation;
     gpuSpinActiveRef.current = true;
     spinStartPerfRef.current = performance.now();
@@ -1689,10 +1781,12 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
-    // Drop any pending coalesced drag bake — the settle logic below owns the
-    // canvas from here (its dragRef guard also covers a raced firing).
+    // Drop any pending coalesced drag bake + stillness commit — the settle
+    // logic below owns the canvas from here (their dragRef guards also cover a
+    // raced firing).
     cancelAnimationFrame(dragPaintRafRef.current);
     dragPaintRafRef.current = 0;
+    if (stillTimerRef.current) { clearTimeout(stillTimerRef.current); stillTimerRef.current = null; }
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
     // If we were dragging via the element transform, commit it into the bitmap.
     if (gpuSpinActiveRef.current) {
