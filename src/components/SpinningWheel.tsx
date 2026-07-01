@@ -834,16 +834,6 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (c) { c.style.transition = 'none'; c.style.transform = 'none'; }
   }, []);
 
-  // paint() for animation frames: `fast` frames (mid-motion) skip the palette-
-  // vote quantization; the caller passes false on the FINAL frame so the wheel
-  // settles on a fully quantized bake. The flag is set only for the duration of
-  // this synchronous call — no stale-flag risk for unrelated paints.
-  const paintFrame = useCallback((fast: boolean) => {
-    fastBakeRef.current = fast;
-    paint();
-    fastBakeRef.current = false;
-  }, [paint]);
-
   // Keep the wheel canvas on its own GPU layer (identity transform) during the win
   // overlay / result dialog. paint() resets the transform to 'none' (no layer), and
   // when the dialog's translucent layer composites over an un-layered pixelated
@@ -903,6 +893,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Easing function (easeOutCubic)
   const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
   const easeInOut = (t: number) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  // CSS twin of easeInOut (quad), for the compositor-driven settle transitions
+  // (reset / focusSegment) that used to run as per-frame re-bake rAF loops.
+  const EASE_IN_OUT_CSS = 'cubic-bezier(0.455, 0.03, 0.515, 0.955)';
 
   // Cancel any in-flight spin/decay animation + scheduled audio so a new
   // drag starts from a clean slate. Deliberately does NOT touch the win-
@@ -1013,6 +1006,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
 
   const spin = useCallback(() => {
     if (isSpinningRef.current) return;
+    // A compositor settle animation (reset / focusSegment) may be mid-flight —
+    // freeze it at its exact visual angle before reading rotationRef, and kill
+    // its pending settle watcher so it can't fire into THIS spin. (The gesture
+    // path already ran this via pointerdown, where it's a no-op.)
+    cancelInFlight();
 
     // The spin click is a user gesture — resume the AudioContext now so
     // the scheduled clicks below can fire on the audio thread. Also kick
@@ -1212,24 +1210,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       }
     };
     headerRafRef.current = requestAnimationFrame(tickLoop);
-  }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint,
+  }, [items, spinIntensity, isRandomIntensity, showWinAnimation, paint, cancelInFlight,
       segmentAtRotation, getWinningIndex, getRandomWeightedIndex, onFinished, playWinOverlay]);
 
   const reset = useCallback(() => {
-    cancelAnimationFrame(animRef.current);
-    cancelAnimationFrame(headerRafRef.current);
-    // Stop a tap-spin if one is in flight, baking its current angle so the
-    // settle animation below starts from where the wheel actually is.
-    if (gpuSpinActiveRef.current) {
-      gpuSpinActiveRef.current = false;
-      paint();
-    }
-    // Stop any scheduled clicks that haven't fired yet — otherwise the
-    // wheel snaps to rest visually but ticks keep playing.
-    for (const s of scheduledSourcesRef.current) {
-      try { s.stop(); } catch {}
-    }
-    scheduledSourcesRef.current = [];
+    // Freeze any in-flight spin/decay/focus at its EXACT visual angle (matrix
+    // read + bake) and stop scheduled ticks, so the settle below starts from
+    // where the wheel actually is.
+    cancelInFlight();
     isSpinningRef.current = false;
     setIsSpinning(false);
     setSegmentHeaderOpacity(0);
@@ -1250,34 +1238,48 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       return;
     }
 
-    // Animate to closest full rotation
-    const startTime = performance.now();
+    // Animate to the closest full rotation on the COMPOSITOR, like the
+    // tap-spin/decay: bake ONCE at the target, offset the rotor transform back
+    // to the current angle, and transition to identity. No per-frame re-bakes.
+    const delta = closest - current;
     const duration = 500;
-    const startRot = current;
-    const endRot = closest;
-
-    const animate = (now: number) => {
-      const t = Math.min(1, (now - startTime) / duration);
-      const eased = easeInOut(t);
-      rotationRef.current = startRot + (endRot - startRot) * eased;
-      // Mid-motion frames use the cheap pixelate; the final frame quantizes.
-      paintFrame(t < 1);
-      if (t < 1) {
-        animRef.current = requestAnimationFrame(animate);
+    rotationRef.current = closest;
+    paint();                          // full-quality bake at the target; transform cleared
+    const rotor = rotorRef.current;
+    if (!rotor) return;
+    gpuSpinActiveRef.current = true;  // guards stray paints; cancelInFlight re-freezes exactly
+    rotor.style.transition = 'none';
+    rotor.style.transform = `rotate(${-delta}rad) translateZ(0)`;
+    void rotor.offsetWidth;           // commit the start-offset state
+    requestAnimationFrame(() => {
+      if (!gpuSpinActiveRef.current) return; // cancelled before it began
+      rotor.style.transition = `transform ${duration}ms ${EASE_IN_OUT_CSS}`;
+      rotor.style.transform = 'rotate(0rad) translateZ(0)';
+    });
+    // Settle watcher — read-only rAF on headerRafRef so every interrupt path
+    // (cancelInFlight, a new reset/focus) cancels it. The +50ms grace covers
+    // the one-frame-late CSS transition start; the ease ends flat, so any
+    // residual angle at settle is sub-pixel.
+    const startTime = performance.now();
+    const tick = (now: number) => {
+      if (!gpuSpinActiveRef.current) return; // interrupted
+      if (now - startTime < duration + 50) {
+        headerRafRef.current = requestAnimationFrame(tick);
+      } else {
+        gpuSpinActiveRef.current = false;
+        paint();                      // commit the rest frame (un-promotes the layer)
       }
     };
-    animRef.current = requestAnimationFrame(animate);
-  }, [paint, paintFrame]);
+    headerRafRef.current = requestAnimationFrame(tick);
+  }, [cancelInFlight, paint]);
 
   // Rotate so segment `idx`'s centre lands under the marker (top centre).
   // Animates like reset() — rAF + paint() to the shortest-path target angle.
   const focusSegment = useCallback((idx: number) => {
     if (idx < 0 || idx >= items.length) return;
-    cancelAnimationFrame(animRef.current);
-    cancelAnimationFrame(headerRafRef.current);
-    if (gpuSpinActiveRef.current) { gpuSpinActiveRef.current = false; paint(); }
-    for (const s of scheduledSourcesRef.current) { try { s.stop(); } catch {} }
-    scheduledSourcesRef.current = [];
+    // Freeze any in-flight animation at its EXACT visual angle (matrix read +
+    // bake), so the shortest-path delta below starts from where the wheel is.
+    cancelInFlight();
     isSpinningRef.current = false;
 
     const totalWeight = items.reduce((s, it) => s + it.weight, 0);
@@ -1295,20 +1297,49 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (delta < -Math.PI) delta += 2 * Math.PI;
     if (Math.abs(delta) < 0.0005) { updateCurrentSegment(); return; }
 
-    const startTime = performance.now();
+    // Compositor CSS transition, like the tap-spin/decay, instead of the old
+    // per-frame re-bake rAF loop. This animation runs exactly when a segment
+    // tap ALSO opens the editor sheet and CSS-scales the wheel container —
+    // re-baking every frame there re-uploaded the canvas texture into an
+    // animating layer while React mounted the sheet (the tap-flow jank). Bake
+    // ONCE at the target orientation and unwind the transform to rest.
     const duration = 450;
-    const startRot = current;
     const endRot = current + delta;
-    const animate = (now: number) => {
+    rotationRef.current = endRot;
+    paint();                          // full-quality bake at the target; transform cleared
+    const rotor = rotorRef.current;
+    if (!rotor) { updateCurrentSegment(); return; }
+    gpuSpinActiveRef.current = true;  // guards stray paints; cancelInFlight re-freezes exactly
+    rotor.style.transition = 'none';
+    rotor.style.transform = `rotate(${-delta}rad) translateZ(0)`;
+    void rotor.offsetWidth;           // commit the start-offset state
+    requestAnimationFrame(() => {
+      if (!gpuSpinActiveRef.current) return; // cancelled before it began
+      rotor.style.transition = `transform ${duration}ms ${EASE_IN_OUT_CSS}`;
+      rotor.style.transform = 'rotate(0rad) translateZ(0)';
+    });
+    // Read-only header tracker (no canvas work): mirrors the easing so the
+    // header still ticks through intermediate segments, then settles. The
+    // +50ms grace covers the one-frame-late CSS start; the ease ends flat, so
+    // any residual angle at settle is sub-pixel.
+    const startTime = performance.now();
+    const tick = (now: number) => {
+      if (!gpuSpinActiveRef.current) return; // interrupted (grab / new animation)
       const t = Math.min(1, (now - startTime) / duration);
-      rotationRef.current = startRot + (endRot - startRot) * easeInOut(t);
-      // Mid-motion frames use the cheap pixelate; the final frame quantizes.
-      paintFrame(t < 1);
-      updateCurrentSegment();
-      if (t < 1) animRef.current = requestAnimationFrame(animate);
+      const seg = segmentAtRotation(current + delta * easeInOut(t));
+      if (seg !== lastRenderedSegmentRef.current) {
+        lastRenderedSegmentRef.current = seg;
+        setCurrentSegment(seg);
+      }
+      if (now - startTime < duration + 50) {
+        headerRafRef.current = requestAnimationFrame(tick);
+      } else {
+        gpuSpinActiveRef.current = false;
+        paint();                      // commit the rest frame (un-promotes the layer)
+      }
     };
-    animRef.current = requestAnimationFrame(animate);
-  }, [items, paint, paintFrame, updateCurrentSegment]);
+    headerRafRef.current = requestAnimationFrame(tick);
+  }, [items, cancelInFlight, paint, updateCurrentSegment, segmentAtRotation]);
 
   // ── Drag-to-spin physics ────────────────────────────────────────────
   // Tap on the wheel still calls the deterministic spin() above (with
