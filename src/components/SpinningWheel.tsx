@@ -655,6 +655,18 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       transitionRef.current = 1;
       return;
     }
+    // Only WEIGHTS animate here — colors/text snap instantly (by design) and
+    // are covered by the prop-change repaint. Same-content identity changes are
+    // common (live editor tweaks rebuild the items array per input event) and
+    // used to kick off a phantom 110ms transition; harmless when every frame
+    // re-baked identically, but now that mid-transition frames bake at FAST
+    // pixelate quality it read as the wheel shimmering in place. Skip unless a
+    // weight actually changed.
+    if (prev.every((it, i) => it.weight === items[i].weight)) {
+      fromItemsRef.current = null;
+      transitionRef.current = 1;
+      return;
+    }
     // Same count → cross-fade weights/colors from prev → items.
     fromItemsRef.current = prev;
     transitionRef.current = 0;
