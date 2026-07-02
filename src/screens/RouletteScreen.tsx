@@ -32,6 +32,14 @@ import { useScrollSpy } from '../hooks/useScrollSpy';
 // that line). Shared by the wheel bucket + the sheet's dismissBelow prop.
 const SHEET_DISMISS_PULL = 60;
 
+// Session-wide cache of MEASURED wheel-bisecting snap heights, keyed by the
+// layout signature that determines the wheel's docked position. Each layout
+// configuration runs the two-stage measure-and-dock open at most ONCE per app
+// session — any later open under an already-measured configuration (including
+// after wheel switches, picker/header toggles back to a known state, or a
+// screen remount) opens directly at the cached position.
+const wheelMidSnapSessionCache = new Map<string, number>();
+
 const SECTION_KEYS = ['segments', 'style', 'settings', 'templates'] as const;
 type Section = (typeof SECTION_KEYS)[number];
 // Display titles for the fixed sheet header (driven by the active chip / section).
@@ -1338,14 +1346,24 @@ export default function RouletteScreen({
   // stutter). Skipped if the user grabs the sheet before the dock fires.
   const [sheetGoIndex, setSheetGoIndex] = useState<number | null>(null);
   const dragSinceOpenRef = useRef(false);
-  // Once the wheel-bisecting snap has been MEASURED, later opens skip the
-  // two-stage choreography and open straight at it (initialSnap below).
-  // Reset whenever the layout that determines the wheel's position changes,
-  // so the next open re-runs the measure-and-dock once.
+  // Once the wheel-bisecting snap has been MEASURED for the current layout
+  // configuration, opens skip the two-stage choreography and go straight to it
+  // (initialSnap below). The measurement lives in the session cache keyed by
+  // this signature: when the layout flips to a configuration measured earlier
+  // this session, the cached value is restored instantly — no re-dance.
+  const wheelLayoutSig = `${screenHeight}|${midSnap}|${showSegmentHeader ? 1 : 0}|${pickerVisible ? 1 : 0}|${isMobile ? 1 : 0}`;
+  const wheelLayoutSigRef = useRef(wheelLayoutSig);
+  wheelLayoutSigRef.current = wheelLayoutSig;
   const [wheelMidSnapMeasured, setWheelMidSnapMeasured] = useState(false);
   useEffect(() => {
-    setWheelMidSnapMeasured(false);
-  }, [screenHeight, midSnap, showSegmentHeader, pickerVisible, isMobile]);
+    const cached = wheelMidSnapSessionCache.get(wheelLayoutSig);
+    if (cached != null) {
+      setWheelMidSnap(cached);
+      setWheelMidSnapMeasured(true);
+    } else {
+      setWheelMidSnapMeasured(false);
+    }
+  }, [wheelLayoutSig]);
   useEffect(() => {
     if (!sheetOpen || !isMobile || isPlayMode) { setSheetGoIndex(null); return; }
     if (wheelMidSnapMeasured) return; // direct single-stage open — no dock needed
@@ -1362,6 +1380,7 @@ export default function RouletteScreen({
       const clamped = Math.max(midSnap + 8, Math.min(upperSnapH - 8, snap));
       setWheelMidSnap(prev => (Math.abs(prev - clamped) > 2 ? clamped : prev));
       setWheelMidSnapMeasured(true);
+      wheelMidSnapSessionCache.set(wheelLayoutSigRef.current, clamped); // once per layout config per session
       setSheetGoIndex(2); // dock at wheelMidSnap (same commit as its new value)
     }, 480);
     return () => clearTimeout(id);
