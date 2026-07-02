@@ -27,6 +27,11 @@ import { useScrollSpy } from '../hooks/useScrollSpy';
 
 // The four editor sections, top-to-bottom in the continuous sheet (= chip
 // order). The scroll-spy highlights whichever section is in view.
+// Pull-to-dismiss: releasing the sheet this many px below the LOWER snap
+// closes it (and the wheel anticipates full size the moment a drag crosses
+// that line). Shared by the wheel bucket + the sheet's dismissBelow prop.
+const SHEET_DISMISS_PULL = 60;
+
 const SECTION_KEYS = ['segments', 'style', 'settings', 'templates'] as const;
 type Section = (typeof SECTION_KEYS)[number];
 // Display titles for the fixed sheet header (driven by the active chip / section).
@@ -173,12 +178,43 @@ export default function RouletteScreen({
   useEffect(() => {
     setSkipSheetOpenAnim(false);
   }, [block.id]);
+  // ── [OPEN-DBG] first-open latency instrumentation ──
+  // Splits a sheet open into phases; compare a FIRST-ever open's log against a
+  // later one to see which phase carries the extra time:
+  //   tap → "openSheetTo"        = event dispatch
+  //   → "open commit flushed"    = React render+commit of the open
+  //   → "rAF1"                   = follow-up synchronous commits (snap-target)
+  //   → "rAF2 frame presented"   = browser style/layout/paint/raster of frame 1
+  //   LONGTASK entries           = any main-thread task >50ms, with timestamps
+  const openDbgT0Ref = useRef(0);
+  const openDbg = (msg: string) => {
+    // eslint-disable-next-line no-console
+    console.log(`[OPEN-DBG] +${(performance.now() - openDbgT0Ref.current).toFixed(1)}ms ${msg}`);
+  };
+  useEffect(() => {
+    if (typeof PerformanceObserver === 'undefined') return;
+    try {
+      const po = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          const attr = (e as PerformanceEntry & { attribution?: { name?: string; containerType?: string }[] }).attribution?.[0];
+          // eslint-disable-next-line no-console
+          console.log(`[OPEN-DBG] LONGTASK ${e.duration.toFixed(0)}ms @${e.startTime.toFixed(0)} (${attr?.name ?? '?'}/${attr?.containerType ?? '?'})`);
+        }
+      });
+      po.observe({ type: 'longtask', buffered: false });
+      return () => po.disconnect();
+    } catch { /* longtask unsupported on this browser */ }
+  }, []);
+
   // Tap a chip → on a FRESH open, jump to the section in a single frame (the
   // sheet is sliding up anyway, so its content just starts already at the section
   // — no Templates flash). When the sheet is ALREADY open, smooth-scroll
   // (navigate) to the section. Snap target + height are seeded in the same commit
   // as setSheetOpen so the chip-tap is a single React commit.
   const openSheetTo = useCallback((key: Section) => {
+    openDbgT0Ref.current = performance.now();
+    // eslint-disable-next-line no-console
+    console.log(`[OPEN-DBG] openSheetTo(${key}) @${openDbgT0Ref.current.toFixed(0)} alreadyOpen=${sheetOpen}`);
     setCurrentSection(key);
     if (sheetOpen) {
       spy.scrollTo(key); // already open → animate
@@ -188,7 +224,12 @@ export default function RouletteScreen({
     const openH = window.innerWidth < 900 ? 380 : 400;
     setSheetSnapTargetH(openH);
     setSheetHeight(openH);
-    requestAnimationFrame(() => spy.scrollTo(key, { instant: true })); // fresh open → single frame
+    requestAnimationFrame(() => {
+      const t = performance.now();
+      spy.scrollTo(key, { instant: true }); // fresh open → single frame
+      openDbg(`scrollTo(instant) took ${(performance.now() - t).toFixed(1)}ms`);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetOpen, spy]);
   const closeSheet = useCallback(() => {
     setSkipSheetOpenAnim(true);
@@ -198,6 +239,18 @@ export default function RouletteScreen({
     setSheetHeight(0);
     lastTappedSegmentRef.current = null;
   }, []);
+  // [OPEN-DBG] commit + first-presented-frame probes for a fresh open.
+  useLayoutEffect(() => {
+    if (!sheetOpen) return;
+    openDbg('open commit flushed (React render done)');
+    let r2 = 0;
+    const r1 = requestAnimationFrame(() => {
+      openDbg('rAF1 (frame 1 begins: style/layout/paint next)');
+      r2 = requestAnimationFrame(() => openDbg('rAF2 (frame 1 presented)'));
+    });
+    return () => { cancelAnimationFrame(r1); cancelAnimationFrame(r2); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetOpen]);
   // Context menu triggered by right-click / long-press on a preview tile.
   // Holds the index of the tile that opened it. null = closed.
   const [ctxMenuIndex, setCtxMenuIndex] = useState<number | null>(null);
@@ -337,8 +390,12 @@ export default function RouletteScreen({
     if (!committed && !isSheetDraggingRef.current) return;
     if (!committed) {
       const mid = window.innerWidth < 900 ? 380 : 400; // = midSnap (declared later; same formula as openSheetTo)
-      const bucket = h >= mid / 2 ? mid : 0;
-      setSheetHeight(prev => ((prev >= mid / 2 ? mid : 0) === bucket ? prev : bucket));
+      // Anticipation boundary = the sheet's dismiss line (midSnap − 90): the
+      // instant a drag crosses where release would DISMISS, the wheel starts
+      // growing back to full size. Must stay in sync with `dismissBelow`.
+      const dismiss = mid - SHEET_DISMISS_PULL;
+      const bucket = h >= dismiss ? mid : 0;
+      setSheetHeight(prev => ((prev >= dismiss ? mid : 0) === bucket ? prev : bucket));
       return;
     }
     setSheetHeight(h);
@@ -1261,17 +1318,41 @@ export default function RouletteScreen({
   // via `onSnapTargetChange` at the exact moment its own snap state
   // flips. During a finger drag we switch to imperative mode (no
   // transition) so the wheel tracks the pointer 1:1.
-  const upperSnapH = screenHeight - 105; // matches SnappingSheet's top snap
+  // Top snap: sheet top edge lands just under the app bar (APP_BAR_PAD = 54),
+  // i.e. just above where the wheel's top edge sits — the sheet covers the
+  // (already faded-out) wheel completely instead of stopping partway down it.
+  const upperSnapH = screenHeight - 64;
   // New default-open snap: a height where the sheet's top edge bisects the wheel.
   // The wheel freezes at midSnap, so at any snap ≥ midSnap its centre is fixed —
   // we measure it once the wheel settles and set the snap to (screenHeight −
   // wheelCentreY). Starts at an estimate, then self-corrects (converges in one
   // step since the frozen wheel's centre doesn't depend on the exact snap height).
   const [wheelMidSnap, setWheelMidSnap] = useState(() => Math.round((screenHeight || 800) * 0.62));
+  // ── Two-stage open ──
+  // The sheet OPENS at the lower snap (index 1 — its layout there is exact
+  // and reads well), rests through the open transition, then DOCKS at the
+  // wheel-bisecting snap: while it rests, the wheel is already frozen in its
+  // ≥mid state, so we measure its real centre and glide to it. Dead-centre
+  // every time — first open included — with no estimate error and no
+  // correction re-snap landing on a running transition (the old first-open
+  // stutter). Skipped if the user grabs the sheet before the dock fires.
+  const [sheetGoIndex, setSheetGoIndex] = useState<number | null>(null);
+  const dragSinceOpenRef = useRef(false);
+  // Once the wheel-bisecting snap has been MEASURED, later opens skip the
+  // two-stage choreography and open straight at it (initialSnap below).
+  // Reset whenever the layout that determines the wheel's position changes,
+  // so the next open re-runs the measure-and-dock once.
+  const [wheelMidSnapMeasured, setWheelMidSnapMeasured] = useState(false);
   useEffect(() => {
-    if (!isMobile || isPlayMode) return;
-    if (sheetSnapTargetH < midSnap) return; // wheel only frozen/stable at ≥ mid
-    const id = setTimeout(() => {                // measure after the ~280ms transition
+    setWheelMidSnapMeasured(false);
+  }, [screenHeight, midSnap, showSegmentHeader, pickerVisible, isMobile]);
+  useEffect(() => {
+    if (!sheetOpen || !isMobile || isPlayMode) { setSheetGoIndex(null); return; }
+    if (wheelMidSnapMeasured) return; // direct single-stage open — no dock needed
+    dragSinceOpenRef.current = false;
+    // 480ms: past the 280ms open transition + bounce tail, while at rest.
+    const id = setTimeout(() => {
+      if (dragSinceOpenRef.current) return; // user took over — don't yank
       const el = wheelOuterRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
@@ -1280,9 +1361,12 @@ export default function RouletteScreen({
       const snap = Math.round(screenHeight - centreY);
       const clamped = Math.max(midSnap + 8, Math.min(upperSnapH - 8, snap));
       setWheelMidSnap(prev => (Math.abs(prev - clamped) > 2 ? clamped : prev));
-    }, 320);
+      setWheelMidSnapMeasured(true);
+      setSheetGoIndex(2); // dock at wheelMidSnap (same commit as its new value)
+    }, 480);
     return () => clearTimeout(id);
-  }, [isMobile, isPlayMode, sheetSnapTargetH, screenHeight, midSnap, upperSnapH, showSegmentHeader, pickerVisible]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetOpen, isMobile, isPlayMode, wheelMidSnapMeasured]);
   // Solve wheel-state at any sheetHeight `h` (closed/midSnap/upper) — same
   // algebra as above but parameterised. Used to precompute the three
   // CSS-transition targets.
@@ -2124,7 +2208,12 @@ export default function RouletteScreen({
             ) : undefined}
             visible={sheetOpen}
             snapPositions={[0, midSnap, wheelMidSnap, upperSnapH]}
-            initialSnap={2}
+            // First open (unmeasured): land at the LOWER snap, then the dock
+            // effect measures the wheel and glides to index 2. Once measured,
+            // open DIRECTLY at the wheel-bisecting snap — no two-stage dance.
+            initialSnap={wheelMidSnapMeasured ? 2 : 1}
+            snapToIndex={sheetGoIndex}
+            dismissBelow={midSnap - SHEET_DISMISS_PULL}
             onCollapsed={() => {
               setSheetOpen(false);
               setSheetHeight(0);
@@ -2155,7 +2244,7 @@ export default function RouletteScreen({
               // transition kicks off.
               setSheetHeight(h);
             }}
-            onDragStart={() => { isSheetDraggingRef.current = true; }}
+            onDragStart={() => { isSheetDraggingRef.current = true; dragSinceOpenRef.current = true; }}
             onDragEnd={() => { isSheetDraggingRef.current = false; }}
           >
             {/* Continuous scroll-spy column: Templates → (Slices + Style, stacked

@@ -73,6 +73,17 @@ interface SnappingSheetProps {
   /** Fires on pointerup / pointercancel when a drag ends — paired with
    *  `onDragStart`. */
   onDragEnd?: () => void;
+  /** Programmatic snap request: when set (and the sheet is visible), snap to
+   *  this index of `snapPositions`. Used by the two-stage open (land at the
+   *  lower snap, then dock at the measured wheel-bisecting snap). Ignored
+   *  mid-drag — the user's finger owns the sheet. The parent keeps/clears the
+   *  value; re-snapping only happens when the VALUE changes. */
+  snapToIndex?: number | null;
+  /** Dismiss line (px height): releasing a drag BELOW this closes the sheet
+   *  outright, overriding nearest-snap math — a much shorter pull-to-dismiss
+   *  than dragging halfway to 0. While the drag is under the line, the content
+   *  dims (50% black) with an ✕ badge: "release to close". */
+  dismissBelow?: number;
 }
 
 export default function SnappingSheet({
@@ -92,6 +103,8 @@ export default function SnappingSheet({
   onSnapTargetChange,
   onDragStart,
   onDragEnd,
+  snapToIndex = null,
+  dismissBelow,
 }: SnappingSheetProps) {
   // Stash the latest snap/drag callbacks in refs so pointer handlers
   // (which are wrapped in useCallback with their own deps) can call the
@@ -149,6 +162,29 @@ export default function SnappingSheet({
   // drags). Snap values are delivered by onSnapTargetChange plus the
   // committed onHeightChange at release/flip, all of which fire in the same
   // commit the CSS transition starts.
+
+  // Programmatic snaps (the dock) animate with their own GENTLE profile — a
+  // longer, decelerating glide with no bounce. The user-release curve reads
+  // punchy under a finger but harsh on a motion nobody initiated. The flag is
+  // consumed by the render that starts the transition (running transitions
+  // keep their starting curve) and cleared on the following commit.
+  const gentleSnapRef = useRef(false);
+  useEffect(() => { gentleSnapRef.current = false; }); // clears AFTER the flagged render commits
+
+  // Programmatic snap request (see the prop doc). Each VALUE is consumed at
+  // most once — the consumed ref is what makes later effect re-runs (e.g.
+  // `dragging` flipping back to false on a release) inert, otherwise every
+  // drag release would yank the sheet back to the requested index. A request
+  // arriving mid-drag is dropped, not replayed: the finger owns the sheet.
+  const consumedSnapToIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (consumedSnapToIndexRef.current === snapToIndex) return;
+    consumedSnapToIndexRef.current = snapToIndex;
+    if (snapToIndex == null || !visible) return;
+    if (dragging || isScrollDraggingRef.current) return;
+    gentleSnapRef.current = true;
+    setCurrentSnap(i => (i === snapToIndex ? i : snapToIndex));
+  }, [snapToIndex, visible, dragging]);
 
   // Sync currentSnap with `visible` during render (not in useEffect) so
   // it lands in the same React commit as the parent's prop changes —
@@ -318,12 +354,16 @@ export default function SnappingSheet({
   // ── Shared snap logic ─────────────────────────────────────────────
   const snapToNearest = useCallback((finalHeight: number) => {
     let bestIndex = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < snapPositions.length; i++) {
-      const dist = Math.abs(snapPositions[i] - finalHeight);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIndex = i;
+    // Released under the dismiss line → close outright (skip nearest-snap
+    // math, which would only dismiss below snap1/2 — far more pull).
+    if (!(dismissBelow != null && finalHeight < dismissBelow)) {
+      let bestDist = Infinity;
+      for (let i = 0; i < snapPositions.length; i++) {
+        const dist = Math.abs(snapPositions[i] - finalHeight);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIndex = i;
+        }
       }
     }
 
@@ -340,7 +380,7 @@ export default function SnappingSheet({
     if (bestIndex === 0) {
       onCollapsed?.();
     }
-  }, [snapPositions, onCollapsed]);
+  }, [snapPositions, onCollapsed, dismissBelow]);
 
   // Slight game-feel bounce on RISING height changes (opens / snap-ups): a
   // back-out overshoot eases past the target then settles. Falling keeps the
@@ -371,7 +411,15 @@ export default function SnappingSheet({
         zIndex: 70,
         display: 'flex',
         flexDirection: 'column',
-        transition: (dragging || isScrollDraggingRef.current || disableHeightTransition) ? 'none' : `height 0.28s ${rising ? SHEET_EASE_BOUNCE : SHEET_EASE}`,
+        transition: (dragging || isScrollDraggingRef.current || disableHeightTransition)
+          ? 'none'
+          : gentleSnapRef.current
+            // Dock: anticipation wind-up then glide. The NEGATIVE first control
+            // point makes the value dip ~6% below the start (the sheet sinks a
+            // few px, like an inhale) before the long decelerating rise — reads
+            // as an intentional "gather → dock" instead of a stray drift.
+            ? 'height 0.6s cubic-bezier(0.45, -0.35, 0.2, 1)'
+            : `height 0.28s ${rising ? SHEET_EASE_BOUNCE : SHEET_EASE}`,
         overflow: 'visible',
       }}
     >
@@ -452,6 +500,31 @@ export default function SnappingSheet({
         {footer && (
           <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 2 }}>
             {footer}
+          </div>
+        )}
+
+        {/* Release-to-close affordance: while a drag holds the sheet BELOW the
+            dismiss line, dim everything 50% and show an ✕ — "let go and it
+            closes". Fades with opacity so crossing the line back and forth
+            reads smooth; pointer-events none keeps the drag alive under it. */}
+        {dismissBelow != null && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 3,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            opacity: (dragging || isScrollDraggingRef.current) && displayHeight > 0 && displayHeight < dismissBelow ? 1 : 0,
+            transition: 'opacity 0.15s ease',
+            pointerEvents: 'none',
+          }}>
+            {/* ✕ pinned to the sheet's TOP edge (not flex-centered): the top
+                edge is what tracks the finger, so the badge stays put — no
+                per-frame recentering as the height shrinks. */}
+            <svg
+              width="44" height="44" viewBox="0 0 24 24" fill="none"
+              stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round"
+              style={{ position: 'absolute', top: 26, left: '50%', transform: 'translateX(-50%)' }}
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
           </div>
         )}
       </div>
