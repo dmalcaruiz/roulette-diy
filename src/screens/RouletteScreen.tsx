@@ -4,7 +4,7 @@ import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
-import { PixelButton } from '../components/PixelButton';
+import { SpriteButton } from '../components/SpriteButton';
 import { PixelCard } from '../components/PixelCard';
 import { PIXEL_BLOCKS, spriteScaleFor } from '../components/WheelCanvas';
 import { withAlpha } from '../utils/colorUtils';
@@ -468,6 +468,12 @@ export default function RouletteScreen({
   const BUTTON_BLOCKS = 40;
   const buttonScale = spriteScaleFor(effectiveWheelSize);
   const buttonH = Math.round(BUTTON_BLOCKS * buttonScale);
+  // Sprite-button pixel density: 2.25× the wheel block (chunkier than the
+  // wheel art; 2.5 read too coarse, 2 too fine), snapped to whole DEVICE
+  // pixels via spriteScaleFor so the nearest-neighbour upscale stays
+  // perfectly uniform. Same buttonH box — only the sprite grid inside it
+  // gets coarser.
+  const buttonSpriteScale = spriteScaleFor(effectiveWheelSize * 2.25);
 
   const onWheelFinished = useCallback((index: number) => {
     const updated = { ...block, lastUsedAt: new Date().toISOString() };
@@ -1815,19 +1821,17 @@ export default function RouletteScreen({
               overflow: 'hidden',
               transition: wheelTransitionCss,
             }}>
-              {/* PROTOTYPE: full pixel-art button — rough + pixelated as one unit
-                  (label included, no AA). Swap back to PushDownButton to revert.
-                  Two empty square buttons flank SPIN; distinct seeds vary the
-                  hand-drawn roughness so they don't look cloned. */}
-              {/* Buttons are 40 BLOCKS tall (buttonH), squares 40×40 — the
-                  sprite spec, rendered procedurally until the sprites land.
-                  All chrome (font, radius, depth, roughness) scales off
-                  buttonH so proportions match the old 54px look; pixelScale
-                  is the snapped block size so the quantize grid = the wheel's. */}
+              {/* THE SPRITES LANDED: hand-drawn 9-slice buttons from
+                  BOTONES PIXEL.png (SpriteButton), replacing the procedural
+                  PixelButton prototype. Buttons occupy the same buttonH box,
+                  at 2.5× the wheel block (buttonSpriteScale) so the sprite
+                  art reads chunky, per the design. Peek depth 2 sprite px;
+                  stroke wraps the WHOLE sprite (face + peek); label stays
+                  the canvas pixel font. */}
               <div style={{ display: 'flex', gap: 12, height: buttonH }}>
-                <PixelButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={buttonH} label="" radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={3} pixelScale={buttonScale} style={{ width: buttonH, flexShrink: 0 }} />
-                <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={7} pixelScale={buttonScale} style={{ flex: 1, minWidth: 0 }} />
-                <PixelButton
+                <SpriteButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={buttonH} pixelScale={buttonSpriteScale} style={{ width: buttonH, flexShrink: 0 }} />
+                <SpriteButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} pixelScale={buttonSpriteScale} style={{ flex: 1, minWidth: 0 }} />
+                <SpriteButton
                   color={PRIMARY}
                   // Toggle the edit sheet at its TOP scroll position — same
                   // single-commit open path the chip bar uses (seeded snap
@@ -1835,7 +1839,7 @@ export default function RouletteScreen({
                   // identical to the rest of the app. Segments is the first
                   // section, i.e. scroll top.
                   onTap={() => { if (sheetOpen) closeSheet(); else openSheetTo('segments'); }}
-                  height={buttonH} label="" radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={11} pixelScale={buttonScale} style={{ width: buttonH, flexShrink: 0 }}
+                  height={buttonH} pixelScale={buttonSpriteScale} style={{ width: buttonH, flexShrink: 0 }}
                 />
               </div>
             </div>
