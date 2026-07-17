@@ -5,7 +5,9 @@ import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../componen
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
 import { PixelButton } from '../components/PixelButton';
-import { withAlpha, deriveCardSurfaces } from '../utils/colorUtils';
+import { PixelCard } from '../components/PixelCard';
+import { PIXEL_BLOCKS, spriteScaleFor } from '../components/WheelCanvas';
+import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
 import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
@@ -30,15 +32,9 @@ import { useScrollSpy } from '../hooks/useScrollSpy';
 // Pull-to-dismiss: releasing the sheet this many px below the LOWER snap
 // closes it (and the wheel anticipates full size the moment a drag crosses
 // that line). Shared by the wheel bucket + the sheet's dismissBelow prop.
-const SHEET_DISMISS_PULL = 60;
-
-// Session-wide cache of MEASURED wheel-bisecting snap heights, keyed by the
-// layout signature that determines the wheel's docked position. Each layout
-// configuration runs the two-stage measure-and-dock open at most ONCE per app
-// session — any later open under an already-measured configuration (including
-// after wheel switches, picker/header toggles back to a known state, or a
-// screen remount) opens directly at the cached position.
-const wheelMidSnapSessionCache = new Map<string, number>();
+// 24 (was 60): dismiss mode engages sooner on a downward pull — just under
+// the mid snap — while a 24px buffer keeps releases AT mid from dismissing.
+const SHEET_DISMISS_PULL = 24;
 
 const SECTION_KEYS = ['segments', 'style', 'settings', 'templates'] as const;
 type Section = (typeof SECTION_KEYS)[number];
@@ -219,6 +215,10 @@ export default function RouletteScreen({
   // — no Templates flash). When the sheet is ALREADY open, smooth-scroll
   // (navigate) to the section. Snap target + height are seeded in the same commit
   // as setSheetOpen so the chip-tap is a single React commit.
+  // Ref mirror of the ANALYTIC wheel-bisecting open snap (computed with the
+  // wheel algebra much further down) — openSheetTo is declared before that
+  // computation, so it reads the value through this ref. Assigned every render.
+  const wheelMidSnapRef = useRef(0);
   const openSheetTo = useCallback((key: Section) => {
     openDbgT0Ref.current = performance.now();
     // eslint-disable-next-line no-console
@@ -229,7 +229,9 @@ export default function RouletteScreen({
       return;
     }
     setSheetOpen(true);
-    const openH = window.innerWidth < 900 ? 380 : 400;
+    // Seed target + height at the sheet's REAL open snap (the wheel-bisecting
+    // height) so the whole open is one commit and one movement.
+    const openH = wheelMidSnapRef.current;
     setSheetSnapTargetH(openH);
     setSheetHeight(openH);
     requestAnimationFrame(() => {
@@ -326,7 +328,8 @@ export default function RouletteScreen({
   };
   const [isPlayMode, setIsPlayMode] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(0);
-  // Current snap target height (one of [0, midSnap, upperSnap]). Driven
+  // Current snap target height (one of [0, midSnap, wheelMidSnap,
+  // upperSnapH]). Driven
   // by SnappingSheet's `onSnapTargetChange` — the wheel divs read their
   // CSS-transition target values from this. Stays at the most recent
   // snap commit; the CSS transition handles the in-between frames on
@@ -397,7 +400,7 @@ export default function RouletteScreen({
   const handleSheetHeightChange = useCallback((h: number, committed?: boolean) => {
     if (!committed && !isSheetDraggingRef.current) return;
     if (!committed) {
-      const mid = window.innerWidth < 900 ? 380 : 400; // = midSnap (declared later; same formula as openSheetTo)
+      const mid = window.innerWidth < 900 ? 380 : 400; // = midSnap (declared later; same formula)
       // Anticipation boundary = the sheet's dismiss line (midSnap − 90): the
       // instant a drag crosses where release would DISMISS, the wheel starts
       // growing back to full size. Must stay in sync with `dismissBelow`.
@@ -458,6 +461,13 @@ export default function RouletteScreen({
   const idealWheelSize = 700;
   const availableWidth = isMobile ? (screenWidth - 16) : (screenWidth - 400 - 32);
   const effectiveWheelSize = Math.min(availableWidth, idealWheelSize);
+  // Buttons live on the wheel's pixel grid: 40 blocks tall (the sprite spec),
+  // at the device-pixel-snapped block scale. Replaces the legacy fixed 54px —
+  // the button row scales with the wheel like a game viewport (~53px on real
+  // phones ≈ the old look, 40px in narrow dpr-1 windows, 80-100px desktop).
+  const BUTTON_BLOCKS = 40;
+  const buttonScale = spriteScaleFor(effectiveWheelSize);
+  const buttonH = Math.round(BUTTON_BLOCKS * buttonScale);
 
   const onWheelFinished = useCallback((index: number) => {
     const updated = { ...block, lastUsedAt: new Date().toISOString() };
@@ -1295,7 +1305,7 @@ export default function RouletteScreen({
   const pickerVisible = !isPlayMode && pickerOpen;
   const RED_BASE = 136;   // red container minimum (preview row + padding)
   const CHIP_H = 0;       // chip bar moved INSIDE the sheet (no screen reserve)
-  const SPIN_H = 66;      // spin button (54) + margin (12)
+  const SPIN_H = buttonH + 12; // spin button (32 blocks) + margin (12)
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
@@ -1330,62 +1340,6 @@ export default function RouletteScreen({
   // i.e. just above where the wheel's top edge sits — the sheet covers the
   // (already faded-out) wheel completely instead of stopping partway down it.
   const upperSnapH = screenHeight - 64;
-  // New default-open snap: a height where the sheet's top edge bisects the wheel.
-  // The wheel freezes at midSnap, so at any snap ≥ midSnap its centre is fixed —
-  // we measure it once the wheel settles and set the snap to (screenHeight −
-  // wheelCentreY). Starts at an estimate, then self-corrects (converges in one
-  // step since the frozen wheel's centre doesn't depend on the exact snap height).
-  const [wheelMidSnap, setWheelMidSnap] = useState(() => Math.round((screenHeight || 800) * 0.62));
-  // ── Two-stage open ──
-  // The sheet OPENS at the lower snap (index 1 — its layout there is exact
-  // and reads well), rests through the open transition, then DOCKS at the
-  // wheel-bisecting snap: while it rests, the wheel is already frozen in its
-  // ≥mid state, so we measure its real centre and glide to it. Dead-centre
-  // every time — first open included — with no estimate error and no
-  // correction re-snap landing on a running transition (the old first-open
-  // stutter). Skipped if the user grabs the sheet before the dock fires.
-  const [sheetGoIndex, setSheetGoIndex] = useState<number | null>(null);
-  const dragSinceOpenRef = useRef(false);
-  // Once the wheel-bisecting snap has been MEASURED for the current layout
-  // configuration, opens skip the two-stage choreography and go straight to it
-  // (initialSnap below). The measurement lives in the session cache keyed by
-  // this signature: when the layout flips to a configuration measured earlier
-  // this session, the cached value is restored instantly — no re-dance.
-  const wheelLayoutSig = `${screenHeight}|${midSnap}|${showSegmentHeader ? 1 : 0}|${pickerVisible ? 1 : 0}|${isMobile ? 1 : 0}`;
-  const wheelLayoutSigRef = useRef(wheelLayoutSig);
-  wheelLayoutSigRef.current = wheelLayoutSig;
-  const [wheelMidSnapMeasured, setWheelMidSnapMeasured] = useState(false);
-  useEffect(() => {
-    const cached = wheelMidSnapSessionCache.get(wheelLayoutSig);
-    if (cached != null) {
-      setWheelMidSnap(cached);
-      setWheelMidSnapMeasured(true);
-    } else {
-      setWheelMidSnapMeasured(false);
-    }
-  }, [wheelLayoutSig]);
-  useEffect(() => {
-    if (!sheetOpen || !isMobile || isPlayMode) { setSheetGoIndex(null); return; }
-    if (wheelMidSnapMeasured) return; // direct single-stage open — no dock needed
-    dragSinceOpenRef.current = false;
-    // 480ms: past the 280ms open transition + bounce tail, while at rest.
-    const id = setTimeout(() => {
-      if (dragSinceOpenRef.current) return; // user took over — don't yank
-      const el = wheelOuterRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      if (rect.height === 0) return;
-      const centreY = rect.top + rect.height / 2;
-      const snap = Math.round(screenHeight - centreY);
-      const clamped = Math.max(midSnap + 8, Math.min(upperSnapH - 8, snap));
-      setWheelMidSnap(prev => (Math.abs(prev - clamped) > 2 ? clamped : prev));
-      setWheelMidSnapMeasured(true);
-      wheelMidSnapSessionCache.set(wheelLayoutSigRef.current, clamped); // once per layout config per session
-      setSheetGoIndex(2); // dock at wheelMidSnap (same commit as its new value)
-    }, 480);
-    return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetOpen, isMobile, isPlayMode, wheelMidSnapMeasured]);
   // Solve wheel-state at any sheetHeight `h` (closed/midSnap/upper) — same
   // algebra as above but parameterised. Used to precompute the three
   // CSS-transition targets.
@@ -1419,13 +1373,51 @@ export default function RouletteScreen({
     // (was 0.3) keeps it from sliding up under the app bar at midSnap.
     const paddingTop = APP_BAR_PAD * (1 - 0.0 * sp);
     const topSpacerFlex = (1.0 + 0.5 * sp) * (1 - hProg);
-    return { size, scale: size / effectiveWheelSize, margin, opacity, paddingTop, topSpacerFlex };
+    // Bottom spacer mirrors the top one (see the JSX) — kept here so the
+    // analytic wheel-bisecting snap below shares the exact DOM values.
+    const bottomSpacerFlex = 1.8 + 0.4 * sp;
+    return { size, scale: size / effectiveWheelSize, margin, opacity, paddingTop, topSpacerFlex, bottomSpacerFlex };
   };
   const closedWheelState = wheelStateAt(0);
   const midWheelState = wheelStateAt(midSnap);
   const upperWheelState = wheelStateAt(upperSnapH);
   const wheelStateForSnap = (h: number) =>
     h >= upperSnapH ? upperWheelState : h >= midSnap ? midWheelState : closedWheelState;
+  // ── Wheel-bisecting open snap — ANALYTIC, no measure-and-dock ──
+  // The default-open height puts the sheet's top edge through the wheel's
+  // centre. The wheel is FROZEN at its midSnap state for any sheet height
+  // ≥ midSnap, and every number that fixes its centre is already computed in
+  // midWheelState (same values the DOM renders from), so the height falls out
+  // arithmetically — the very first open lands dead-centre in ONE movement,
+  // with none of the old open-at-mid → measure → dock second glide:
+  //   areaH    = screen − red box − wheelArea margin-bottom (chip bar takes 0)
+  //   leftover = areaH − paddingTop − wheel outer height, split across the two
+  //              flex spacers → wheel centre = padding + topShare + size/2.
+  const wheelMidSnap = (() => {
+    const areaH = screenHeight - CHIP_H - redBoxHeight - midWheelState.margin;
+    const leftover = Math.max(0, areaH - midWheelState.paddingTop - midWheelState.size);
+    const topShare = midWheelState.topSpacerFlex / (midWheelState.topSpacerFlex + midWheelState.bottomSpacerFlex);
+    const centreY = midWheelState.paddingTop + leftover * topShare + midWheelState.size / 2;
+    return Math.max(midSnap + 8, Math.min(upperSnapH - 8, Math.round(screenHeight - centreY)));
+  })();
+  wheelMidSnapRef.current = wheelMidSnap; // read by openSheetTo (declared above)
+  // [OPEN-DBG] drift alarm: once an open settles, compare the analytic snap
+  // against the wheel's real on-screen centre. Log only — the sheet never
+  // re-snaps. If this fires, the algebra above went stale vs the wheel JSX.
+  useEffect(() => {
+    if (!sheetOpen || !isMobile || isPlayMode) return;
+    const id = setTimeout(() => {
+      const rect = wheelOuterRef.current?.getBoundingClientRect();
+      if (!rect || rect.height === 0) return;
+      const measured = Math.round(screenHeight - (rect.top + rect.height / 2));
+      if (Math.abs(measured - wheelMidSnapRef.current) > 2) {
+        // eslint-disable-next-line no-console
+        console.log(`[OPEN-DBG] wheelMidSnap DRIFT: analytic=${wheelMidSnapRef.current} measured=${measured}`);
+      }
+    }, 480); // past the 280ms open transition + bounce tail
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetOpen, isMobile, isPlayMode]);
   // Which wheel state drives the JSX style this render:
   //   • during drag → the ANTICIPATED snap state (sheetHeight is quantized to
   //     closed/mid by handleSheetHeightChange), animated by the CSS transition
@@ -1526,6 +1518,7 @@ export default function RouletteScreen({
               onTabChange={t => setDesktopTab(t === 0 ? 0 : 1)}
               showSegmentHeader={showSegmentHeader}
               onToggleSegmentHeader={setShowSegmentHeader}
+              pixelScale={buttonScale}
             />
           </div>
         </div>
@@ -1804,7 +1797,7 @@ export default function RouletteScreen({
               in step with the top when the sheet compresses the area.
               CSS-transitioned in lockstep with the rest of the wheel
               area so it animates via the compositor (no React render). */}
-          <div style={{ flexGrow: 1.8 + 0.4 * spacerProgress, transition: wheelTransitionCss }} />
+          <div style={{ flexGrow: wheelStyleState.bottomSpacerFlex, transition: wheelTransitionCss }} />
           {/* Spin button — pinned to bottom of wheel section, animates
               via CSS in lockstep with the sheet/wheel. Hidden entirely
               when the user disables it from Settings. */}
@@ -1814,7 +1807,7 @@ export default function RouletteScreen({
               padding: '0 32px',
               flexShrink: 0,
               opacity: Math.max(0, 1 - spacerProgress),
-              height: 54 * Math.max(0, 1 - spacerProgress),
+              height: buttonH * Math.max(0, 1 - spacerProgress),
               // With the picker hidden the button row sits on the screen edge —
               // give it extra breathing room there (mirrored in wheelStateAt's
               // spinH so the wheel algebra stays exact).
@@ -1826,9 +1819,14 @@ export default function RouletteScreen({
                   (label included, no AA). Swap back to PushDownButton to revert.
                   Two empty square buttons flank SPIN; distinct seeds vary the
                   hand-drawn roughness so they don't look cloned. */}
-              <div style={{ display: 'flex', gap: 12, height: 54 }}>
-                <PixelButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={54} label="" radius={18} roughAmp={3.5} seed={3} style={{ width: 54, flexShrink: 0 }} />
-                <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={54} label="SPIN" fontSize={30} radius={18} roughAmp={3.5} seed={7} style={{ flex: 1, minWidth: 0 }} />
+              {/* Buttons are 40 BLOCKS tall (buttonH), squares 40×40 — the
+                  sprite spec, rendered procedurally until the sprites land.
+                  All chrome (font, radius, depth, roughness) scales off
+                  buttonH so proportions match the old 54px look; pixelScale
+                  is the snapped block size so the quantize grid = the wheel's. */}
+              <div style={{ display: 'flex', gap: 12, height: buttonH }}>
+                <PixelButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={buttonH} label="" radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={3} pixelScale={buttonScale} style={{ width: buttonH, flexShrink: 0 }} />
+                <PixelButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={7} pixelScale={buttonScale} style={{ flex: 1, minWidth: 0 }} />
                 <PixelButton
                   color={PRIMARY}
                   // Toggle the edit sheet at its TOP scroll position — same
@@ -1837,7 +1835,7 @@ export default function RouletteScreen({
                   // identical to the rest of the app. Segments is the first
                   // section, i.e. scroll top.
                   onTap={() => { if (sheetOpen) closeSheet(); else openSheetTo('segments'); }}
-                  height={54} label="" radius={18} roughAmp={3.5} seed={11} style={{ width: 54, flexShrink: 0 }}
+                  height={buttonH} label="" radius={Math.round(buttonH / 3)} roughAmp={3.5 * buttonH / 54} depth={Math.max(4, Math.round(buttonH * 0.11))} seed={11} pixelScale={buttonScale} style={{ width: buttonH, flexShrink: 0 }}
                 />
               </div>
             </div>
@@ -1981,6 +1979,7 @@ export default function RouletteScreen({
                         instantTransform={isCommitting}
                         skipPopIn={seenTileIds.has(step.id)}
                         debugId={step.id}
+                        pixelScale={buttonScale}
                         onClick={isCurrent ? () => {
                           // Tapping the already-selected tile opens the
                           // context menu (which has an "Edit wheel" action
@@ -2058,6 +2057,7 @@ export default function RouletteScreen({
                     active
                     skipPopIn={seenTileIds.has(block.id)}
                     debugId={block.id}
+                    pixelScale={buttonScale}
                     onClick={() => setCtxMenuIndex(0)}
                     onContextOpen={() => setCtxMenuIndex(0)}
                   >
@@ -2084,20 +2084,21 @@ export default function RouletteScreen({
                 </TileWithLabel>
               )}
               <TileWithLabel label="">
-              {/* The add tile is the one tile that's a real PushDownButton —
-                  it presses down on tap. The wheel tiles above stay the
-                  static 3D PreviewTiles (they grab/scale for reorder instead
-                  of pressing). Sized to match a tile exactly: 88×88 face,
-                  92 total (4px bottom-face peek), 13 radius, 3px stroke,
-                  SURFACE_ELEVATED — same deriveCardSurfaces recipe a tile
-                  uses, so at rest it's pixel-identical. */}
-              <PushDownButton
-                color={SURFACE_ELEVATED}
-                borderRadius={13}
+              {/* The add tile presses down on tap (button feel), rendered with
+                  the same PixelCard chrome as the wheel tiles: 88×88 face,
+                  92 total (4px bottom-face peek), 13 radius, quantized 3px
+                  stroke, SURFACE_ELEVATED — so at rest it's pixel-identical
+                  to a resting tile. */}
+              <PixelCard
+                width={88}
                 height={92}
-                bottomBorderWidth={4}
-                innerStrokeWidth={3}
-                style={{ width: 88, flexShrink: 0 }}
+                faceHeight={88}
+                radius={13}
+                color={SURFACE_ELEVATED}
+                backdrop={SURFACE}
+                pixelScale={buttonScale}
+                pressDepth={4}
+                style={{ flexShrink: 0 }}
                 onTap={() => {
                   if (!user) { dbg('RouletteScreen', 'plus:no-user'); return; }
                   dbg('RouletteScreen', 'plus:click', {
@@ -2170,7 +2171,7 @@ export default function RouletteScreen({
                     maskPosition: 'center',
                   }}
                 />
-              </PushDownButton>
+              </PixelCard>
               </TileWithLabel>
             </div>
 
@@ -2182,6 +2183,7 @@ export default function RouletteScreen({
         {isMobile && (
           <SnappingSheet
             bottomOffset={0}
+            pixelScale={buttonScale}
             footer={!isPlayMode ? (
               <PinnedChipBar
                 activeTab={sheetOpen ? currentSection : null}
@@ -2227,11 +2229,9 @@ export default function RouletteScreen({
             ) : undefined}
             visible={sheetOpen}
             snapPositions={[0, midSnap, wheelMidSnap, upperSnapH]}
-            // First open (unmeasured): land at the LOWER snap, then the dock
-            // effect measures the wheel and glides to index 2. Once measured,
-            // open DIRECTLY at the wheel-bisecting snap — no two-stage dance.
-            initialSnap={wheelMidSnapMeasured ? 2 : 1}
-            snapToIndex={sheetGoIndex}
+            // Every open lands DIRECTLY at the wheel-bisecting snap (index 2,
+            // computed analytically above) — one movement, first open included.
+            initialSnap={2}
             dismissBelow={midSnap - SHEET_DISMISS_PULL}
             onCollapsed={() => {
               setSheetOpen(false);
@@ -2263,7 +2263,7 @@ export default function RouletteScreen({
               // transition kicks off.
               setSheetHeight(h);
             }}
-            onDragStart={() => { isSheetDraggingRef.current = true; dragSinceOpenRef.current = true; }}
+            onDragStart={() => { isSheetDraggingRef.current = true; }}
             onDragEnd={() => { isSheetDraggingRef.current = false; }}
           >
             {/* Continuous scroll-spy column: Templates → (Slices + Style, stacked
@@ -2298,6 +2298,7 @@ export default function RouletteScreen({
                 isMobile={isMobile}
                 showSegmentHeader={showSegmentHeader}
                 onToggleSegmentHeader={setShowSegmentHeader}
+                pixelScale={buttonScale}
               />
               <section ref={spy.register('settings')}>
                 <SettingsPane
@@ -2901,7 +2902,7 @@ function CtxRow({ icon, label, onTap, danger }: {
 
 function PreviewTile({
   onClick, onContextOpen, onGrabStart,
-  index, active, grabbed, dragOffsetX = 0, instantTransform, innerRef, shouldSuppressClick, skipPopIn, debugId, children,
+  index, active, grabbed, dragOffsetX = 0, instantTransform, innerRef, shouldSuppressClick, skipPopIn, debugId, pixelScale, children,
 }: {
   onClick?: () => void;
   // Right-click handler (no hold required).
@@ -2935,6 +2936,9 @@ function PreviewTile({
   // Step id (or "+" for the add tile) — passed only so mount/unmount
   // logs can identify which wheel a tile represents across remounts.
   debugId?: string;
+  // CSS px per pixel-block for the canvas card chrome (the wheel's snapped
+  // block size, so tiles share the buttons'/wheel's grid).
+  pixelScale: number;
   children: React.ReactNode;
 }) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3086,45 +3090,22 @@ function PreviewTile({
     >
       {/* Active tiles use PRIMARY (the same light-blue as the Add
           segment button) so the selection reads colour-first; inactive
-          tiles stay on SURFACE_ELEVATED. */}
-      {(() => {
-        const surfaces = deriveCardSurfaces(active ? PRIMARY : SURFACE_ELEVATED);
-        return (
-          <>
-            {/* Bottom layer — peeks out 4px below the top face. */}
-            <div style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: 88,
-              borderRadius: 13,
-              backgroundColor: surfaces.bottom,
-              boxShadow: `0 0 0 3.5px ${surfaces.halo}`,
-            }} />
-            {/* Top layer — the face. Presses DOWN onto the peek + lights up on
-                tap; drops 2px of the 4px peek so a sliver of the lower layer
-                stays and the tile keeps reading as solid. */}
-            <div style={{
-              position: 'relative',
-              height: 88,
-              width: 88,
-              borderRadius: 13,
-              backgroundColor: surfaces.top,
-              border: `3px solid ${surfaces.innerStroke}`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxSizing: 'border-box',
-              transform: pressed ? 'translateY(2px)' : 'translateY(0)',
-              filter: pressed ? 'brightness(1.12)' : undefined,
-              transition: 'transform 0.1s ease, filter 0.1s ease',
-            }}>
-              {children}
-            </div>
-          </>
-        );
-      })()}
+          tiles stay on SURFACE_ELEVATED. Chrome is the pixel-art canvas
+          card (same recipe as the old DOM layers, quantized to the wheel
+          grid) — the mini wheel child stays crisp DOM on top. */}
+      <PixelCard
+        width={88}
+        height={92}
+        faceHeight={88}
+        radius={13}
+        color={active ? PRIMARY : SURFACE_ELEVATED}
+        backdrop={SURFACE}
+        pixelScale={pixelScale}
+        pressed={pressed}
+        pressDepth={2}
+      >
+        {children}
+      </PixelCard>
       {/* Selection is indicated by the active tile's PRIMARY colour fill
           (above) — no floating pointer above the tile. */}
     </div>

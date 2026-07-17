@@ -326,7 +326,7 @@ function playWinChord(): void {
   }
 }
 import { WheelItem } from '../models/types';
-import { paintWheel, WheelPainterConfig, PIXEL_SCALE, WHEEL_FONT_FAMILY } from './WheelCanvas';
+import { paintWheel, repaintTextLayer, WheelPainterConfig, PIXELATED, PIXEL_BLOCKS, WHEEL_FONT_FAMILY } from './WheelCanvas';
 export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
@@ -541,6 +541,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // Overlay animation state
   const overlayOpacityRef = useRef(0);
   const winningIndexRef = useRef(-1);
+  // Transient scale/alpha for the WINNING label's bounce during the win flash.
+  // Non-null only while the pop rAF (in playWinOverlay) is animating.
+  const winTextPopRef = useRef<{ scale: number; alpha: number } | null>(null);
   // True only while the win overlay is in its ACTIVE lifecycle (fade-in, hold,
   // natural fade-out) — NOT during a user-triggered dismiss fade. A tap stops an
   // active overlay; once it's being dismissed, the next tap spins normally.
@@ -738,6 +741,10 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
       transition: transitionRef.current,
       roughSeed,
       fastPixelate: fastBakeRef.current,
+      winTextPop: winTextPopRef.current ?? undefined,
+      // While a win flash is in flight, bake the winner's fill OVER the
+      // boundary ink so the dim-mask cutout (same path) shows only fill.
+      winInkCover: winOverlayActiveRef.current,
     };
   }, [items, size, textSizeMultiplier, cornerRadius, strokeWidth, outerStrokeWidth, outerStrokeDots,
       bezelDotsColorMode, bezelDotsCustomColor, textWrap, markerDiameter,
@@ -764,6 +771,19 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     paintWheel(ctx, displaySize, displaySize, config);
   }, [size, buildWheelConfig]);
 
+  // Win-flash text pop: repaint ONLY the crisp text canvas (the art canvas
+  // stays baked) at the current winTextPopRef scale. The text layer is always
+  // crisp anti-aliased, so pop frames and rest frames share one quality.
+  const repaintWinText = useCallback(() => {
+    const textCanvas = textCanvasRef.current;
+    if (!textCanvas) return; // pixelation off → no separate text layer, no pop
+    const tctx = textCanvas.getContext('2d');
+    if (!tctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    repaintTextLayer(tctx, size, size, buildWheelConfig());
+  }, [buildWheelConfig, size]);
+
   // Paint implementation. Rebuilds whenever size/items/etc. change so it
   // reads the latest props and resizes the canvas's internal pixel buffer
   // to match.
@@ -787,7 +807,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     // When pixelating, route labels/visuals to the smooth text canvas so they
     // don't inherit the art canvas's nearest-neighbour `image-rendering`.
     let textCtx: CanvasRenderingContext2D | null = null;
-    if (PIXEL_SCALE > 1) {
+    if (PIXELATED) {
       const textCanvas = textCanvasRef.current;
       if (textCanvas) {
         textCtx = textCanvas.getContext('2d');
@@ -979,6 +999,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     if (winningIndexRef.current === -1) return; // nothing in flight
     winOverlayActiveRef.current = false;
     cancelAnimationFrame(winAnimRef.current);
+    winTextPopRef.current = null;
     if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
     const dim = dimCanvasRef.current;
     if (dim) { dim.style.transition = `opacity ${WIN_INTERRUPT_FADE_MS}ms ease`; dim.style.opacity = '0'; }
@@ -1000,7 +1021,35 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     winningIndexRef.current = idx;
     winOverlayActiveRef.current = true;
     keepWheelLayer();   // promote the wheel group so the dialog can't re-raster it
+    paint();            // one-off win bake: winner fill covers its boundary ink
     paintDimMask();     // render the dim mask once for this winner
+
+    // Winning-label pop, mirroring the result dialog's text: a brief smooth
+    // scale-up (0.8 → 1.03 → 1) with a whisper of overshoot — no bouncing.
+    // Animated on the TEXT canvas only (the art stays baked; ~450ms of cheap
+    // text-layer repaints). Every cancel path already clears winAnimRef, and
+    // the settle paints redraw the text layer at rest quality regardless.
+    const easeOutCubic = (x: number) => 1 - Math.pow(1 - x, 3);
+    const popSeg = (t: number, a: number, b: number, va: number, vb: number) =>
+      va + (vb - va) * easeOutCubic((t - a) / (b - a));
+    const popScale = (t: number) =>
+      t < 0.65 ? popSeg(t, 0, 0.65, 0.8, 1.03)
+      : popSeg(t, 0.65, 1, 1.03, 1);
+    const POP_MS = 450;
+    const popStart = performance.now();
+    const popTick = () => {
+      if (!winOverlayActiveRef.current) { winTextPopRef.current = null; return; }
+      const t = Math.min(1, (performance.now() - popStart) / POP_MS);
+      if (t < 1) {
+        winTextPopRef.current = { scale: popScale(t), alpha: Math.min(1, t * 5) };
+        repaintWinText();
+        winAnimRef.current = requestAnimationFrame(popTick);
+      } else {
+        winTextPopRef.current = null;
+        repaintWinText(); // exact rest text restored
+      }
+    };
+    winAnimRef.current = requestAnimationFrame(popTick);
     const dim = dimCanvasRef.current;
     if (dim) {
       dim.style.transition = 'none';
@@ -1034,7 +1083,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         }, OVERLAY_FADE_MS);
       }, OVERLAY_FADE_MS + 2000);
     }
-  }, [playWinChord, paintDimMask, keepWheelLayer, paint]);
+  }, [playWinChord, paintDimMask, keepWheelLayer, paint, repaintWinText]);
 
   // ── Momentum decay launcher ──
   // The flick physics as ONE compositor CSS transition (smooth even under
@@ -1868,6 +1917,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   // "Spin again": kill the win flash outright (next paint clears it) and re-spin.
   const spinAgainFromResult = () => {
     cancelAnimationFrame(winAnimRef.current);
+    winTextPopRef.current = null;
     if (winHoldTimerRef.current) { clearTimeout(winHoldTimerRef.current); winHoldTimerRef.current = null; }
     overlayOpacityRef.current = 0;
     winningIndexRef.current = -1;
@@ -1947,9 +1997,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             // baked blocks crisp through the CSS-rotate spin + dpr downscale
             // instead of bilinear-smoothing them back into AA. Labels live on the
             // separate smooth canvas above, so this never jags text.
-            style={{ width: size, height: size, display: 'block', imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined }}
+            style={{ width: size, height: size, display: 'block', imageRendering: PIXELATED ? 'pixelated' : undefined }}
           />
-          {PIXEL_SCALE > 1 && (
+          {PIXELATED && (
             <canvas
               ref={textCanvasRef}
               // Smooth (default image-rendering) overlay carrying only the crisp
@@ -1964,7 +2014,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             style={{
               position: 'absolute', top: 0, left: 0, width: size, height: size, display: 'block',
               pointerEvents: 'none', opacity: 0, willChange: 'opacity',
-              imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined,
+              imageRendering: PIXELATED ? 'pixelated' : undefined,
             }}
           />
         </div>
@@ -1979,13 +2029,14 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           {/* Pixelate mode uses the canvas marker so the centre matches the
               wheel's lo-fi look. The pin (default off) isn't ported to canvas
               yet, so fall back to the SVG marker when it's on. */}
-          {PIXEL_SCALE > 1 && !showPin ? (
+          {PIXELATED && !showPin ? (
             <PixelatedMarker
               size={size * (250 / 700)}
               markerDiameter={markerDiameter}
               markerPeek={markerPeek}
               markerBaseColor={markerBaseColor}
               roughSeed={roughSeed}
+              pixelScale={size / PIXEL_BLOCKS}
             />
           ) : (
             <CustomMarker
@@ -2021,17 +2072,27 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             background: 'rgba(20, 16, 40, 0.55)',
           }}
         >
-          <style>{'@keyframes dotResultPop{from{opacity:0;transform:scale(.85) translateY(8px)}to{opacity:1;transform:none}}'}</style>
+          {/* Staggered game-feel reveal: card pops, then emoji → label → the
+              winner name, each on its own beat (`backwards` holds them
+              invisible through their delay). The name gets the hero bounce:
+              scale up past 1, dip under, settle — anticipation-free but
+              punchy, like a score popup. */}
+          <style>{`
+            @keyframes dotResultPop{from{opacity:0;transform:scale(.85) translateY(8px)}to{opacity:1;transform:none}}
+            @keyframes dotResultEmojiPop{0%{opacity:0;transform:scale(.6) rotate(-6deg)}65%{opacity:1;transform:scale(1.06) rotate(1deg)}100%{opacity:1;transform:scale(1) rotate(0deg)}}
+            @keyframes dotResultLabelIn{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+            @keyframes dotResultTextPop{0%{opacity:0;transform:scale(.8)}65%{opacity:1;transform:scale(1.03)}100%{opacity:1;transform:scale(1)}}
+          `}</style>
           <div style={{
             width: '100%', maxWidth: 340, background: '#fff', borderRadius: 26,
             boxShadow: '0 24px 70px rgba(0,0,0,0.35)', padding: '30px 24px', textAlign: 'center',
             animation: 'dotResultPop .34s cubic-bezier(.2,1.4,.4,1)',
           }}>
-            <div style={{ fontSize: 52, lineHeight: 1 }}>🎉</div>
-            <div style={{ marginTop: 8, color: '#9b93bd', fontWeight: 700, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase' }}>
+            <div style={{ fontSize: 52, lineHeight: 1, animation: 'dotResultEmojiPop .5s cubic-bezier(.22,1,.36,1) .06s backwards' }}>🎉</div>
+            <div style={{ marginTop: 8, color: '#9b93bd', fontWeight: 700, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', animation: 'dotResultLabelIn .35s ease .14s backwards' }}>
               It landed on
             </div>
-            <div style={{ marginTop: 6, fontSize: 30, fontWeight: 800, color: '#241a40', lineHeight: 1.15, wordBreak: 'break-word' }}>
+            <div style={{ marginTop: 6, fontSize: 30, fontWeight: 800, color: '#241a40', lineHeight: 1.15, wordBreak: 'break-word', animation: 'dotResultTextPop .42s cubic-bezier(.22,1,.36,1) .16s backwards' }}>
               {resultText}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 24 }}>

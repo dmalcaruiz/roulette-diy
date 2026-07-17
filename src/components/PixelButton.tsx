@@ -1,6 +1,6 @@
 import { useState, useRef, useLayoutEffect, useEffect, type CSSProperties } from 'react';
 import { oklchShade, hexToRgba } from '../utils/colorUtils';
-import { pixelateCanvas, PIXEL_SCALE, type Palette } from './WheelCanvas';
+import { pixelateCanvas, PIXELATED, type Palette } from './WheelCanvas';
 
 // Full pixel-art button — the WHOLE button (rough faces + stroke + LABEL) is
 // drawn on one canvas and run through the same nearest-neighbour pixelate pass as
@@ -68,6 +68,9 @@ interface PixelButtonProps {
   radius?: number;
   roughAmp?: number;
   seed?: number;
+  // CSS px per pixel-block. Pass the wheel's block size (wheelWidth /
+  // PIXEL_BLOCKS) so the button shares the wheel's exact grid density.
+  pixelScale?: number;
   textColor?: string;
   fontSize?: number;
   letterSpacing?: number;
@@ -83,6 +86,7 @@ export function PixelButton({
   radius = 10,
   roughAmp = 2,
   seed = 7,
+  pixelScale = 2,
   textColor = '#FFFFFF',
   fontSize = 16,
   letterSpacing = 1,
@@ -150,8 +154,8 @@ export function PixelButton({
       const { r, g, b } = hexToRgba(h);
       return [r, g, b] as [number, number, number];
     });
-    if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE, palette);
-  }, [width, height, depth, radius, roughAmp, seed, color, bottomColor, faceHeight, pressed, label, textColor, fontSize, letterSpacing, fontReady]);
+    if (PIXELATED) pixelateCanvas(ctx, width, height, pixelScale, palette);
+  }, [width, height, depth, radius, roughAmp, seed, pixelScale, color, bottomColor, faceHeight, pressed, label, textColor, fontSize, letterSpacing, fontReady]);
 
   const release = () => setPressed(false);
 
@@ -178,7 +182,7 @@ export function PixelButton({
         ref={canvasRef}
         style={{
           position: 'absolute', inset: 0, width: '100%', height: '100%',
-          imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined,
+          imageRendering: PIXELATED ? 'pixelated' : undefined,
           pointerEvents: 'none',
         }}
       />

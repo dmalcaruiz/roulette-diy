@@ -1,5 +1,16 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { SURFACE } from '../utils/constants';
+import { lerpColor, hexToRgba } from '../utils/colorUtils';
+import { pixelateCanvas, PIXELATED, type Palette } from './WheelCanvas';
+import { rrPath } from './PixelCard';
+
+// Pixel-chrome geometry (used when `pixelScale` is set): the sheet's rounded
+// top corners + border band are baked onto a small canvas strip quantized to
+// the wheel's block grid; below the strip the sides are plain straight
+// borders (a straight line pixelates to itself, so no canvas needed there).
+const SHEET_RADIUS = 24;
+const SHEET_BORDER = 3;
+const CHROME_STRIP_H = SHEET_RADIUS + SHEET_BORDER + 5; // corners + border + margin
 
 // Snap easing pair — exported so lockstep siblings (RouletteScreen's wheel
 // transition) can mirror the sheet exactly, bounce included, or the two
@@ -74,16 +85,20 @@ interface SnappingSheetProps {
    *  `onDragStart`. */
   onDragEnd?: () => void;
   /** Programmatic snap request: when set (and the sheet is visible), snap to
-   *  this index of `snapPositions`. Used by the two-stage open (land at the
-   *  lower snap, then dock at the measured wheel-bisecting snap). Ignored
-   *  mid-drag — the user's finger owns the sheet. The parent keeps/clears the
-   *  value; re-snapping only happens when the VALUE changes. */
+   *  this index of `snapPositions` with a gentle glide. Ignored mid-drag —
+   *  the user's finger owns the sheet. The parent keeps/clears the value;
+   *  re-snapping only happens when the VALUE changes. */
   snapToIndex?: number | null;
   /** Dismiss line (px height): releasing a drag BELOW this closes the sheet
    *  outright, overriding nearest-snap math — a much shorter pull-to-dismiss
    *  than dragging halfway to 0. While the drag is under the line, the content
    *  dims (50% black) with an ✕ badge: "release to close". */
   dismissBelow?: number;
+  /** CSS px per pixel-block (the wheel's snapped block size). When set, the
+   *  sheet chrome — rounded top corners + border — renders as pixel-art on
+   *  the wheel's grid (canvas strip, hard palette, zero AA) instead of the
+   *  smooth CSS border-radius. */
+  pixelScale?: number;
 }
 
 export default function SnappingSheet({
@@ -105,6 +120,7 @@ export default function SnappingSheet({
   onDragEnd,
   snapToIndex = null,
   dismissBelow,
+  pixelScale,
 }: SnappingSheetProps) {
   // Stash the latest snap/drag callbacks in refs so pointer handlers
   // (which are wrapped in useCallback with their own deps) can call the
@@ -132,6 +148,58 @@ export default function SnappingSheet({
   const didDragRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ── Pixel chrome (pixelScale set) ──────────────────────────────────
+  // Top strip canvas: rounded-top silhouette + border band, quantized to the
+  // wheel grid. Repaints only on WIDTH changes — never during drags (height
+  // changes don't touch it), so it costs nothing on the hot path. The border
+  // colour is the old rgba(0,0,0,0.2) pre-blended over SURFACE (the palette
+  // snap needs opaque colours; visually identical since the border always
+  // sat on the sheet's own fill).
+  const chromeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [chromeW, setChromeW] = useState(0);
+  const pixelChrome = pixelScale != null && pixelScale > 0;
+  const chromeBorderColor = lerpColor(SURFACE, '#000000', 0.2);
+  // Border width quantized to whole blocks so the band survives pixelation
+  // at uniform thickness, and the straight side borders below the strip can
+  // use the exact same width (the two must meet seamlessly at the seam).
+  const chromeBorderW = pixelChrome ? Math.max(1, Math.round(SHEET_BORDER / pixelScale!)) * pixelScale! : SHEET_BORDER;
+  useLayoutEffect(() => {
+    if (!pixelChrome) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setChromeW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [pixelChrome]);
+  useLayoutEffect(() => {
+    if (!pixelChrome || chromeW <= 0) return;
+    const canvas = chromeCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== chromeW * dpr || canvas.height !== CHROME_STRIP_H * dpr) {
+      canvas.width = chromeW * dpr;
+      canvas.height = CHROME_STRIP_H * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, chromeW, CHROME_STRIP_H);
+    // Silhouette slice: a rounded-top rect that extends past the strip's
+    // bottom edge (the canvas crops it), so only the corners + top band are
+    // drawn here; below the strip the body div takes over with straight sides.
+    ctx.fillStyle = chromeBorderColor;
+    ctx.fill(rrPath(0, 0, chromeW, CHROME_STRIP_H + SHEET_RADIUS, SHEET_RADIUS));
+    ctx.fillStyle = SURFACE;
+    ctx.fill(rrPath(chromeBorderW, chromeBorderW, chromeW - chromeBorderW, CHROME_STRIP_H + SHEET_RADIUS, Math.max(0, SHEET_RADIUS - chromeBorderW)));
+    const palette: Palette = [chromeBorderColor, SURFACE].map(h => {
+      const { r, g, b } = hexToRgba(h);
+      return [r, g, b] as [number, number, number];
+    });
+    if (PIXELATED) pixelateCanvas(ctx, chromeW, CHROME_STRIP_H, pixelScale!, palette);
+  }, [pixelChrome, chromeW, pixelScale, chromeBorderColor, chromeBorderW]);
 
   // Scroll-to-drag handoff state
   const isScrollDraggingRef = useRef(false);
@@ -425,19 +493,46 @@ export default function SnappingSheet({
     >
       {/* Sheet container — 3px black-20% inner stroke on top + sides
           only; no bottom border so the sheet blends straight into the
-          edge of the viewport / chip bar beneath. */}
+          edge of the viewport / chip bar beneath. With `pixelScale` the
+          chrome is the pixel-art canvas strip + straight-side body layers
+          below (background/border live on THOSE layers, not here). */}
       <div style={{
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        backgroundColor: SURFACE,
-        borderRadius: '24px 24px 0 0',
-        borderTop: '3px solid rgba(0, 0, 0, 0.2)',
-        borderLeft: '3px solid rgba(0, 0, 0, 0.2)',
-        borderRight: '3px solid rgba(0, 0, 0, 0.2)',
+        backgroundColor: pixelChrome ? 'transparent' : SURFACE,
+        borderRadius: pixelChrome ? 0 : '24px 24px 0 0',
+        borderTop: pixelChrome ? undefined : '3px solid rgba(0, 0, 0, 0.2)',
+        borderLeft: pixelChrome ? undefined : '3px solid rgba(0, 0, 0, 0.2)',
+        borderRight: pixelChrome ? undefined : '3px solid rgba(0, 0, 0, 0.2)',
         overflow: 'hidden',
         position: 'relative',
       }}>
+        {pixelChrome && (
+          <>
+            {/* Pixel top strip: corners + top border band (canvas, wheel-grid
+                quantized). Below it, the body layer carries the fill + the
+                straight side borders at the SAME quantized width, meeting the
+                strip flush. Both sit under the (relative, z≥1) content. */}
+            <canvas
+              ref={chromeCanvasRef}
+              style={{
+                position: 'absolute', top: 0, left: 0, right: 0,
+                width: '100%', height: CHROME_STRIP_H,
+                imageRendering: PIXELATED ? 'pixelated' : undefined,
+                pointerEvents: 'none',
+              }}
+            />
+            <div style={{
+              position: 'absolute', top: CHROME_STRIP_H, left: 0, right: 0, bottom: 0,
+              backgroundColor: SURFACE,
+              borderLeft: `${chromeBorderW}px solid ${chromeBorderColor}`,
+              borderRight: `${chromeBorderW}px solid ${chromeBorderColor}`,
+              boxSizing: 'border-box',
+              pointerEvents: 'none',
+            }} />
+          </>
+        )}
         {/* Grabbing handle */}
         <div
           onPointerDown={onPointerDown}
@@ -451,6 +546,9 @@ export default function SnappingSheet({
             cursor: 'grab',
             touchAction: 'none',
             flexShrink: 0,
+            // Above the absolute pixel-chrome layers (no-op otherwise).
+            position: 'relative',
+            zIndex: 1,
           }}
         >
           <div style={{
@@ -469,7 +567,7 @@ export default function SnappingSheet({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
-            style={{ flexShrink: 0, touchAction: 'none', cursor: 'grab' }}
+            style={{ flexShrink: 0, touchAction: 'none', cursor: 'grab', position: 'relative', zIndex: 1 }}
           >
             {header}
           </div>
@@ -489,6 +587,9 @@ export default function SnappingSheet({
             overflowX: 'hidden',
             overscrollBehavior: 'none',
             touchAction: 'pan-y',
+            // Above the absolute pixel-chrome layers (no-op otherwise).
+            position: 'relative',
+            zIndex: 1,
           }}
         >
           {children}
@@ -510,6 +611,10 @@ export default function SnappingSheet({
         {dismissBelow != null && (
           <div style={{
             position: 'absolute', inset: 0, zIndex: 3,
+            // Rounded to the sheet silhouette — with the pixel chrome the
+            // container no longer clips corners, so the dim would otherwise
+            // poke square corners past the strip's transparent cutouts.
+            borderRadius: '24px 24px 0 0',
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
             opacity: (dragging || isScrollDraggingRef.current) && displayHeight > 0 && displayHeight < dismissBelow ? 1 : 0,
             transition: 'opacity 0.15s ease',

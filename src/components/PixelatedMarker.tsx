@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { oklchShade, hexToRgba } from '../utils/colorUtils';
-import { pixelateCanvas, PIXEL_SCALE, type Palette } from './WheelCanvas';
+import { pixelateCanvas, PIXELATED, type Palette } from './WheelCanvas';
 
 // Canvas twin of CustomMarker, drawn onto its own STATIC (non-rotating) canvas so
 // it can be pixelated to match the wheel. The DOM/SVG marker can't take
@@ -65,6 +65,9 @@ interface PixelatedMarkerProps {
   markerPeek?: number;
   markerBaseColor?: string;
   roughSeed?: number;
+  // CSS px per pixel-block. Pass the wheel's block size (wheelWidth /
+  // PIXEL_BLOCKS) so the marker shares the wheel's exact grid density.
+  pixelScale?: number;
 }
 
 // Padding around the marker box so the +28px halo (and any peek lift) never clip
@@ -77,6 +80,7 @@ export default function PixelatedMarker({
   markerPeek = 0,
   markerBaseColor = '#FFFFFF',
   roughSeed = 0,
+  pixelScale = 2,
 }: PixelatedMarkerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cssSize = size + PAD * 2;
@@ -154,15 +158,15 @@ export default function PixelatedMarker({
       const { r, g, b } = hexToRgba(h);
       return [r, g, b] as [number, number, number];
     });
-    if (PIXEL_SCALE > 1) pixelateCanvas(ctx, cssSize, cssSize, PIXEL_SCALE, palette, true);
-  }, [cssSize, size, markerDiameter, markerPeek, markerBaseColor, roughSeed]);
+    if (PIXELATED) pixelateCanvas(ctx, cssSize, cssSize, pixelScale, palette, true);
+  }, [cssSize, size, markerDiameter, markerPeek, markerBaseColor, roughSeed, pixelScale]);
 
   return (
     <canvas
       ref={canvasRef}
       style={{
         width: cssSize, height: cssSize, display: 'block', pointerEvents: 'none',
-        imageRendering: PIXEL_SCALE > 1 ? 'pixelated' : undefined,
+        imageRendering: PIXELATED ? 'pixelated' : undefined,
       }}
     />
   );

@@ -18,6 +18,7 @@ import { uploadImage } from '../services/uploadService';
 import { LUCIDE_ICON_NAMES } from '../utils/iconMap';
 import { ICON_NODES } from '../utils/iconNodes';
 import { HistoryControls } from '../hooks/useHistory';
+import { pixelRoundedClip, pixelRingClip, pixelSnap } from '../utils/pixelClip';
 
 interface SegmentData {
   id: string;
@@ -126,6 +127,10 @@ interface WheelEditorProps {
   // and show cards popping in — see SEG_WINDOW_BUFFER_PHONE / widenPhoneWindow.
   // Defaults false so the desktop sidebar keeps the narrow window.
   isMobile?: boolean;
+  // CSS px per pixel-block (the wheel's snapped block size) — drives the
+  // staircase clip-paths on the segment cards' chrome so they share the
+  // wheel/buttons' grid. Defaults to 2 when the host doesn't pass one.
+  pixelScale?: number;
   // Segment-header visibility. Lifted in the hosting screen (it drives
   // wheel-canvas layout there too), but surfaced *here* in the Style tab,
   // co-located with the "Header Text" size it governs — so an off header
@@ -346,7 +351,7 @@ function WheelEditor({
   initialConfig, wheelId, history, onPreview, onClose,
   selectedTab: selectedTabProp, onTabChange, layout = 'tabs', registerSection, onReorderActiveChange,
   scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows = true, sheetHeight,
-  isMobile = false,
+  isMobile = false, pixelScale = 2,
 }: WheelEditorProps) {
   const stacked = layout === 'stacked';
   // Stable per-section ref callbacks (no-op when registerSection is absent, e.g.
@@ -1246,6 +1251,17 @@ function WheelEditor({
   // Render segment card
   const renderSegmentCard = (segment: SegmentData, index: number) => {
     const isExpanded = expandedIndex === index;
+    // Pixel-art chrome: every rounded layer swaps border-radius for a
+    // staircase clip-path on the wheel's block grid (cached strings — cheap),
+    // and stroke widths snap to whole blocks. Card content stays crisp DOM.
+    const cardBorderW = pixelSnap(3, pixelScale);
+    const baseStrokeW = pixelSnap(6, pixelScale);
+    const haloW = pixelSnap(3.5, pixelScale);
+    const clipBase = pixelRoundedClip(22, pixelScale);
+    const clipBaseInner = pixelRoundedClip(22 - baseStrokeW, pixelScale);
+    const clipCard = pixelRoundedClip(16, pixelScale);
+    const clipFace = pixelRoundedClip(16 - cardBorderW, pixelScale);
+    const clipHalo = pixelRingClip(16, haloW, pixelScale);
     // Every layer is derived from segment.color via OKLCh ops — bottom
     // face = base darkened, inner stroke = base darkened less, halo (on
     // the outer SegmentRow) = bottom + 25% alpha. Only segment.color
@@ -1295,19 +1311,27 @@ function WheelEditor({
           setSegmentActionsIndex(index);
         }}
       >
-        {/* Base (child 1) — white bg + 6px coloured INNER stroke, behind
+        {/* Base (child 1) — white bg + coloured INNER stroke, behind
             everything. `inset: 0` sizes it to the column, so it's the top-section
             height when closed and top + bottom when open. The content stacks on
-            top, so the inner stroke never displaces it. */}
+            top, so the inner stroke never displaces it. Pixel chrome: the
+            stroke is the coloured layer showing around an inset white layer
+            (an inset box-shadow can't follow a staircase clip). */}
         <div style={{
           position: 'absolute',
           inset: 0,
-          borderRadius: 22,
-          backgroundColor: '#FFFFFF',
-          boxShadow: `inset 0 0 0 6px ${bottomColor}`,
+          backgroundColor: bottomColor,
+          clipPath: clipBase,
           zIndex: 0,
           pointerEvents: 'none',
-        }} />
+        }}>
+          <div style={{
+            position: 'absolute',
+            inset: baseStrokeW,
+            backgroundColor: '#FFFFFF',
+            clipPath: clipBaseInner,
+          }} />
+        </div>
         {/* Content column (child 2) — top card + (open) bottom controls, stacked
             FULL-SIZE on top of the base (no padding, so the stroke never insets
             them). The top card (opaque) covers the base in its area; the stroke
@@ -1320,24 +1344,26 @@ function WheelEditor({
           flexDirection: 'column',
           gap: 6,
         }}>
-        {/* 3D Card */}
-        <div style={{ position: 'relative' }}>
-          {/* Bottom face — flush behind the top face (peek removed), so the card
-              reads flat. Kept for colour identity but no longer hangs below. */}
+        {/* 3D Card — container padding insets the top face onto the border
+            layer behind (padding, NOT a face margin: a margin would collapse
+            through this unpadded parent and shift the whole card instead). */}
+        <div style={{ position: 'relative', padding: cardBorderW }}>
+          {/* Border layer — fills the whole card box; the band showing
+              around the inset top face IS the 3px inner stroke (a CSS
+              border can't follow a staircase clip; a layer behind can).
+              Matches the BlocksList recipe: a darker shade of the segment
+              color so colored cards cohere. */}
           <div style={{
             position: 'absolute',
             left: 0, right: 0, top: 0, bottom: 0,
-            borderRadius: 16,
-            backgroundColor: bottomColor,
+            backgroundColor: borderColor,
+            clipPath: clipCard,
           }} />
-          {/* Top face — 3px inner stroke (matches the BlocksList recipe;
-              uses a darker shade of the segment color so colored cards
-              still feel coherent). */}
+          {/* Top face — sits on the border layer, inset by the padding. */}
           <div style={{
             position: 'relative',
-            borderRadius: 16,
             backgroundColor: bgColor,
-            border: `3px solid ${borderColor}`,
+            clipPath: clipFace,
             overflow: 'hidden',
           }}>
             {/* Collapsed row — minHeight matches the profile card's top
@@ -2028,13 +2054,14 @@ function WheelEditor({
               else haloElsRef.current.delete(segment.id);
             }}
             style={{
+              // Pixel halo: the element is the card box EXPANDED by the ring
+              // width, filled, with a staircase RING clip (outer silhouette
+              // minus the card-shaped hole) — a box-shadow ring can't follow
+              // the stepped corners.
               position: 'absolute',
-              left: 0,
-              right: 0,
-              top: 0,
-              bottom: 0,
-              borderRadius: 16,
-              boxShadow: `0 0 0 3.5px rgba(0, 0, 0, 0.36)`,
+              inset: -haloW,
+              backgroundColor: 'rgba(0, 0, 0, 0.36)',
+              clipPath: clipHalo,
               pointerEvents: 'none',
             }}
           />

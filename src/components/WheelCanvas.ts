@@ -307,6 +307,17 @@ export interface WheelPainterConfig {
   // it can be composited OVER the already-baked wheel as a separate layer whose
   // opacity is CSS-animated — no per-frame wheel re-bake. Uses winningIndex.
   dimMaskOnly?: boolean;
+  // Win bake: refill the winning wedge (fill + texture) OVER the finished
+  // chrome so the divider/rim ink that straddles its boundary is covered by
+  // the winner's own colour. The dim mask punches this SAME path out, so the
+  // bright cutout shows ONLY winner fill — no chrome slivers inside it and no
+  // re-dimmed band around it. Set while the win overlay is in flight.
+  winInkCover?: boolean;
+  // Win-flash text pop: transient scale/alpha applied to the WINNING label in
+  // the crisp text pass. Driven per-frame by SpinningWheel via
+  // repaintTextLayer (text canvas only — the art stays baked); rest bakes
+  // leave it undefined.
+  winTextPop?: { scale: number; alpha: number };
 }
 
 // A point on a segment's outline plus the divider stroke-width MULTIPLIER at that
@@ -545,12 +556,29 @@ let _layoutVal: CachedLayout | null = null;
 // a second GL canvas would mean rerouting the whole transform pipeline for the
 // identical nearest-neighbour result. Cost is bake-time only (spins are GPU
 // rotations of the baked bitmap), so it's free per spin frame.
-// PIXEL_SCALE = CSS px per block; 1 = off. Wire to a WheelConfig flag to expose.
-// NOTE: when > 1 the displayed ART <canvas> MUST carry `image-rendering: pixelated`
-// (labels render on a SEPARATE smooth canvas so they stay crisp), or the GPU
-// bilinear-smooths the baked blocks back into AA during the CSS-rotate spin and
-// the dpr downscale. SpinningWheel keys the split + that CSS off this export.
-export const PIXEL_SCALE = 2;
+// Lo-fi grid RESOLUTION: the wheel is always PIXEL_BLOCKS blocks across,
+// independent of its rendered size — a 700px desktop wheel and a 380px phone
+// wheel share the same pixel density. Sibling pixel-art surfaces (PixelButton,
+// PixelatedMarker) take a matching CSS-px block size derived from the same
+// constant (wheelWidth / PIXEL_BLOCKS) via their `pixelScale` prop, so the
+// whole UI reads as one grid. PIXELATED = master enable for the lo-fi look.
+// NOTE: when enabled the displayed ART <canvas> MUST carry `image-rendering:
+// pixelated` (labels render on a SEPARATE smooth canvas so they stay crisp),
+// or the GPU bilinear-smooths the baked blocks back into AA during the
+// CSS-rotate spin and the dpr downscale. SpinningWheel keys the split + that
+// CSS off these exports.
+export const PIXELATED = true;
+export const PIXEL_BLOCKS = 300;
+
+// CSS px per SPRITE pixel: the wheel's block size snapped to whole DEVICE
+// pixels, so hand-drawn sprite pixels (and block-sized UI boxes like the
+// 32-block buttons) render as perfectly uniform squares at ~wheel density.
+// The wheel itself keeps its exact non-snapped 300-block grid; the snap is
+// only for pixel-perfect sprite surfaces.
+export function spriteScaleFor(wheelWidth: number): number {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return Math.max(1, Math.round((wheelWidth / PIXEL_BLOCKS) * dpr)) / dpr;
+}
 let _pixelTmp: HTMLCanvasElement | null = null;
 let _pixelBig: HTMLCanvasElement | null = null;
 // Reused across bakes (the vote output + flat palette) so per-frame quantizes
@@ -839,7 +867,7 @@ export function paintWheel(
       ctx.globalCompositeOperation = 'source-over';
     }
     ctx.restore();
-    if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE);
+    if (PIXELATED) pixelateCanvas(ctx, width, height, width / PIXEL_BLOCKS);
     return;
   }
 
@@ -1044,6 +1072,21 @@ export function paintWheel(
     ctx.restore();
   }
 
+  // ── Win ink cover (see WheelPainterConfig.winInkCover) ──
+  // Drawn AFTER every chrome pass (divider strokes, rim rings, bezel dots) so
+  // the refill wins over any ink that intrudes into the wedge.
+  if (config.winInkCover && winningIndex >= 0 && winningIndex < items.length) {
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(rotation);
+    ctx.translate(-center.x, -center.y);
+    const winItem = items[winningIndex];
+    ctx.fillStyle = winItem.color;
+    ctx.fill(layout.paths[winningIndex]);
+    if (winItem.texture) drawSegmentTexture(ctx, layout.paths[winningIndex], center.x, center.y, radius, winItem.texture, textureOverlayColor(winItem.color));
+    ctx.restore();
+  }
+
   // ── Overlay: dark tint + winning segment highlight ──
   if (overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length) {
     // Extend past the outermost stroke's MAX extent. The divider / rim-ring /
@@ -1099,7 +1142,7 @@ export function paintWheel(
   // → hard segment dividers, zero AA. Skipped during the win overlay, whose dark
   // dimming produces blended tints that aren't in the palette.
   let palette: Palette | undefined;
-  if (PIXEL_SCALE > 1 && !config.fastPixelate) {
+  if (PIXELATED && !config.fastPixelate) {
     const seen = new Set<string>();
     palette = [];
     const add = (hex?: string) => {
@@ -1121,11 +1164,12 @@ export function paintWheel(
       add(overlayColor);
     }
   }
-  if (PIXEL_SCALE > 1) pixelateCanvas(ctx, width, height, PIXEL_SCALE, palette);
+  if (PIXELATED) pixelateCanvas(ctx, width, height, width / PIXEL_BLOCKS, palette);
 
   paintSegmentContent(textCtx ?? ctx, items, layout, {
     center, rotation, textX, imageSize, scale, textVerticalOffset,
     fromItems, transition, overlayOpacity, winningIndex,
+    winTextPop: config.winTextPop,
   });
 }
 
@@ -1145,6 +1189,7 @@ interface SegmentContentCtx {
   transition: number;
   overlayOpacity: number;
   winningIndex: number;
+  winTextPop?: { scale: number; alpha: number };
 }
 
 function paintSegmentContent(
@@ -1154,25 +1199,37 @@ function paintSegmentContent(
   c: SegmentContentCtx,
 ): void {
   const { center, rotation, textX, imageSize, scale, textVerticalOffset,
-          fromItems, transition, overlayOpacity, winningIndex } = c;
+          fromItems, transition, overlayOpacity, winningIndex, winTextPop } = c;
   const won = overlayOpacity > 0 && winningIndex >= 0 && winningIndex < items.length;
 
-  const drawLabel = (i: number, alpha: number) => {
+  const drawLabel = (i: number, alpha: number, pop?: { scale: number; alpha: number }) => {
     const ft = _ftVal[i];
     if (!ft) return;
     const item = items[i];
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = alpha * (pop ? pop.alpha : 1);
     // Clip to the slice's exact wedge (same rotated frame the fill used) so
-    // over-long labels crop at the boundary instead of spilling.
+    // over-long labels crop at the boundary instead of spilling. (A popping
+    // label's overshoot clips here too — it stays inside its slice.)
     ctx.clip(layout.paths[i]);
     ctx.translate(center.x, center.y);
     ctx.rotate(layout.startAngles[i] + layout.segmentSizes[i] / 2);
+    // Font set BEFORE the pop transform — the scale anchor needs line widths.
+    ctx.font = `600 ${ft.fontSize}px ${WHEEL_FONT}`;
+    if (pop && pop.scale !== 1) {
+      // Win-flash pop: scale the label (+ its visual) about its visual centre.
+      let w = 0;
+      for (const ln of ft.lines) w = Math.max(w, ctx.measureText(ln).width);
+      const ax = ft.textX - w / 2;
+      const ay = -textVerticalOffset;
+      ctx.translate(ax, ay);
+      ctx.scale(pop.scale, pop.scale);
+      ctx.translate(-ax, -ay);
+    }
     ctx.fillStyle = tintedTextColor(item.color);
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     drawSegmentVisual(ctx, item, textX, imageSize, scale, item.color);
-    ctx.font = `600 ${ft.fontSize}px ${WHEEL_FONT}`;
     const lineH = ft.fontSize * 1.05;
     const y0 = -textVerticalOffset - ((ft.lines.length - 1) * lineH) / 2;
     for (let li = 0; li < ft.lines.length; li++) {
@@ -1205,13 +1262,49 @@ function paintSegmentContent(
     // labels by the same amount so they recede with it.
     if (won) alpha *= 1 - overlayOpacity * 0.7;
     if (alpha <= 0) continue;
-    drawLabel(i, alpha);
+    // The CSS-dim win path (dim canvas above, wedge punched out) keeps
+    // overlayOpacity at 0 — the winner is a normal label here, so the pop
+    // rides this call. The baked-overlay path pops via the bright call below.
+    drawLabel(i, alpha, i === winningIndex ? winTextPop : undefined);
   }
 
   // Winner, bright, on top — matches the old overlay's globalAlpha = overlayOpacity.
-  if (won) drawLabel(winningIndex, overlayOpacity);
+  if (won) drawLabel(winningIndex, overlayOpacity, winTextPop);
 
   ctx.restore();
+}
+
+// Repaint ONLY the crisp text layer, reusing the module caches (_layoutVal /
+// _ftVal) left warm by the last full paintWheel bake — valid during the win
+// flash, which never re-bakes the wheel. Lets the winning label animate
+// (config.winTextPop) per frame while the art canvas stays untouched. The
+// text layer is always crisp anti-aliased — never pixelated.
+export function repaintTextLayer(
+  textCtx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  config: WheelPainterConfig,
+): void {
+  if (!_layoutVal) return;
+  const outerStrokeWidth = config.outerStrokeWidth ?? 0;
+  const strokeInset = config.strokeWidth > 0 ? config.strokeWidth / 2 + 0.5 : 0;
+  const outerInset = outerStrokeWidth > 0 ? outerStrokeWidth + 0.5 : 0;
+  const radius = Math.min(width, height) / 2 - strokeInset - outerInset;
+  const scale = radius / 350;
+  textCtx.clearRect(0, 0, width, height);
+  paintSegmentContent(textCtx, config.items, _layoutVal, {
+    center: { x: width / 2, y: height / 2 },
+    rotation: config.rotation,
+    textX: radius - 20 * scale,
+    imageSize: config.imageSize,
+    scale,
+    textVerticalOffset: config.textVerticalOffset,
+    fromItems: config.fromItems,
+    transition: config.transition,
+    overlayOpacity: config.overlayOpacity,
+    winningIndex: config.winningIndex,
+    winTextPop: config.winTextPop,
+  });
 }
 
 // ── Hand-drawn "rough" wheel geometry ───────────────────────────────────────
