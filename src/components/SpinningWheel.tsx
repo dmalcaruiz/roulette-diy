@@ -384,6 +384,17 @@ const DECAY_EASE_FN = makeCubicBezier(0.22, 0.66, 0.4, 1);
 const PULLBACK_EASE_CSS = 'cubic-bezier(0.45, 0, 0.55, 1)';
 const PULLBACK_EASE_FN = makeCubicBezier(0.45, 0, 0.55, 1);
 
+// Tap-spin anticipation. When OFF (current setting) the spin launches the
+// instant SPIN is pressed — but SPIN_EASE starts at ~6.5× average speed
+// (decel-only; the wind-up used to sell that jump as a "release"), so a
+// bare instant launch reads fake. LAUNCH_EASE therefore replaces it in
+// no-wind-up mode: starts at zero velocity, accelerates hard over the first
+// ~15% and keeps the same long gentle settle. Flip WINDUP_ENABLED to restore
+// the old pullback + SPIN_EASE pairing.
+const WINDUP_ENABLED = false;
+const LAUNCH_EASE_CSS = 'cubic-bezier(0.3, 0, 0.16, 1)';
+const LAUNCH_EASE_FN = makeCubicBezier(0.3, 0, 0.16, 1);
+
 
 export interface SpinningWheelProps {
   items: WheelItem[];
@@ -1257,13 +1268,20 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const durationMs = baseDuration + durationOffset;
 
     // Wind-up — a short reverse rotation (a few degrees) before the launch, so
-    // it reads as anticipation rather than a real backspin.
-    const pullbackAmount = (isRandomIntensity
+    // it reads as anticipation rather than a real backspin. Currently DISABLED
+    // (see WINDUP_ENABLED): the spin launches instantly on tap, with
+    // LAUNCH_EASE supplying the acceleration ramp the pullback used to fake.
+    // The pullback phase machinery stays in place (amount 0 over 1ms — the
+    // chained transitions, audio schedule and header loop all read the same
+    // trajectory), so flipping the flag restores the old feel.
+    const pullbackAmount = !WINDUP_ENABLED ? 0 : ((isRandomIntensity
       ? (10 + effectiveIntensity * 35) + (Math.random() - 0.5) * 10
-      : (5 + effectiveIntensity * 45) + (Math.random() - 0.5) * 2) * (Math.PI / 180);
-    const pullbackDurationMs = isRandomIntensity
+      : (5 + effectiveIntensity * 45) + (Math.random() - 0.5) * 2) * (Math.PI / 180));
+    const pullbackDurationMs = !WINDUP_ENABLED ? 1 : (isRandomIntensity
       ? 200 + effectiveIntensity * 100
-      : 150 + effectiveIntensity * 200;
+      : 150 + effectiveIntensity * 200);
+    const spinEaseCss = WINDUP_ENABLED ? SPIN_EASE_CSS : LAUNCH_EASE_CSS;
+    const spinEaseFn = WINDUP_ENABLED ? SPIN_EASE_FN : LAUNCH_EASE_FN;
     const totalMs = pullbackDurationMs + durationMs;
 
     const startRotation = rotationRef.current;
@@ -1277,7 +1295,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
         return startRotation - pullbackAmount * PULLBACK_EASE_FN(ms / pullbackDurationMs);
       }
       const p = Math.min(1, (ms - pullbackDurationMs) / durationMs);
-      return (startRotation - pullbackAmount) + (pullbackAmount + finalRotation) * SPIN_EASE_FN(p);
+      return (startRotation - pullbackAmount) + (pullbackAmount + finalRotation) * spinEaseFn(p);
     };
 
     // ── Faithful Spinly mechanism: CSS transitions drive the rotation on the
@@ -1390,7 +1408,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
           canvasEl.style.transition = 'none';
           canvasEl.style.transform = `rotate(${-pullbackAmount - finalRotation}rad) translateZ(0)`;
           void canvasEl.offsetWidth;
-          canvasEl.style.transition = `transform ${durationMs / 1000}s ${SPIN_EASE_CSS}`;
+          canvasEl.style.transition = `transform ${durationMs / 1000}s ${spinEaseCss}`;
           canvasEl.style.transform = `rotate(0rad) translateZ(0)`;
         }
       }
