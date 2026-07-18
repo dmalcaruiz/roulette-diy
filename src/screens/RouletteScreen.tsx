@@ -137,7 +137,7 @@ export default function RouletteScreen({
   const initialWheelTransition = (location.state as { wheelTransition?: 'left' | 'right' } | null)?.wheelTransition;
   const [wheelTransition, setWheelTransition] = useState<'left' | 'right' | undefined>(initialWheelTransition);
   const wheelRef = useRef<SpinningWheelHandle>(null);
-  const [backgroundColor, setBackgroundColor] = useState('#000000');
+  const [backgroundColor, setBackgroundColor] = useState('#36325F');
   const [textColor, setTextColor] = useState('#FFFFFF');
   const [overlayColor, setOverlayColor] = useState('#000000');
   // previewConfig holds in-progress edits so the wheel updates live during editing,
@@ -1343,7 +1343,11 @@ export default function RouletteScreen({
   // height is used — including SPIN_H, which the wheel algebra reads.
   const SPIN_SHEET_RISE = 12;
   const SPIN_H = buttonH + SPIN_SHEET_RISE + 12; // sheet(rise) + spin button + margin (12)
-  const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
+  // App bar (54, nudged down 12 → occupies to ~66) + room for the wheel's
+  // top marker overhang, so the wheel reads vertically centred instead of
+  // riding too high. Shared by the layout AND wheelStateAt's algebra, so the
+  // sheet snap math stays exact.
+  const APP_BAR_PAD = 78;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = isMobile ? 380 : 400;
