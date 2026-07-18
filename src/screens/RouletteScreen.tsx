@@ -1347,7 +1347,7 @@ export default function RouletteScreen({
   // top marker overhang, so the wheel+marker group reads vertically centred
   // instead of riding too high. Shared by the layout AND wheelStateAt's
   // algebra, so the sheet snap math stays exact.
-  const APP_BAR_PAD = 88;
+  const APP_BAR_PAD = 94;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = isMobile ? 380 : 400;
@@ -2654,8 +2654,8 @@ function SpriteBarButton({ onClick, ariaLabel, src, style }: {
       onClick={onClick}
       aria-label={ariaLabel}
       style={{
-        width: 75,
-        height: 75,
+        width: 90,
+        height: 90,
         padding: 0,
         flexShrink: 0,
         display: 'flex',
@@ -2668,7 +2668,7 @@ function SpriteBarButton({ onClick, ariaLabel, src, style }: {
         ...style,
       }}
     >
-      <img src={src} alt="" style={{ width: 75, height: 75, imageRendering: 'pixelated', pointerEvents: 'none' }} />
+      <img src={src} alt="" style={{ width: 90, height: 90, imageRendering: 'pixelated', pointerEvents: 'none' }} />
     </button>
   );
 }
