@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpriteArtButton preview</title>
+<style>
+  body { background: #F4F1EA; margin: 0; padding: 24px; font-family: monospace; }
+  .row { background: #fff; padding: 16px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { SpritePillButton, SpriteIconButton } from '/src/components/SpriteArtButton';
+import { RoughPanel } from '/src/components/RoughPanel';
+import { spriteScaleFor } from '/src/components/WheelCanvas';
+import { PRIMARY } from '/src/utils/constants';
+
+const h = React.createElement;
+
+// Mimics the RouletteScreen spin row: a fake "screen" whose bottom edge the
+// rough sheet must sit flush against, side padding cancelled by the panel.
+function Row({ wheelSize, screenWidth }) {
+  const artScale = spriteScaleFor(wheelSize / 2);
+  const buttonH = Math.round(84 * artScale);
+  const RISE = 12, PAD = 28;
+  return h('div', { style: { width: screenWidth, background: '#E8E3D8', marginBottom: 24, paddingTop: 40, overflow: 'hidden' } },
+    h('div', { style: { padding: '4px 8px', fontSize: 12 } }, `wheel=${wheelSize} artScale=${artScale.toFixed(3)} buttonH=${buttonH}`),
+    h('div', { style: { width: '100%', padding: '0 16px', boxSizing: 'border-box' } },
+      h('div', { style: { position: 'relative', height: buttonH + RISE + PAD, display: 'flex', alignItems: 'flex-end', paddingBottom: PAD, boxSizing: 'border-box' } },
+        h(RoughPanel, { variant: 'bottomSheet', color: '#FFFFFF', pixelScale: artScale, seed: 5, roughAmp: 2.2, radiusRatio: 0.42, taper: 2, style: { position: 'absolute', inset: '0 -16px', zIndex: 0 } }),
+        h('div', { style: { position: 'relative', zIndex: 1, display: 'flex', height: buttonH, width: '100%', alignItems: 'center' } },
+          h(SpriteIconButton, { src: '/images/wheels.png', onTap: () => {}, box: buttonH, pixelScale: artScale, zoom: 1.2, style: { flexShrink: 0 } }),
+          h(SpritePillButton, { color: PRIMARY, onTap: () => {}, height: buttonH, label: 'SPIN', fontSize: Math.round(buttonH * 0.56), pixelScale: artScale, zoom: 1.1, offsetY: Math.round(6 * artScale), style: { flex: 1, minWidth: 0, margin: '0 3px 0 12px' } }),
+          h(SpriteIconButton, { src: '/images/edit.png', onTap: () => {}, box: buttonH, pixelScale: artScale, zoom: 1.2, style: { flexShrink: 0 } }),
+        ),
+      ),
+    ),
+  );
+}
+
+createRoot(document.getElementById('root')).render(
+  h(React.Fragment, null,
+    h(Row, { wheelSize: 374, screenWidth: 390 }),  // phone-ish
+    h(Row, { wheelSize: 700, screenWidth: 660 }),  // desktop
+  ),
+);
+</script>
+</body>
+</html>

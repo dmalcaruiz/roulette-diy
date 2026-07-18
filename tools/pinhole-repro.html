@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wheel pinhole repro</title>
+<style>
+  body { background: #ff00ff; font-family: monospace; }
+  canvas.show { image-rendering: pixelated; width: 600px; height: 600px; border: 1px solid #000; }
+  pre { background: #fff; padding: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h3>Wheel pinhole repro — magenta page background shows through transparent holes</h3>
+<pre id="out">running…</pre>
+<div id="gallery"></div>
+<script type="module">
+import { paintWheel, ROUGHNESS, PIXEL_BLOCKS } from '/src/components/WheelCanvas';
+
+const COLORS = ['#E74C3C', '#3498DB', '#2ECC71', '#F1C40F', '#9B59B6', '#E67E22', '#1ABC9C', '#34495E'];
+
+function makeItems(n) {
+  const items = [];
+  for (let i = 0; i < n; i++) {
+    items.push({ id: 'it' + i, text: 'Item ' + i, color: COLORS[i % COLORS.length], weight: 1 + (i % 3) * 0.5 });
+  }
+  return items;
+}
+
+function makeConfig(items, rotation, strokeWidth, showBg, cornerRadius) {
+  return {
+    items, rotation,
+    fontSize: 20,
+    cornerRadius,
+    strokeWidth,
+    showBackgroundCircle: showBg,
+    wheelBaseColor: '#FFFFFF',
+    imageSize: 40,
+    overlayColor: '#000000',
+    textVerticalOffset: -1,
+    innerCornerStyle: 'none',
+    centerInset: 0,
+    overlayOpacity: 0,
+    winningIndex: -1,
+    loadingAngle: 0,
+    transition: 1,
+    roughSeed: 0.42,
+  };
+}
+
+// Block-grid analysis: sample the centre of each PIXEL_BLOCKS×PIXEL_BLOCKS block
+// from the device-res backing store. Enclosed transparent holes = empty blocks
+// NOT reachable from the canvas border through other empty blocks.
+function analyze(ctx, size, dpr) {
+  const N = PIXEL_BLOCKS;
+  const img = ctx.getImageData(0, 0, size * dpr, size * dpr);
+  const d = img.data, W = size * dpr;
+  const blockDev = (size * dpr) / N;
+  const empty = new Uint8Array(N * N);   // 1 = transparent block
+  const colorOf = new Int32Array(N * N); // rgb packed, -1 if empty
+  for (let by = 0; by < N; by++) {
+    for (let bx = 0; bx < N; bx++) {
+      const px = Math.min(W - 1, Math.floor((bx + 0.5) * blockDev));
+      const py = Math.min(W - 1, Math.floor((by + 0.5) * blockDev));
+      const i = (py * W + px) * 4;
+      if (d[i + 3] < 128) { empty[by * N + bx] = 1; colorOf[by * N + bx] = -1; }
+      else colorOf[by * N + bx] = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+    }
+  }
+  // flood fill from border over empty blocks
+  const seen = new Uint8Array(N * N);
+  const stack = [];
+  for (let k = 0; k < N; k++) {
+    for (const idx of [k, (N - 1) * N + k, k * N, k * N + N - 1]) {
+      if (empty[idx] && !seen[idx]) { seen[idx] = 1; stack.push(idx); }
+    }
+  }
+  while (stack.length) {
+    const idx = stack.pop();
+    const x = idx % N, y = (idx / N) | 0;
+    for (const [nx, ny] of [[x-1,y],[x+1,y],[x,y-1],[x,y+1]]) {
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+      const ni = ny * N + nx;
+      if (empty[ni] && !seen[ni]) { seen[ni] = 1; stack.push(ni); }
+    }
+  }
+  // grey specks: #808080 blocks — only legitimate when stroke=0 && corner=0
+  let gray = 0;
+  for (let i = 0; i < N * N; i++) if (colorOf[i] === 0x808080) gray++;
+  const holes = [];
+  holes.grayCount = gray;
+  for (let i = 0; i < N * N; i++) {
+    if (empty[i] && !seen[i]) {
+      const x = i % N, y = (i / N) | 0;
+      // neighbouring colours (for diagnosing what seam the hole sits on)
+      const neigh = new Set();
+      for (const [nx, ny] of [[x-1,y],[x+1,y],[x,y-1],[x,y+1],[x-1,y-1],[x+1,y-1],[x-1,y+1],[x+1,y+1]]) {
+        if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+        const c = colorOf[ny * N + nx];
+        neigh.add(c === -1 ? 'empty' : '#' + c.toString(16).padStart(6, '0'));
+      }
+      holes.push({ x, y, neighbors: [...neigh] });
+    }
+  }
+  return holes;
+}
+
+const out = [];
+const gallery = document.getElementById('gallery');
+const size = 700;
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const textCanvas = document.createElement('canvas'); // swallow the crisp text pass
+const textCtx = textCanvas.getContext('2d');
+
+const items8 = makeItems(8);
+const items12 = makeItems(12);
+
+for (const dpr of [1, 2, 1.25]) {
+  for (const rough of [true, false]) {
+    for (const showBg of [true, false]) {
+      for (const strokeWidth of [8, 4]) {
+        ROUGHNESS.enabled = rough;
+        let totalHoles = 0, totalGray = 0;
+        const detail = [];
+        for (let r = 0; r < 16; r++) {
+          const rotation = (r / 16) * (Math.PI * 2 / 8);
+          canvas.width = size * dpr; canvas.height = size * dpr;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          textCanvas.width = size * dpr; textCanvas.height = size * dpr;
+          textCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const cfg = makeConfig(r % 2 ? items12 : items8, rotation, strokeWidth, showBg, 30);
+          paintWheel(ctx, size, size, cfg, textCtx);
+          const holes = analyze(ctx, size, dpr);
+          totalHoles += holes.length;
+          totalGray += holes.grayCount;
+          if (holes.length) detail.push({ rot: +rotation.toFixed(3), items: r % 2 ? 12 : 8, holes });
+          // dump a magnified crop around the first hole of the first failing
+          // bake per config, as a data URL (magenta bg = transparent hole)
+          if (holes.length && !canvas.dataset.kept) {
+            const h = holes[0];
+            const blockDev = (size * dpr) / PIXEL_BLOCKS;
+            const R = 14; // blocks of context around the hole
+            const crop = document.createElement('canvas');
+            const px = 12; // output px per block
+            crop.width = (2 * R + 1) * px; crop.height = (2 * R + 1) * px;
+            const cctx = crop.getContext('2d');
+            cctx.fillStyle = '#ff00ff';
+            cctx.fillRect(0, 0, crop.width, crop.height);
+            cctx.imageSmoothingEnabled = false;
+            cctx.drawImage(canvas,
+              (h.x - R) * blockDev, (h.y - R) * blockDev, (2 * R + 1) * blockDev, (2 * R + 1) * blockDev,
+              0, 0, crop.width, crop.height);
+            // mark the hole with a ring in the corner pixels
+            cctx.strokeStyle = '#00ff00';
+            cctx.strokeRect(R * px - 0.5, R * px - 0.5, px + 1, px + 1);
+            const label = document.createElement('div');
+            label.textContent = `CROP dpr=${dpr} rough=${rough} bg=${showBg} sw=${strokeWidth} rot=${rotation.toFixed(3)} hole=${h.x},${h.y}`;
+            const img = document.createElement('img');
+            img.src = crop.toDataURL();
+            gallery.append(label, img);
+            canvas.dataset.kept = '1';
+          }
+        }
+        delete canvas.dataset.kept;
+        out.push({ dpr, rough, showBg, strokeWidth, totalHoles, totalGray, detail: detail.slice(0, 3) });
+      }
+    }
+  }
+}
+
+// ── Donut regression check: the enclosed open centre must STAY transparent ──
+{
+  ROUGHNESS.enabled = true;
+  const dpr = 2;
+  canvas.width = size * dpr; canvas.height = size * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  textCanvas.width = size * dpr; textCanvas.height = size * dpr;
+  textCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cfg = makeConfig(items8, 0.2, 4, false, 30);
+  cfg.innerCornerStyle = 'circular';
+  cfg.centerInset = 100;
+  paintWheel(ctx, size, size, cfg, textCtx);
+  const img = ctx.getImageData(size * dpr / 2, size * dpr / 2, 1, 1).data;
+  out.push({ donutCenterAlpha: img[3], donutHoles: analyze(ctx, size, dpr).length });
+}
+// ── Bezel dots: default (grey) dots must quantize to their own colour, not a
+// segment colour. Grey = 40% black over white base = #999999. ──
+{
+  ROUGHNESS.enabled = true;
+  const dpr = 2;
+  canvas.width = size * dpr; canvas.height = size * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  textCanvas.width = size * dpr; textCanvas.height = size * dpr;
+  textCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const items = [];
+  // include NAVY so the white-stroke↔dark-fill AA blends pass near the dots'
+  // grey — the adversarial case for grey seam specks
+  for (let i = 0; i < 8; i++) items.push({ id: 'd' + i, text: 'D' + i, color: ['#34495E', '#E74C3C', '#3498DB'][i % 3], weight: 1 });
+  const cfg = makeConfig(items, 0.15, 8, true, 30);
+  cfg.outerStrokeWidth = 14;
+  cfg.outerStrokeDots = true;
+  paintWheel(ctx, size, size, cfg, textCtx);
+  // #999999 (composited default dot colour) must appear ON the dot ring only —
+  // any interior grey block is a seam speck
+  const img = ctx.getImageData(0, 0, size * dpr, size * dpr).data;
+  const N = PIXEL_BLOCKS, W = size * dpr, blockDev = W / N;
+  let grayRing = 0, grayInterior = 0;
+  for (let by = 0; by < N; by++) for (let bx = 0; bx < N; bx++) {
+    const px = Math.min(W - 1, Math.floor((bx + 0.5) * blockDev));
+    const py = Math.min(W - 1, Math.floor((by + 0.5) * blockDev));
+    const i = (py * W + px) * 4;
+    if (img[i + 3] >= 128 && img[i] === 0x99 && img[i + 1] === 0x99 && img[i + 2] === 0x99) {
+      const r = Math.hypot((bx + 0.5) / N - 0.5, (by + 0.5) / N - 0.5) * 2; // 0..1 of half-size
+      if (r > 0.88) grayRing++; else grayInterior++;
+    }
+  }
+  out.push({ dotGrayRing: grayRing, dotGrayInterior: grayInterior, dotHoles: analyze(ctx, size, dpr).length });
+  const label = document.createElement('div');
+  label.textContent = 'DOTWHEEL default dots bg=true sw=8 osw=14';
+  const im = document.createElement('img');
+  im.src = canvas.toDataURL();
+  gallery.append(label, im);
+}
+// ── Full-wheel visual: flower silhouette, rough, thin stroke ──
+{
+  ROUGHNESS.enabled = true;
+  const dpr = 1;
+  canvas.width = size * dpr; canvas.height = size * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  textCanvas.width = size * dpr; textCanvas.height = size * dpr;
+  textCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  paintWheel(ctx, size, size, makeConfig(items8, 0.196, 4, false, 30), textCtx);
+  const label = document.createElement('div');
+  label.textContent = 'FULLWHEEL rough bg=false sw=4 rot=0.196';
+  const img = document.createElement('img');
+  img.src = canvas.toDataURL();
+  gallery.append(label, img);
+}
+document.getElementById('out').textContent = 'RESULTS_JSON_BEGIN\n' + JSON.stringify(out, null, 1) + '\nRESULTS_JSON_END';
+</script>
+</body>
+</html>

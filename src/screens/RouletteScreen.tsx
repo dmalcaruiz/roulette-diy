@@ -4,7 +4,8 @@ import { Block, WheelConfig } from '../models/types';
 import SpinningWheel, { SpinningWheelHandle, roughSeedFromId } from '../components/SpinningWheel';
 import WheelEditor, { buildInitialState, EditorState, stateToConfig } from '../components/WheelEditor';
 import { PushDownButton } from '../components/PushDownButton';
-import { SpriteButton } from '../components/SpriteButton';
+import { SpritePillButton, SpriteIconButton } from '../components/SpriteArtButton';
+import { RoughPanel } from '../components/RoughPanel';
 import { PixelCard } from '../components/PixelCard';
 import { PIXEL_BLOCKS, spriteScaleFor } from '../components/WheelCanvas';
 import { withAlpha } from '../utils/colorUtils';
@@ -461,19 +462,16 @@ export default function RouletteScreen({
   const idealWheelSize = 700;
   const availableWidth = isMobile ? (screenWidth - 16) : (screenWidth - 400 - 32);
   const effectiveWheelSize = Math.min(availableWidth, idealWheelSize);
-  // Buttons live on the wheel's pixel grid: 40 blocks tall (the sprite spec),
-  // at the device-pixel-snapped block scale. Replaces the legacy fixed 54px —
-  // the button row scales with the wheel like a game viewport (~53px on real
-  // phones ≈ the old look, 40px in narrow dpr-1 windows, 80-100px desktop).
-  const BUTTON_BLOCKS = 40;
+  // Spin-row art scale: the hand-drawn button sprites are drawn at 2× the
+  // wheel block grid — the pill face is 78 sprite px ≈ the legacy 40-block
+  // button box — so one sprite px = HALF a wheel block, device-pixel-snapped
+  // (the snap floors at 1 device px, which on dpr-1 windows lands the art at
+  // ~wheel-block chunkiness). Row height follows the pill sprite (84 sprite
+  // px incl. its peek), keeping the old ~40-block footprint.
+  const buttonArtScale = spriteScaleFor(effectiveWheelSize / 2);
+  const buttonH = Math.round(84 * buttonArtScale);
+  // Wheel-block pixel density for the procedural pixel chrome (cards, sheets).
   const buttonScale = spriteScaleFor(effectiveWheelSize);
-  const buttonH = Math.round(BUTTON_BLOCKS * buttonScale);
-  // Sprite-button pixel density: 2.25× the wheel block (chunkier than the
-  // wheel art; 2.5 read too coarse, 2 too fine), snapped to whole DEVICE
-  // pixels via spriteScaleFor so the nearest-neighbour upscale stays
-  // perfectly uniform. Same buttonH box — only the sprite grid inside it
-  // gets coarser.
-  const buttonSpriteScale = spriteScaleFor(effectiveWheelSize * 2.25);
 
   const onWheelFinished = useCallback((index: number) => {
     const updated = { ...block, lastUsedAt: new Date().toISOString() };
@@ -1311,7 +1309,12 @@ export default function RouletteScreen({
   const pickerVisible = !isPlayMode && pickerOpen;
   const RED_BASE = 136;   // red container minimum (preview row + padding)
   const CHIP_H = 0;       // chip bar moved INSIDE the sheet (no screen reserve)
-  const SPIN_H = buttonH + 12; // spin button (32 blocks) + margin (12)
+  // The spin row sits inside a rough "bottom sheet" panel that rises a few px
+  // ABOVE the buttons (its rounded top peeks up behind them). That rise grows
+  // the row's vertical footprint, so it's added to buttonH everywhere the row
+  // height is used — including SPIN_H, which the wheel algebra reads.
+  const SPIN_SHEET_RISE = 12;
+  const SPIN_H = buttonH + SPIN_SHEET_RISE + 12; // sheet(rise) + spin button + margin (12)
   const APP_BAR_PAD = 54; // matches the always-visible app bar exactly
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
@@ -1810,37 +1813,62 @@ export default function RouletteScreen({
           {showSpinButton && (
             <div style={{
               width: '100%',
-              padding: '0 32px',
+              padding: '0 16px',
               flexShrink: 0,
               opacity: Math.max(0, 1 - spacerProgress),
-              height: buttonH * Math.max(0, 1 - spacerProgress),
-              // With the picker hidden the button row sits on the screen edge —
-              // give it extra breathing room there (mirrored in wheelStateAt's
-              // spinH so the wheel algebra stays exact).
-              marginBottom: (pickerVisible ? 12 : 28) * Math.max(0, 1 - spacerProgress),
+              // The breathing room below the buttons (extra when the picker is
+              // hidden and the row sits on the screen edge — mirrored in
+              // wheelStateAt's spinH) lives INSIDE the row as paddingBottom on
+              // the inner wrapper, not as a margin: the rough sheet behind the
+              // row must run flush to the screen's bottom edge.
+              height: (buttonH + SPIN_SHEET_RISE + (pickerVisible ? 12 : 28)) * Math.max(0, 1 - spacerProgress),
               overflow: 'hidden',
               transition: wheelTransitionCss,
             }}>
-              {/* THE SPRITES LANDED: hand-drawn 9-slice buttons from
-                  BOTONES PIXEL.png (SpriteButton), replacing the procedural
-                  PixelButton prototype. Buttons occupy the same buttonH box,
-                  at 2.5× the wheel block (buttonSpriteScale) so the sprite
-                  art reads chunky, per the design. Peek depth 2 sprite px;
-                  stroke wraps the WHOLE sprite (face + peek); label stays
-                  the canvas pixel font. */}
-              <div style={{ display: 'flex', gap: 12, height: buttonH }}>
-                <SpriteButton color={PRIMARY} onTap={() => setPickerOpen(v => !v)} height={buttonH} pixelScale={buttonSpriteScale} style={{ width: buttonH, flexShrink: 0 }} />
-                <SpriteButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} pixelScale={buttonSpriteScale} style={{ flex: 1, minWidth: 0 }} />
-                <SpriteButton
-                  color={PRIMARY}
-                  // Toggle the edit sheet at its TOP scroll position — same
-                  // single-commit open path the chip bar uses (seeded snap
-                  // height + instant scroll on fresh open), so it feels
-                  // identical to the rest of the app. Segments is the first
-                  // section, i.e. scroll top.
-                  onTap={() => { if (sheetOpen) closeSheet(); else openSheetTo('segments'); }}
-                  height={buttonH} pixelScale={buttonSpriteScale} style={{ width: buttonH, flexShrink: 0 }}
+              {/* Whole-art sprite buttons (SpriteArtButton): the hand-drawn
+                  SPIN pill (spintop + spinshadow, 3-slice-stretched, press
+                  drops the face 6 sprite px onto the shadow) flanked by the
+                  wheels (picker) and edit (sheet) icon sprites. All drawn at
+                  buttonArtScale — ½ wheel block per sprite px, the grid the
+                  art was authored on. Label stays the canvas pixel font. */}
+              {/* Rough white "bottom sheet" behind the row — rounded top
+                  corners + flat bottom, at the button art's pixel grid
+                  (buttonArtScale) so the whole row reads one density. It
+                  outsets by the row's full side padding and runs to the
+                  wrapper's bottom, so it sits flush with the screen's side
+                  and bottom edges (the outset must always cancel the row
+                  container's side padding); the buttons rest above it on the
+                  wrapper's paddingBottom. The extra RISE is mirrored in
+                  SPIN_H above. */}
+              <div style={{ position: 'relative', height: buttonH + SPIN_SHEET_RISE + (pickerVisible ? 12 : 28), display: 'flex', alignItems: 'flex-end', paddingBottom: pickerVisible ? 12 : 28, boxSizing: 'border-box' }}>
+                <RoughPanel
+                  variant="bottomSheet"
+                  color="#FFFFFF"
+                  pixelScale={buttonArtScale}
+                  seed={5}
+                  roughAmp={2.2}
+                  radiusRatio={0.42}
+                  taper={2}
+                  style={{ position: 'absolute', inset: '0 -16px', zIndex: 0 }}
                 />
+                {/* Explicit margins instead of a flex gap: the pill keeps a
+                    12px gap to the wheels button but only 3px to the edit
+                    button (whose outer side is also tight via the row's 16px
+                    padding). Pill renders 1.1× and nudged down a touch. */}
+                <div style={{ position: 'relative', zIndex: 1, display: 'flex', height: buttonH, width: '100%', alignItems: 'center' }}>
+                  <SpriteIconButton src="/images/wheels.png" onTap={() => setPickerOpen(v => !v)} box={buttonH} pixelScale={buttonArtScale} zoom={1.15} offsetY={Math.round(4 * buttonArtScale)} style={{ flexShrink: 0 }} />
+                  <SpritePillButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} pixelScale={buttonArtScale} zoom={1} offsetY={Math.round(6 * buttonArtScale)} style={{ flex: 1, minWidth: 0, margin: '0 3px 0 12px' }} />
+                  <SpriteIconButton
+                    src="/images/edit.png"
+                    // Toggle the edit sheet at its TOP scroll position — same
+                    // single-commit open path the chip bar uses (seeded snap
+                    // height + instant scroll on fresh open), so it feels
+                    // identical to the rest of the app. Segments is the first
+                    // section, i.e. scroll top.
+                    onTap={() => { if (sheetOpen) closeSheet(); else openSheetTo('segments'); }}
+                    box={buttonH} pixelScale={buttonArtScale} zoom={1.15} offsetY={Math.round(9 * buttonArtScale)} style={{ flexShrink: 0 }}
+                  />
+                </div>
               </div>
             </div>
           )}

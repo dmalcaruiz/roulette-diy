@@ -84,7 +84,9 @@ function oklabToSrgb(L: number, a: number, b: number): [number, number, number] 
   return [gam(lr), gam(lg), gam(lb)];
 }
 // Apply the OKLCH delta (spriteBase → spriteVariant) to a runtime base colour.
-function applyArtDelta(base: [number, number, number], spriteBase: [number, number, number], spriteVariant: [number, number, number]): [number, number, number] {
+// (Exported for SpriteArtButton, which recolors whole-art sprites per-pixel
+// with the same base-cyan convention.)
+export function applyArtDelta(base: [number, number, number], spriteBase: [number, number, number], spriteVariant: [number, number, number]): [number, number, number] {
   const [Lb, ab, bb] = srgbToOklab(...base);
   const [Ls, as_, bs] = srgbToOklab(...spriteBase);
   const [Lv, av, bv] = srgbToOklab(...spriteVariant);
@@ -97,11 +99,11 @@ function applyArtDelta(base: [number, number, number], spriteBase: [number, numb
 }
 
 // Sprite placeholder colours.
-const ART_BASE: [number, number, number] = [0x00, 0xC0, 0xFE];  // fill cyan (also 00C0FF strays)
+export const ART_BASE: [number, number, number] = [0x00, 0xC0, 0xFE];  // fill cyan (also 00C0FF strays)
 const ART_SHADE: [number, number, number] = [0x28, 0x6C, 0xCA]; // peek blue
 const ART_GLINT: [number, number, number] = [0x2C, 0x94, 0x98]; // peek-highlight teal
 
-function hexToRgb(hex: string): [number, number, number] {
+export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.replace(/^#/, '');
   if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
   const n = parseInt(h.slice(0, 6), 16);

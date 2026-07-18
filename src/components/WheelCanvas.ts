@@ -122,6 +122,28 @@ function bezelDotColor(mode: 'default' | 'custom' | 'segment' | undefined,
   return defaultDotColor(baseColor); // 'default' (and a safe fill for 'segment')
 }
 
+// The opaque colours the bezel dots actually LAND as on the baked wheel — what
+// the pixelate palette must contain. The default dot is 40% ink composited over
+// the chrome band (wheelBaseColor); 'segment' divider dots are the oklch mix of
+// each adjacent pair (interior dots use the slice colours, already in the
+// palette). Without these entries the palette vote snapped resting dots to the
+// nearest segment colour (grey default dots read purple at rest, then back to
+// grey on motion frames, which skip the palette).
+function bezelDotPaletteColors(mode: 'default' | 'custom' | 'segment' | undefined,
+                               baseColor: string, customColor: string | undefined,
+                               items: WheelItem[]): string[] {
+  if (mode === 'segment') {
+    const n = items.length;
+    const mixes: string[] = [];
+    for (let i = 0; i < n; i++) mixes.push(oklchMix(items[(i - 1 + n) % n].color, items[i].color));
+    return mixes;
+  }
+  if (mode === 'custom') return [customColor || '#FFFFFF'];
+  const { r, g, b } = hexToRgba(baseColor);
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return [lerpColor(baseColor, lum > 0.5 ? '#000000' : '#FFFFFF', 0.4)];
+}
+
 // Decorative carnival-bulb bezel: a dot on each segment divider plus evenly-
 // spaced in-between dots. Spacing is set by the dot SIZE (which the stroke band
 // defines) — ~9 dot-diameters of arc, so a ~30-wide band lands ~30° apart (the
@@ -597,6 +619,83 @@ export type Palette = [number, number, number][];
 // drop. Use it for art with intentional semi-transparent layers (e.g. the marker's
 // shadow halos) that must survive the pixelation. Default (false) thresholds alpha
 // on/off for a fully hard silhouette (wheel/button).
+// Despeckle for the hard-silhouette vote: fill tiny ENCLOSED transparent
+// pockets. A sharp concave crevice in the silhouette — the notch valley where
+// two rounded segment corners meet, on a wheel with no backing disc — tapers
+// below one block wide, and the coverage vote renders its sub-block tip as an
+// isolated transparent block: a pinhole showing the page through the seam
+// between a fill and its stroke. Flood the transparent blocks 4-connected from
+// the border; what's left unreached is an enclosed pocket. Pockets up to
+// PINHOLE_MAX_AREA blocks get filled with their most common neighbouring
+// colour (the stroke, at a crevice tip). Intentional enclosed holes — a donut
+// wheel's open centre — are far larger and stay open. Diagonal-only contact
+// does not connect a pocket to the outside (4-connected on purpose): blocks
+// touching only at a corner still read as a sealed hole.
+const PINHOLE_MAX_AREA = 8;
+function fillEnclosedPinholes(od: Uint8ClampedArray, sw: number, sh: number): void {
+  const n = sw * sh;
+  const empty = (i: number) => od[i * 4 + 3] === 0;
+  // 0 = opaque, 1 = transparent unreached, 2 = transparent reached from border
+  const state = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (empty(i)) state[i] = 1;
+  const stack: number[] = [];
+  for (let x = 0; x < sw; x++) {
+    if (state[x] === 1) { state[x] = 2; stack.push(x); }
+    const b = (sh - 1) * sw + x;
+    if (state[b] === 1) { state[b] = 2; stack.push(b); }
+  }
+  for (let y = 0; y < sh; y++) {
+    const l = y * sw, r = y * sw + sw - 1;
+    if (state[l] === 1) { state[l] = 2; stack.push(l); }
+    if (state[r] === 1) { state[r] = 2; stack.push(r); }
+  }
+  while (stack.length) {
+    const i = stack.pop()!;
+    const x = i % sw;
+    if (x > 0 && state[i - 1] === 1) { state[i - 1] = 2; stack.push(i - 1); }
+    if (x < sw - 1 && state[i + 1] === 1) { state[i + 1] = 2; stack.push(i + 1); }
+    if (i >= sw && state[i - sw] === 1) { state[i - sw] = 2; stack.push(i - sw); }
+    if (i < n - sw && state[i + sw] === 1) { state[i + sw] = 2; stack.push(i + sw); }
+  }
+  for (let i = 0; i < n; i++) {
+    if (state[i] !== 1) continue;
+    // Collect this enclosed component.
+    const comp = [i];
+    state[i] = 2;
+    for (let s = 0; s < comp.length; s++) {
+      const c = comp[s], x = c % sw;
+      if (x > 0 && state[c - 1] === 1) { state[c - 1] = 2; comp.push(c - 1); }
+      if (x < sw - 1 && state[c + 1] === 1) { state[c + 1] = 2; comp.push(c + 1); }
+      if (c >= sw && state[c - sw] === 1) { state[c - sw] = 2; comp.push(c - sw); }
+      if (c < n - sw && state[c + sw] === 1) { state[c + sw] = 2; comp.push(c + sw); }
+    }
+    if (comp.length > PINHOLE_MAX_AREA) continue;
+    for (const c of comp) {
+      // Most common opaque colour among the 8 neighbours (there's always at
+      // least one — the pocket is enclosed by opaque blocks).
+      const x = c % sw, y = (c / sw) | 0;
+      const colors: number[] = [], counts: number[] = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= sw || ny >= sh) continue;
+          const ni = (ny * sw + nx) * 4;
+          if (od[ni + 3] === 0) continue;
+          const rgb = (od[ni] << 16) | (od[ni + 1] << 8) | od[ni + 2];
+          const k = colors.indexOf(rgb);
+          if (k < 0) { colors.push(rgb); counts.push(1); } else counts[k]++;
+        }
+      }
+      let best = -1, bc = 0;
+      for (let k = 0; k < colors.length; k++) if (counts[k] > bc) { bc = counts[k]; best = colors[k]; }
+      if (best < 0) continue; // fully surrounded by other pocket blocks — leave
+      const oi = c * 4;
+      od[oi] = (best >> 16) & 255; od[oi + 1] = (best >> 8) & 255; od[oi + 2] = best & 255; od[oi + 3] = 255;
+    }
+  }
+}
+
 export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH: number, scale: number, palette?: Palette, keepTranslucent = false): void {
   const canvas = ctx.canvas;
   if (canvas.width === 0 || canvas.height === 0) return;
@@ -609,10 +708,13 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
 
   tctx.clearRect(0, 0, sw, sh);
   if (palette && palette.length) {
-    // MODE-VOTE each block: point-sample a K×K grid, snap each sample to the
-    // nearest palette colour, and take the most common. A lone anti-aliased seam
-    // pixel (a blend that would snap to an unrelated third colour) is always
-    // outvoted by the real colour filling the block → no edge colour noise. The
+    // MODE-VOTE each block: point-sample a K×K grid and take the most common
+    // palette colour — counting only samples that EXACTLY match a palette
+    // colour (± compositing round-off) when the block has any, so an anti-
+    // aliased seam blend can never outvote the real surfaces it sits between,
+    // even when some palette colour happens to lie near the blend (grey bezel
+    // dots vs a white↔dark divider seam). Blocks with no exact sample
+    // (textures, all-blend slivers) fall back to nearest-colour voting. The
     // transparent-vs-opaque vote also gives a coverage-based (clean) silhouette.
     const K = 3;
     const bw = sw * K, bh = sh * K;
@@ -641,6 +743,11 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
     const pal = _palFlat;
     for (let p = 0; p < P; p++) { pal[p * 3] = palette[p][0]; pal[p * 3 + 1] = palette[p][1]; pal[p * 3 + 2] = palette[p][2]; }
     const memo = new Map<number, number>();
+    // A sample is an EXACT palette hit when it sits within compositing round-off
+    // of its nearest colour (±2/channel) — i.e. it's a real painted surface, not
+    // an anti-aliased blend. Only exact hits VOTE (see below); the art is flat
+    // vector fills, so every non-edge pixel is exact. Encoded index*2 + exactBit.
+    const EXACT_D2 = 12;
     const nearest = (r: number, g: number, b: number): number => {
       const key = r | (g << 8) | (b << 16);
       let m = memo.get(key);
@@ -651,11 +758,12 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
           const dist = pr * pr + pg * pg + pb * pb;
           if (dist < bestDist) { bestDist = dist; best = p; }
         }
-        memo.set(key, m = best);
+        memo.set(key, m = best * 2 + (bestDist <= EXACT_D2 ? 1 : 0));
       }
       return m;
     };
-    const counts = new Int32Array(P);
+    const counts = new Int32Array(P);    // exact-hit votes
+    const countsAll = new Int32Array(P); // nearest-snap votes (fallback)
     for (let by = 0; by < sh; by++) {
       const row0 = by * K * bw;
       for (let bx = 0; bx < sw; bx++) {
@@ -674,7 +782,7 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
           const si = base * 4;
           const a = src[si + 3];
           if (a >= 128) {
-            const w3 = nearest(src[si], src[si + 1], src[si + 2]) * 3;
+            const w3 = (nearest(src[si], src[si + 1], src[si + 2]) >> 1) * 3;
             od[oi] = pal[w3]; od[oi + 1] = pal[w3 + 1]; od[oi + 2] = pal[w3 + 2]; od[oi + 3] = 255;
           } else if (keepTranslucent && a >= 8) {
             od[oi] = src[si]; od[oi + 1] = src[si + 1]; od[oi + 2] = src[si + 2]; od[oi + 3] = a;
@@ -684,7 +792,8 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
           continue;
         }
         counts.fill(0);
-        let opaqueN = 0, transN = 0, emptyN = 0;
+        countsAll.fill(0);
+        let opaqueN = 0, transN = 0, emptyN = 0, exactN = 0;
         // Representative for a translucent-dominated block: the sample with the
         // highest alpha (uniform halos make any sample equivalent).
         let repA = 0, repR = 0, repG = 0, repB = 0;
@@ -695,15 +804,23 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
             if (a < 8) { emptyN++; continue; }
             if (a >= 128) {
               opaqueN++;
-              counts[nearest(src[si], src[si + 1], src[si + 2])]++;
+              const e = nearest(src[si], src[si + 1], src[si + 2]);
+              countsAll[e >> 1]++;
+              if (e & 1) { counts[e >> 1]++; exactN++; }
             } else {
               transN++;
               if (keepTranslucent && a > repA) { repA = a; repR = src[si]; repG = src[si + 1]; repB = src[si + 2]; }
             }
           }
         }
+        // Winner among EXACT hits when the block has any — an off-palette blend
+        // (the AA hairline where a stroke crosses a fill) then can't outvote the
+        // real surfaces it sits between, even when a palette colour happens to
+        // lie near the blend (grey bezel dots vs a white↔dark seam). Blocks with
+        // no exact hit (textures, all-blend slivers) fall back to nearest-snap.
+        const voteCounts = exactN > 0 ? counts : countsAll;
         let win = -1, wc = 0;
-        for (let p = 0; p < P; p++) { if (counts[p] > wc) { wc = counts[p]; win = p; } }
+        for (let p = 0; p < P; p++) { if (voteCounts[p] > wc) { wc = voteCounts[p]; win = p; } }
         if (keepTranslucent) {
           // Three-way majority: opaque > translucent > empty.
           if (opaqueN > 0 && opaqueN >= transN && opaqueN >= emptyN) {
@@ -716,12 +833,20 @@ export function pixelateCanvas(ctx: CanvasRenderingContext2D, cssW: number, cssH
           }
         } else {
           // Two-way: opaque palette colour, else transparent (hard silhouette).
+          // Drop to transparent only when transparent samples outnumber ALL
+          // opaque samples — not just the winning colour's count. Comparing
+          // against `wc` alone punched pinholes through blocks that straddle a
+          // fill↔stroke seam at the silhouette edge: majority-opaque, but the
+          // opaque vote split between the two colours and lost to a
+          // transparent minority. Pure-edge blocks (one colour vs outside) are
+          // unchanged: there wc === opaqueN.
           const trans = transN + emptyN;
-          if (win < 0 || trans > wc) { od[oi + 3] = 0; }
+          if (win < 0 || trans > opaqueN) { od[oi + 3] = 0; }
           else { const w3 = win * 3; od[oi] = pal[w3]; od[oi + 1] = pal[w3 + 1]; od[oi + 2] = pal[w3 + 2]; od[oi + 3] = 255; }
         }
       }
     }
+    if (!keepTranslucent) fillEnclosedPinholes(od, sw, sh);
     tctx.putImageData(out, 0, 0);
   } else {
     // No palette → point-sampled hard nearest (fast; flat-shape silhouettes only).
@@ -1153,7 +1278,15 @@ export function paintWheel(
     };
     for (const it of items) add(it.color);
     add(wheelBaseColor);
-    add('#808080'); // rough backing fill used in the no-stroke/no-round bg case
+    // Grey backing fill — only painted in the no-stroke/no-round bg case, so
+    // only offer it to the vote then. Unconditionally adding it gave the
+    // white↔dark-fill seam blends a mid-grey to snap to, which won the vote in
+    // blocks straddling a divider → grey specks along those seams.
+    if (strokeWidth === 0 && cornerRadius === 0 && showBackgroundCircle) add('#808080');
+    const dotColors = outerStrokeDots
+      ? bezelDotPaletteColors(config.bezelDotsColorMode, wheelBaseColor, config.bezelDotsCustomColor, items)
+      : [];
+    for (const c of dotColors) add(c);
     if (overlayOpacity > 0) {
       // Win overlay dims everything toward overlayColor by a = opacity*0.7. Add
       // those dimmed variants so the win state quantises hard too (the winning
@@ -1161,6 +1294,7 @@ export function paintWheel(
       const a = overlayOpacity * 0.7;
       for (const it of items) add(lerpColor(it.color, overlayColor, a));
       add(lerpColor(wheelBaseColor, overlayColor, a));
+      for (const c of dotColors) add(lerpColor(c, overlayColor, a));
       add(overlayColor);
     }
   }
