@@ -1344,10 +1344,10 @@ export default function RouletteScreen({
   const SPIN_SHEET_RISE = 12;
   const SPIN_H = buttonH + SPIN_SHEET_RISE + 12; // sheet(rise) + spin button + margin (12)
   // App bar (54, nudged down 12 → occupies to ~66) + room for the wheel's
-  // top marker overhang, so the wheel reads vertically centred instead of
-  // riding too high. Shared by the layout AND wheelStateAt's algebra, so the
-  // sheet snap math stays exact.
-  const APP_BAR_PAD = 78;
+  // top marker overhang, so the wheel+marker group reads vertically centred
+  // instead of riding too high. Shared by the layout AND wheelStateAt's
+  // algebra, so the sheet snap math stays exact.
+  const APP_BAR_PAD = 88;
   const bottomControlsHeight = 96;
   const grabbingHeight = 30;
   const midSnap = isMobile ? 380 : 400;
