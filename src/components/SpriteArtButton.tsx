@@ -41,14 +41,25 @@ const R_PRESS = 3;      // face drop — pressed face bottom = shadow bottom
 const R_CAP = CAP / PILL_DOWN;        // 12
 // Label face: cozy rounded Baloo 2 (self-hosted, see index.css). Drawn at
 // sprite res and palette-snapped, so it pixellates with the art; the LoRes
-// pixel face is the fallback while it loads.
+// pixel face is the fallback while it loads. Used only for labels that have
+// no hand-drawn letter sprites (see LETTER_SPRITES).
 const LABEL_FONT = "'Baloo 2', 'LoRes9OTWide-Bold'";
 const LABEL_WEIGHT = 700;
-// Second warp layer on the label: extra baseline-anchored lift per 2-px
-// slice, 0..WARP2_AMP render px from a stable hash. Change WARP2_SEED for a
-// different irregularity pattern.
-const WARP2_AMP = 1.6;
-const WARP2_SEED = 3;
+// Hand-drawn letter art for the SPIN label (~35×45 native px, authored at 2×
+// the render grid like the pill — drawn downsampled by PILL_DOWN). When every
+// character of a label has an entry the label renders from these sprites
+// (bottom-aligned, kerned, no warp — the art carries its own character);
+// otherwise it falls back to the Baloo 2 font path.
+const LETTER_SPRITES: Record<string, string> = {
+  S: '/images/letter-s.png',
+  P: '/images/letter-p.png',
+  I: '/images/letter-i.png',
+  N: '/images/letter-n.png',
+};
+// Per-pair kerning tweaks for the sprite letters (render px added to the base
+// gap between the pair) — the I art carries left padding, so it tucks in
+// closer after the P.
+const PAIR_KERN: Record<string, number> = { SP: -1, PI: -2 };
 
 // ── Image loading (module-wide, once per URL) ─────────────────────────────
 const imgCache = new Map<string, HTMLImageElement>();
@@ -68,7 +79,7 @@ function loadSprite(url: string): Promise<HTMLImageElement> {
 }
 // Warm the spin-row sprites at module load so the first paint doesn't flash.
 if (typeof window !== 'undefined') {
-  for (const u of [PILL_TOP_URL, PILL_SHADOW_URL]) loadSprite(u).catch(() => {});
+  for (const u of [PILL_TOP_URL, PILL_SHADOW_URL, ...Object.values(LETTER_SPRITES)]) loadSprite(u).catch(() => {});
 }
 
 // Recoloured copy of a pill sprite per base colour. Every opaque pixel is a
@@ -201,7 +212,7 @@ export function SpritePillButton({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([loadSprite(PILL_TOP_URL), loadSprite(PILL_SHADOW_URL)])
+    Promise.all([PILL_TOP_URL, PILL_SHADOW_URL, ...Object.values(LETTER_SPRITES)].map(u => loadSprite(u)))
       .then(() => { if (!cancelled) setAssetsTick(t => t + 1); })
       .catch(() => {});
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
@@ -258,16 +269,14 @@ export function SpritePillButton({
     blitPill(ctx, shadow, W, 0);
     blitPill(ctx, top, W, yOff);
 
-    // ── Label — Baloo 2, GROUP arch warp with a FLAT BASE, palette-snapped
-    // (no AA). Letters are laid out by hand (own advance + kerning gap) on
-    // one baseline on a scratch layer, then the word is re-blitted in 2-px
-    // slices, each VERTICALLY STRETCHED anchored at the baseline by a
-    // parabola over the word's span — letter bottoms stay on a straight line
-    // while the tops rise into one continuous arch (offsetting whole slices
-    // bowed the word's underside too, which read as an arc floating under the
-    // text). Wave-burst offsets shift whole letters during the periodic
-    // stagger bob. All geometry is whole render px; the palette snap below
-    // hardens the glyph AA into hard pixels.
+    // ── Label — hand-drawn LETTER SPRITES when every character has one (see
+    // LETTER_SPRITES): each ~35×45 letter draws 2×-downsampled onto the
+    // render grid, bottom-aligned on a flat base, kerned by `letterSpacing`,
+    // with the wave-burst offsets shifting whole letters during the periodic
+    // stagger bob. No warp — the art carries its own hand-drawn character.
+    // Labels without sprite coverage fall back to Baloo 2 with the uniform
+    // baseline-anchored stretch. Either way the palette snap below hardens
+    // every edge into hard pixels.
     if (label) {
       const pre = ctx.getImageData(0, 0, W, R_PILL_H);
       const seen = new Set<number>();
@@ -278,50 +287,62 @@ export function SpritePillButton({
       seen.add((tRgb[0] << 16) | (tRgb[1] << 8) | tRgb[2]);
       const pal = [...seen].map(v => [(v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF]);
 
-      const fontPx = Math.max(5, Math.round(fontSize / (scaleCss * PILL_DOWN)));
-      const arch = Math.max(1, Math.round(fontPx * 0.14)); // word arch height
       const kern = Math.max(1, Math.round(letterSpacing / (scaleCss * PILL_DOWN)));
-      if (!labelRef.current) labelRef.current = document.createElement('canvas');
-      const lab = labelRef.current;
-      if (lab.width !== W || lab.height !== R_PILL_H) { lab.width = W; lab.height = R_PILL_H; }
-      const lctx = lab.getContext('2d')!;
-      lctx.setTransform(1, 0, 0, 1, 0, 0);
-      lctx.clearRect(0, 0, W, R_PILL_H);
-      lctx.fillStyle = textColor;
-      lctx.font = `${LABEL_WEIGHT} ${fontPx}px ${LABEL_FONT}, monospace`;
-      lctx.textAlign = 'left';
-      lctx.textBaseline = 'alphabetic';
-      // Vertical centre from the whole word's measured glyph box ('middle'
-      // trusts font metrics, which sat Baloo 2 visibly off-centre); +arch/2
-      // compensates the domes lifting every letter's middle.
-      const met = lctx.measureText(label);
-      const asc = met.actualBoundingBoxAscent || fontPx * 0.7;
-      const desc = met.actualBoundingBoxDescent || 0;
-      const baseY = Math.round(yOff + R_FACE_H / 2 + arch / 2 + (asc - desc) / 2);
       const chars = [...label];
-      const widths = chars.map(c => lctx.measureText(c).width);
-      const total = widths.reduce((s, w) => s + w, 0) + kern * (chars.length - 1);
       const waveOffs = wave ? wave.split(',').map(Number) : [];
-      const startX = W / 2 - total / 2;
-      let x = startX;
-      for (let i = 0; i < chars.length; i++) {
-        lctx.fillText(chars[i], Math.round(x), baseY + (waveOffs[i] || 0));
-        x += widths[i] + kern;
-      }
-      // UNIFORM warp, flat base: the whole text band stretches vertically by
-      // `arch`, anchored at the baseline — every letter grows the same
-      // amount, bottoms stay on a straight line, no curve across the word
-      // (arched profiles read misaligned/sheared on this label). A SECOND
-      // warp layer rides on top: the same baseline-anchored stretch, but its
-      // extra lift varies per 2-px slice from a stable hash (WARP2_SEED) —
-      // a subtle hand-drawn irregularity along the top edge only.
-      const bandTop = Math.max(0, baseY - Math.ceil(asc) - 4);
-      const bandH = Math.min(R_PILL_H, baseY + 4) - bandTop;
-      const bx0 = Math.floor(startX) - 2, bx1 = Math.ceil(startX + total) + 2;
-      for (let sx = bx0; sx < bx1; sx += 2) {
-        const h = Math.sin((sx - bx0) / 2 * 12.9898 + WARP2_SEED * 78.233) * 43758.5453;
-        const lift = arch + Math.round((h - Math.floor(h)) * WARP2_AMP);
-        ctx.drawImage(lab, sx, bandTop, 2, bandH, sx, bandTop - lift, 2, bandH + lift);
+      const sprites = chars.map(c => {
+        const url = LETTER_SPRITES[c.toUpperCase()];
+        return url ? imgCache.get(url) : undefined;
+      });
+
+      if (sprites.every(Boolean)) {
+        const dims = sprites.map(im => ({ w: Math.round(im!.width / PILL_DOWN), h: Math.round(im!.height / PILL_DOWN) }));
+        const maxH = Math.max(...dims.map(d => d.h));
+        const gap = (i: number) => kern + (PAIR_KERN[(chars[i] + chars[i + 1] || '').toUpperCase()] || 0);
+        let total = dims.reduce((s, d) => s + d.w, 0);
+        for (let i = 0; i < chars.length - 1; i++) total += gap(i);
+        let x = Math.round(W / 2 - total / 2);
+        const top0 = yOff + Math.round((R_FACE_H - maxH) / 2);
+        for (let i = 0; i < chars.length; i++) {
+          const im = sprites[i]!;
+          const d = dims[i];
+          ctx.drawImage(im, 0, 0, im.width, im.height, x, top0 + (maxH - d.h) + (waveOffs[i] || 0), d.w, d.h);
+          x += d.w + gap(i);
+        }
+      } else {
+        const fontPx = Math.max(5, Math.round(fontSize / (scaleCss * PILL_DOWN)));
+        const arch = Math.max(1, Math.round(fontPx * 0.14)); // uniform stretch height
+        if (!labelRef.current) labelRef.current = document.createElement('canvas');
+        const lab = labelRef.current;
+        if (lab.width !== W || lab.height !== R_PILL_H) { lab.width = W; lab.height = R_PILL_H; }
+        const lctx = lab.getContext('2d')!;
+        lctx.setTransform(1, 0, 0, 1, 0, 0);
+        lctx.clearRect(0, 0, W, R_PILL_H);
+        lctx.fillStyle = textColor;
+        lctx.font = `${LABEL_WEIGHT} ${fontPx}px ${LABEL_FONT}, monospace`;
+        lctx.textAlign = 'left';
+        lctx.textBaseline = 'alphabetic';
+        // Vertical centre from the whole word's measured glyph box ('middle'
+        // trusts font metrics, which sat Baloo 2 visibly off-centre); +arch/2
+        // compensates the stretch lifting the letters' tops.
+        const met = lctx.measureText(label);
+        const asc = met.actualBoundingBoxAscent || fontPx * 0.7;
+        const desc = met.actualBoundingBoxDescent || 0;
+        const baseY = Math.round(yOff + R_FACE_H / 2 + arch / 2 + (asc - desc) / 2);
+        const widths = chars.map(c => lctx.measureText(c).width);
+        const total = widths.reduce((s, w) => s + w, 0) + kern * (chars.length - 1);
+        const startX = W / 2 - total / 2;
+        let x = startX;
+        for (let i = 0; i < chars.length; i++) {
+          lctx.fillText(chars[i], Math.round(x), baseY + (waveOffs[i] || 0));
+          x += widths[i] + kern;
+        }
+        // Uniform warp, flat base: the text band stretches vertically by
+        // `arch`, anchored at the baseline.
+        const bandTop = Math.max(0, baseY - Math.ceil(asc) - 4);
+        const bandH = Math.min(R_PILL_H, baseY + 4) - bandTop;
+        const bx0 = Math.floor(startX) - 2, bx1 = Math.ceil(startX + total) + 2;
+        ctx.drawImage(lab, bx0, bandTop, bx1 - bx0, bandH, bx0, bandTop - arch, bx1 - bx0, bandH + arch);
       }
 
       const post = ctx.getImageData(0, 0, W, R_PILL_H);

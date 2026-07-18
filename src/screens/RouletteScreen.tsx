@@ -10,7 +10,7 @@ import { PixelCard } from '../components/PixelCard';
 import { PIXEL_BLOCKS, spriteScaleFor } from '../components/WheelCanvas';
 import { withAlpha } from '../utils/colorUtils';
 import { ON_SURFACE, PRIMARY, BORDER, BG, SURFACE, SURFACE_ELEVATED } from '../utils/constants';
-import { ArrowLeft, Shuffle, Sparkles, Play, Square, X, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Shuffle, Sparkles, Play, Square, Undo2, Redo2, Plus, Paintbrush, Settings as SettingsIcon, LayoutGrid, List, Trash2, Copy, CopyPlus, ClipboardPaste, Pencil, ChevronLeft, ChevronRight } from 'lucide-react';
 import DraggableSheet from '../components/DraggableSheet';
 import SnappingSheet, { SHEET_EASE, SHEET_EASE_BOUNCE } from '../components/SnappingSheet';
 import { isAnyCellSwipeDragActive } from '../components/SwipeableActionCell';
@@ -1575,10 +1575,11 @@ export default function RouletteScreen({
         backgroundColor,
         overflow: 'hidden',
       }}>
-        {/* App bar — fixed at top, always fully visible. */}
+        {/* App bar — fixed at top, always fully visible. Nudged down a touch
+            so the oversized bare sprites + title sit lower on the screen. */}
         <div style={{
           position: 'absolute',
-          top: 0,
+          top: 12,
           left: 0,
           right: 0,
           display: 'flex',
@@ -1587,8 +1588,10 @@ export default function RouletteScreen({
           zIndex: 10,
           height: 54,
         }}>
-          <CircleIconButton
+          <SpriteBarButton
             ariaLabel="Close editor"
+            src="/images/exit.png"
+            style={{ marginTop: 10 }}
             onClick={() => {
               if (isClosing) return; // ignore double-taps during the exit animation
               flushAutoSave();
@@ -1605,9 +1608,7 @@ export default function RouletteScreen({
                 }
               }, 260);
             }}
-          >
-            <X size={22} color="#FFFFFF" strokeWidth={2.5} />
-          </CircleIconButton>
+          />
           <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0, padding: '0 6px' }}>
           <AppBarTitleInput
             value={titleIsFlow ? flowExperience!.name : editorHistory.state.name}
@@ -1650,9 +1651,7 @@ export default function RouletteScreen({
               </CircleIconButton>
             )}
             {!isPlayMode && onRequestPublish && (
-              <CircleIconButton ariaLabel="Publish & settings" onClick={() => { flushAutoSave(); onRequestPublish(); }}>
-                <Share2 size={22} color="#FFFFFF" strokeWidth={2.5} />
-              </CircleIconButton>
+              <SpriteBarButton ariaLabel="Publish & settings" src="/images/send.png" onClick={() => { flushAutoSave(); onRequestPublish(); }} />
             )}
           </div>
         </div>
@@ -1891,7 +1890,7 @@ export default function RouletteScreen({
                     padding). Pill renders 1.1× and nudged down a touch. */}
                 <div style={{ position: 'relative', zIndex: 1, display: 'flex', height: buttonH, width: '100%', alignItems: 'center' }}>
                   <SpriteIconButton src="/images/wheels.png" onTap={() => setPickerOpen(v => !v)} box={buttonH} pixelScale={buttonArtScale} zoom={1.15} offsetY={Math.round(4 * buttonArtScale)} style={{ flexShrink: 0 }} />
-                  <SpritePillButton color={PRIMARY} onTap={() => { shakeScreen(); wheelRef.current?.spin(); }} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.7)} letterSpacing={Math.round(6 * buttonArtScale)} waveLabel={!wheelSpinning} pixelScale={buttonArtScale} zoom={1} offsetY={Math.round(6 * buttonArtScale)} style={{ flex: 1, minWidth: 0, margin: '0 3px 0 12px' }} />
+                  <SpritePillButton color={PRIMARY} onTap={() => { shakeScreen(); wheelRef.current?.spin(); }} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.7)} letterSpacing={Math.round(4 * buttonArtScale)} waveLabel={!wheelSpinning} pixelScale={buttonArtScale} zoom={1} offsetY={Math.round(6 * buttonArtScale)} style={{ flex: 1, minWidth: 0, margin: '0 3px 0 12px' }} />
                   <SpriteIconButton
                     src="/images/edit.png"
                     // Toggle the edit sheet at its TOP scroll position — same
@@ -2613,24 +2612,58 @@ function AppBarTitleInput({
       // `size` tracks the text length so the pill hugs its content (capped by
       // maxWidth so a long name can't shove the side buttons off the bar).
       size={Math.max((draft || placeholder).length, 4)}
+      // Bare text — no pill container, matching the containerless sprite
+      // buttons beside it.
       style={{
         maxWidth: '100%',
         minWidth: 0,
         boxSizing: 'border-box',
-        height: 44,
-        padding: '0 18px',
-        fontSize: 17,
+        height: 48,
+        padding: '0 8px',
+        fontSize: 26,
         fontWeight: 800,
         fontFamily: 'inherit',
         textAlign: 'center',
         color: '#FFFFFF',
-        background: 'rgba(255,255,255,0.06)',
-        border: '1.5px solid rgba(255,255,255,0.22)',
-        borderRadius: 999,
+        background: 'none',
+        border: 'none',
         outline: 'none',
         cursor: 'text',
       }}
     />
+  );
+}
+
+// Bare sprite button for the top app bar — no bezel/container, just the
+// hand-drawn icon art (75×75 native px) shown large with a pixelated
+// downsample and a small press nudge.
+function SpriteBarButton({ onClick, ariaLabel, src, style }: {
+  onClick?: () => void;
+  ariaLabel: string;
+  src: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={ariaLabel}
+      style={{
+        width: 75,
+        height: 75,
+        padding: 0,
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        WebkitTapHighlightColor: 'transparent',
+        ...style,
+      }}
+    >
+      <img src={src} alt="" style={{ width: 75, height: 75, imageRendering: 'pixelated', pointerEvents: 'none' }} />
+    </button>
   );
 }
 

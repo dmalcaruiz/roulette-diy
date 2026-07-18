@@ -2025,6 +2025,25 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             }}
           />
         </div>
+        {/* Top pointer — hand-drawn V marker (public/images/wheelmarker.png,
+            51×54 native art at 1 css px per sprite px, same convention as the
+            spin-row sprites). Sits at the wheel's top centre with its tip
+            dipping into the rim, marking where the winning segment lands. */}
+        <img
+          src="/images/wheelmarker.png"
+          alt=""
+          style={{
+            position: 'absolute',
+            top: -34,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 64,
+            height: 68,
+            imageRendering: 'pixelated',
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        />
         {/* Center marker */}
         <div style={{
           position: 'absolute',
