@@ -331,6 +331,7 @@ export { roughSeedFromId } from './WheelCanvas';
 import { onVisualLoaded } from './segmentVisuals';
 import CustomMarker from './CustomMarker';
 import PixelatedMarker from './PixelatedMarker';
+import WheelTopMarker from './WheelTopMarker';
 import DotCelebration, { DotCelebrationHandle } from './DotCelebration';
 
 // Evaluate a CSS cubic-bezier(x1,y1,x2,y2) timing function in JS, so audio
@@ -2025,25 +2026,22 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
             }}
           />
         </div>
-        {/* Top pointer — hand-drawn V marker (public/images/wheelmarker.png,
-            51×54 native art at 1 css px per sprite px, same convention as the
-            spin-row sprites). Sits at the wheel's top centre with its tip
-            dipping into the rim, marking where the winning segment lands. */}
-        <img
-          src="/images/wheelmarker.png"
-          alt=""
-          style={{
-            position: 'absolute',
-            top: -34,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 64,
-            height: 68,
-            imageRendering: 'pixelated',
-            pointerEvents: 'none',
-            zIndex: 2,
-          }}
-        />
+        {/* Top pointer — hand-drawn V marker with the centre marker's
+            layered-shadow treatment (halos + dropped body, see
+            WheelTopMarker). Sits at the wheel's top centre with its tip
+            dipping into the rim, marking where the winning segment lands.
+            The component pads itself for the halos, so the offset backs the
+            padding out to keep the sprite where the plain img sat. */}
+        <div style={{
+          position: 'absolute',
+          top: -34 - 18, // −(marker offset) − WheelTopMarker's internal PAD
+          left: '50%',
+          transform: 'translateX(-50%)',
+          pointerEvents: 'none',
+          zIndex: 2,
+        }}>
+          <WheelTopMarker width={64} height={68} />
+        </div>
         {/* Center marker */}
         <div style={{
           position: 'absolute',
