@@ -1,0 +1,600 @@
+<title>BOTONES PIXEL — button construction inspector</title>
+<style>
+  @font-face {
+    font-family: 'LoRes9';
+    src: url('data:font/woff2;base64,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') format('woff2');
+    font-weight: 700;
+    font-display: swap;
+  }
+
+  :root {
+    --ground:   #12141b;
+    --panel:    #191c25;
+    --panel-2:  #212533;
+    --line:     #2c3142;
+    --ink:      #e9edf6;
+    --ink-dim:  #99a2b8;
+    --ink-faint:#606a80;
+    --accent:   #00c0fe;   /* the sprite's own fill cyan */
+    --accent-2: #38bdf8;   /* PRIMARY — the app's recolor target */
+    --checker-bg: #171a22;
+    --checker:    #1f2330;
+
+    /* fixed sprite-palette references (the art itself, never themed) */
+    --sp-fill:  #00c0fe;
+    --sp-shade: #286cca;
+    --sp-glint: #2c9498;
+    --sp-stroke:#1f263e;
+    --sp-hi:    #ffffff;
+
+    --maxw: 1180px;
+    --r: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:   #e9edf4;
+      --panel:    #ffffff;
+      --panel-2:  #f3f6fb;
+      --line:     #d6dce8;
+      --ink:      #171d2b;
+      --ink-dim:  #556074;
+      --ink-faint:#8a93a6;
+      --accent:   #0092c8;
+      --accent-2: #0284c7;
+      --checker-bg: #dfe4ee;
+      --checker:    #eef1f7;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#12141b; --panel:#191c25; --panel-2:#212533; --line:#2c3142;
+    --ink:#e9edf6; --ink-dim:#99a2b8; --ink-faint:#606a80;
+    --accent:#00c0fe; --accent-2:#38bdf8; --checker-bg:#171a22; --checker:#1f2330;
+  }
+  :root[data-theme="light"] {
+    --ground:#e9edf4; --panel:#ffffff; --panel-2:#f3f6fb; --line:#d6dce8;
+    --ink:#171d2b; --ink-dim:#556074; --ink-faint:#8a93a6;
+    --accent:#0092c8; --accent-2:#0284c7; --checker-bg:#dfe4ee; --checker:#eef1f7;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas { image-rendering: pixelated; display: block; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  .pixel { font-family: 'LoRes9', ui-monospace, monospace; font-weight: 700; }
+  .mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+
+  /* ── Masthead ───────────────────────────────────────────── */
+  header.mast {
+    border-bottom: 1px solid var(--line);
+    background:
+      radial-gradient(120% 140% at 88% -20%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+      var(--panel);
+  }
+  .mast-inner { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px 40px; padding: 40px 24px 30px; max-width: var(--maxw); margin: 0 auto; }
+  .mast h1 {
+    font-family: 'LoRes9', monospace;
+    font-weight: 700;
+    margin: 0;
+    font-size: clamp(30px, 6vw, 58px);
+    line-height: 0.92;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  .mast h1 .cy { color: var(--accent); }
+  .mast .sub { margin: 8px 0 0; color: var(--ink-dim); font-size: 15px; max-width: 46ch; }
+  .mast .meta { margin-left: auto; display: grid; grid-template-columns: auto auto; gap: 4px 16px; font-size: 12.5px; align-content: end; }
+  .mast .meta dt { color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.08em; font-size: 10.5px; }
+  .mast .meta dd { margin: 0; color: var(--ink); }
+
+  /* ── Section scaffold ───────────────────────────────────── */
+  section { padding: 52px 0; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    font-family: 'LoRes9', monospace;
+    font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 6px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before { content: ""; width: 22px; height: 2px; background: var(--accent); display: inline-block; }
+  h2.sec { font-size: clamp(22px, 3vw, 30px); margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { color: var(--ink-dim); margin: 0 0 28px; max-width: 66ch; }
+
+  /* ── Checker surface ────────────────────────────────────── */
+  .checker {
+    background-color: var(--checker-bg);
+    background-image:
+      linear-gradient(45deg, var(--checker) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--checker) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--checker) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--checker) 75%);
+    background-size: 14px 14px;
+    background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+  }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
+  .pad { padding: 20px; }
+
+  /* Sheet hero */
+  .sheet-stage { display: flex; flex-wrap: wrap; gap: 28px; align-items: center; }
+  .sheet-frame { border: 1px solid var(--line); border-radius: var(--r); padding: 22px; display: inline-flex; }
+  .sheet-side { flex: 1; min-width: 240px; }
+  .sheet-side p { color: var(--ink-dim); margin: 0 0 16px; font-size: 14.5px; }
+
+  /* ── Palette legend ─────────────────────────────────────── */
+  .legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; }
+  .swatch-row { display: flex; align-items: center; gap: 13px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .chip { width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0; border: 1px solid rgba(128,128,128,0.28); }
+  .swatch-row .nm { font-weight: 650; font-size: 14px; }
+  .swatch-row .role { color: var(--ink-dim); font-size: 12px; }
+  .swatch-row .hex { margin-left: auto; font-size: 11.5px; color: var(--ink-faint); }
+  .tag { display: inline-block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-dim); }
+  .tag.dyn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .tag.fix { color: var(--ink-faint); }
+
+  /* ── Tile atlas ─────────────────────────────────────────── */
+  .layers { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+  .layer { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--panel); }
+  .layer-head { display: flex; align-items: baseline; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
+  .layer-head .k { font-family: 'LoRes9', monospace; font-size: 15px; letter-spacing: 0.04em; }
+  .layer-head .desc { color: var(--ink-dim); font-size: 12px; margin-left: auto; text-align: right; }
+  .layer-framezone { display: flex; justify-content: center; padding: 22px; }
+  .tiles-strip { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 16px 18px; }
+  .tile-cell { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .tile-cell .tc-canvas { border-radius: 5px; border: 1px solid var(--line); }
+  .tile-cell .tc-name { font-family: 'LoRes9', monospace; font-size: 11px; color: var(--ink); letter-spacing: 0.03em; }
+  .tile-cell .tc-xy { font-size: 10px; color: var(--ink-faint); font-family: ui-monospace, monospace; }
+  .mirror-note { padding: 0 16px 16px; color: var(--ink-faint); font-size: 11.5px; display: flex; align-items: center; gap: 7px; }
+  .mirror-note svg { flex-shrink: 0; }
+
+  /* ── Assembly ───────────────────────────────────────────── */
+  .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+  .stage { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--panel); }
+  .stage .stage-view { display: flex; justify-content: center; padding: 22px 16px; }
+  .stage .stage-cap { border-top: 1px solid var(--line); padding: 11px 14px; }
+  .stage .stage-cap .n { font-family: 'LoRes9', monospace; font-size: 12px; color: var(--accent); }
+  .stage .stage-cap .t { font-size: 12.5px; color: var(--ink-dim); margin-top: 2px; }
+
+  /* ── Live playground ────────────────────────────────────── */
+  .play { display: grid; grid-template-columns: 320px 1fr; gap: 24px; align-items: start; }
+  .controls { display: flex; flex-direction: column; gap: 18px; }
+  .control label { display: block; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 8px; }
+  .control .val { color: var(--accent); font-family: ui-monospace, monospace; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=color] { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); cursor: pointer; padding: 4px; }
+  .swatch-presets { display: flex; gap: 8px; margin-top: 10px; }
+  .preset { width: 30px; height: 30px; border-radius: 6px; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+  .preset[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 2px var(--accent); }
+  .toggle-row { display: flex; gap: 10px; }
+  .tbtn { flex: 1; padding: 9px 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-dim); border-radius: 8px; cursor: pointer; font: inherit; font-size: 13px; }
+  .tbtn[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); }
+
+  .stage-live { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+  .stage-live .rowlabel { display: flex; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-dim); }
+  .stage-live .rowlabel .pixel { color: var(--ink); font-size: 13px; }
+  .live-grid { display: grid; grid-template-columns: 1fr 1fr; }
+  .live-cell { padding: 30px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .live-cell + .live-cell { border-left: 1px solid var(--line); }
+  .live-cell .cap { font-family: 'LoRes9', monospace; font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; }
+  .zoomstrip { padding: 22px; display: flex; justify-content: center; border-top: 1px solid var(--line); }
+
+  .foot { color: var(--ink-faint); font-size: 13px; padding: 34px 0 60px; }
+  .foot .pixel { color: var(--ink-dim); }
+  .foot code { font-family: ui-monospace, monospace; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  @media (max-width: 720px) {
+    .play { grid-template-columns: 1fr; }
+    .mast .meta { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .preset, .tbtn, .swatch-row { transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease; }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+
+<header class="mast">
+  <div class="mast-inner">
+    <div>
+      <h1>BOTONES <span class="cy">PIXEL</span></h1>
+      <p class="sub">How the spin-row button is built from one hand-drawn sprite sheet — every tile, every layer, every stage of assembly.</p>
+    </div>
+    <dl class="meta">
+      <dt>Source</dt><dd class="mono">BOTONES&nbsp;PIXEL.png</dd>
+      <dt>Sheet</dt><dd class="mono">58 × 28 px</dd>
+      <dt>Grid</dt><dd class="mono">9-slice · corner 6 · edge 3</dd>
+      <dt>Component</dt><dd class="mono">SpriteButton.tsx</dd>
+    </dl>
+  </div>
+</header>
+
+<main>
+  <!-- The sheet -->
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">The atlas</p>
+      <h2 class="sec">One sheet, every part</h2>
+      <p class="lede">The whole button lives in this 58×28 image: a drag handle and text-box tiles on the left, then five 9-slice layers — stroke, highlight, fill, shade, and shade-glint — packed side by side. Shown at 10× on a transparency checker so you can read individual pixels.</p>
+      <div class="sheet-stage">
+        <div class="sheet-frame checker"><canvas id="sheet"></canvas></div>
+        <div class="sheet-side">
+          <p>Transparent pixels are the checker; solid pixels are the art. The cyan block is the recolorable fill placeholder — at runtime it becomes the button's base color, with the blue and teal peek tones derived from it.</p>
+          <div class="toggle-row" style="max-width:280px">
+            <button class="tbtn" id="gridToggle" aria-pressed="false">Pixel grid</button>
+            <button class="tbtn" id="regionToggle" aria-pressed="false">Label regions</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Palette -->
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Palette</p>
+      <h2 class="sec">Five inks, two of them dynamic</h2>
+      <p class="lede">Only the placeholder colors change at runtime. The fill drives the button's base; the shade and glint are recomputed from it in OKLCH so any button color keeps the artist's peek relationships. Stroke, highlight, and the checker never change.</p>
+      <div class="legend" id="legend"></div>
+    </div>
+  </section>
+
+  <!-- Tile atlas by layer -->
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Tiles</p>
+      <h2 class="sec">Each layer is a 9-slice frame</h2>
+      <p class="lede">A layer draws four 6×6 corners and repeats 3-px edge tiles between them, so the button stretches to any width without distortion. Only the west side is stored — the east mirrors it. Below each layer's assembled frame are its unique source tiles with sheet coordinates.</p>
+      <div class="layers" id="layers"></div>
+    </div>
+  </section>
+
+  <!-- Assembly -->
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Assembly</p>
+      <h2 class="sec">Stacked bottom to top</h2>
+      <p class="lede">The peek (shade + glint) is laid first and anchored to the bottom, then the face — fill, highlight — sits on top, and finally the stroke wraps the whole silhouette so the outline is unbroken. The label is drawn last in the LoRes9 pixel face. Shown recolored to the app's PRIMARY.</p>
+      <div class="stages" id="stages"></div>
+    </div>
+  </section>
+
+  <!-- Live -->
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Playground</p>
+      <h2 class="sec">Test a change</h2>
+      <p class="lede">Recolor, resize, and press the button to see exactly what ships. Everything here runs the same composition the component does. Use it to pin down a change before you describe it.</p>
+      <div class="play">
+        <div class="controls card pad">
+          <div class="control">
+            <label for="colorInput">Base color <span class="val" id="colorVal">#38BDF8</span></label>
+            <input type="color" id="colorInput" value="#38bdf8">
+            <div class="swatch-presets" id="presets"></div>
+          </div>
+          <div class="control">
+            <label for="widthInput">Width <span class="val" id="widthVal">128 px</span></label>
+            <input type="range" id="widthInput" min="40" max="240" value="128" step="1">
+          </div>
+          <div class="control">
+            <label for="depthInput">Peek depth <span class="val" id="depthVal">2 px</span></label>
+            <input type="range" id="depthInput" min="0" max="6" value="2" step="1">
+          </div>
+          <div class="control">
+            <label for="fillHeight">Face height <span class="val" id="fillVal">40 px</span></label>
+            <input type="range" id="fillHeight" min="24" max="72" value="40" step="1">
+          </div>
+          <div class="control">
+            <label>Density (sprite px → screen px) <span class="val" id="scaleVal">3×</span></label>
+            <input type="range" id="scaleInput" min="2" max="8" value="3" step="1">
+          </div>
+        </div>
+        <div class="stage-live">
+          <div class="rowlabel"><span class="pixel">Live render</span><span id="dimReadout" class="mono"></span></div>
+          <div class="live-grid checker">
+            <div class="live-cell"><canvas id="liveRest"></canvas><span class="cap">REST</span></div>
+            <div class="live-cell"><canvas id="livePressed"></canvas><span class="cap">PRESSED</span></div>
+          </div>
+          <div class="zoomstrip checker"><canvas id="liveZoom"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap foot">
+    <span class="pixel">To suggest a change,</span> point at a tile by its sheet coordinate (e.g. <code>fill&nbsp;sw&nbsp;31,22 6×6</code>) or a construction rule (peek depth, stroke coverage, layer order). I'll edit <code>SpriteButton.tsx</code> and re-render here.
+  </div>
+</main>
+
+<script>
+const IMG_SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADoAAAAcCAYAAAAwTqwDAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAKUmlUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4gPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgOS4xLWMwMDIgNzkuZGJhM2RhMywgMjAyMy8xMi8xMy0wNTowNjo0OSAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp0aWZmPSJodHRwOi8vbnMuYWRvYmUuY29tL3RpZmYvMS4wLyIgeG1sbnM6ZXhpZj0iaHR0cDovL25zLmFkb2JlLmNvbS9leGlmLzEuMC8iIHhtbG5zOmRjPSJodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLyIgeG1sbnM6cGhvdG9zaG9wPSJodHRwOi8vbnMuYWRvYmUuY29tL3Bob3Rvc2hvcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RFdnQ9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZUV2ZW50IyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIDI1LjYgKFdpbmRvd3MpIiB4bXA6TW9kaWZ5RGF0ZT0iMjAyNi0wNy0xN1QwOTozNjoxNy0wNTowMCIgeG1wOkNyZWF0ZURhdGU9IjIwMjYtMDctMTZUMjM6NDU6MTctMDU6MDAiIHhtcDpNZXRhZGF0YURhdGU9IjIwMjYtMDctMTdUMDk6MzY6MTctMDU6MDAiIHRpZmY6T3JpZW50YXRpb249IjEiIHRpZmY6WFJlc29sdXRpb249Ijk2LzEiIHRpZmY6WVJlc29sdXRpb249Ijk2LzEiIHRpZmY6UmVzb2x1dGlvblVuaXQ9IjIiIGV4aWY6Q29sb3JTcGFjZT0iMSIgZXhpZjpQaXhlbFhEaW1lbnNpb249IjMwMCIgZXhpZjpQaXhlbFlEaW1lbnNpb249IjY1MiIgZGM6Zm9ybWF0PSJpbWFnZS9wbmciIHBob3Rvc2hvcDpDb2xvck1vZGU9IjMiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6ZjQ5NjZmNTgtYzJmNi05NDQyLWI4N2ItOWY5OWYwYzZmOGY5IiB4bXBNTTpEb2N1bWVudElEPSJhZG9iZTpkb2NpZDpwaG90b3Nob3A6YmJlMzYxMDMtZDZiMi1iMzRmLWFhNDEtNWRlMmUxNGRmZjVmIiB4bXBNTTpPcmlnaW5hbERvY3VtZW50SUQ9InhtcC5kaWQ6OTkzY2ZkZDYtOWRiNy0xOTQwLWIwZTMtOWQ4NTE2NjU5OWI3Ij4gPHhtcE1NOkhpc3Rvcnk+IDxyZGY6U2VxPiA8cmRmOmxpIHN0RXZ0OmFjdGlvbj0iY3JlYXRlZCIgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDo5OTNjZmRkNi05ZGI3LTE5NDAtYjBlMy05ZDg1MTY2NTk5YjciIHN0RXZ0OndoZW49IjIwMjYtMDctMTZUMjM6NDU6MTctMDU6MDAiIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIFBob3Rvc2hvcCAyNS42IChXaW5kb3dzKSIvPiA8cmRmOmxpIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiIHN0RXZ0Omluc3RhbmNlSUQ9InhtcC5paWQ6ODM1YzgxNjUtODYwOS05NzRhLWExMjEtNmEyMmU3N2FjY2EzIiBzdEV2dDp3aGVuPSIyMDI2LTA3LTE3VDA5OjM2OjA0LTA1OjAwIiBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBQaG90b3Nob3AgMjUuNiAoV2luZG93cykiIHN0RXZ0OmNoYW5nZWQ9Ii8iLz4gPHJkZjpsaSBzdEV2dDphY3Rpb249InNhdmVkIiBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOmQ2MGViNjI3LTM2MDMtN2Y0OC04YTMyLTc4NGVlYzlhNzUwNCIgc3RFdnQ6d2hlbj0iMjAyNi0wNy0xN1QwOTozNjoxNy0wNTowMCIgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgUGhvdG9zaG9wIDI1LjYgKFdpbmRvd3MpIiBzdEV2dDpjaGFuZ2VkPSIvIi8+IDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJjb252ZXJ0ZWQiIHN0RXZ0OnBhcmFtZXRlcnM9ImZyb20gYXBwbGljYXRpb24vdm5kLmFkb2JlLnBob3Rvc2hvcCB0byBpbWFnZS9wbmciLz4gPHJkZjpsaSBzdEV2dDphY3Rpb249ImRlcml2ZWQiIHN0RXZ0OnBhcmFtZXRlcnM9ImNvbnZlcnRlZCBmcm9tIGFwcGxpY2F0aW9uL3ZuZC5hZG9iZS5waG90b3Nob3AgdG8gaW1hZ2UvcG5nIi8+IDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJzYXZlZCIgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDpmNDk2NmY1OC1jMmY2LTk0NDItYjg3Yi05Zjk5ZjBjNmY4ZjkiIHN0RXZ0OndoZW49IjIwMjYtMDctMTdUMDk6MzY6MTctMDU6MDAiIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIFBob3Rvc2hvcCAyNS42IChXaW5kb3dzKSIgc3RFdnQ6Y2hhbmdlZD0iLyIvPiA8L3JkZjpTZXE+IDwveG1wTU06SGlzdG9yeT4gPHhtcE1NOkRlcml2ZWRGcm9tIHN0UmVmOmluc3RhbmNlSUQ9InhtcC5paWQ6ZDYwZWI2MjctMzYwMy03ZjQ4LThhMzItNzg0ZWVjOWE3NTA0IiBzdFJlZjpkb2N1bWVudElEPSJ4bXAuZGlkOjk5M2NmZGQ2LTlkYjctMTk0MC1iMGUzLTlkODUxNjY1OTliNyIgc3RSZWY6b3JpZ2luYWxEb2N1bWVudElEPSJ4bXAuZGlkOjk5M2NmZGQ2LTlkYjctMTk0MC1iMGUzLTlkODUxNjY1OTliNyIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PrZ/vD8AAAEhSURBVFjD7dk9CsIwFAfw3MSpxcEzFHdv0IpIxUFwcxEc3QXBwQN4Cxdnb9DL+MzDUGM/kzStps/CH0qhaX6kfWlTBgBMJXwb88QY+fjAD6Aoqu12FTZc30EKE0mPCSQCfb6fwGtLkYoXOvJcC/LuyO0BRekMKkZSRoImEkHbyk6UILuGZpG6t+bBFGkbWhkBBUPoqrYDPYFOfwmqcuuaQkMq0IgKdEnlGZ25BPWoFCOvwTzqVDHyeAIZ20uoeNf9wDpZjDS+XhA7R7CTxcjkJCeLUcvQ8A/tGTSiAjUsRkAFmh/R0ekMmLJ2MtNkLm1DF1SgMRXohgoUs7NRjL4C1cTi++7FxnJnFbQO26hka44sru/ueSZSrC9gtwJ16ZfEEzhz7jVSAVotAAAAAElFTkSuQmCC';
+
+// ── Sprite geometry (mirrors SpriteButton.tsx) ──────────────
+const CORNER = 6, EDGE = 3;
+const TILES = {
+  stroke:  { nw:[13,0,6,6], n:[19,0,3,6], w:[13,20,6,3], sw:[13,22,6,6], s:[19,22,3,6] },
+  hi:      { nw:[22,0,6,6], n:[28,0,3,6], w:[22,20,6,3], sw:[22,22,6,6], s:[28,22,3,6] },
+  fill:    { nw:[31,0,6,6], n:[37,0,3,6], w:[31,20,6,3], sw:[31,22,6,6], s:[37,22,3,6] },
+  shade:   { w:[49,20,6,3], sw:[49,22,6,6], s:[55,22,3,6] },
+  glint:   { w:[41,20,6,3], sw:[41,22,6,6] },
+};
+const ART = { base:[0,192,254], shade:[40,108,202], glint:[44,148,152] };
+
+// ── OKLab recolor (self-contained, mirrors the component) ───
+function srgbToOklab(r,g,b){const l=c=>{c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4);};
+  const R=l(r),G=l(g),B=l(b);
+  const L=Math.cbrt(0.4122214708*R+0.5363325363*G+0.0514459929*B);
+  const M=Math.cbrt(0.2119034982*R+0.6806995451*G+0.1073969566*B);
+  const S=Math.cbrt(0.0883024619*R+0.2817188376*G+0.6299787005*B);
+  return [0.2104542553*L+0.7936177850*M-0.0040720468*S,1.9779984951*L-2.4285922050*M+0.4505937099*S,0.0259040371*L+0.7827717662*M-0.8086757660*S];}
+function oklabToSrgb(L,a,b){const l=Math.pow(L+0.3963377774*a+0.2158037573*b,3),m=Math.pow(L-0.1055613458*a-0.0638541728*b,3),s=Math.pow(L-0.0894841775*a-1.2914855480*b,3);
+  const R=4.0767416621*l-3.3077115913*m+0.2309699292*s,G=-1.2684380046*l+2.6097574011*m-0.3413193965*s,B=-0.0041960863*l-0.7034186147*m+1.7076147010*s;
+  const g=c=>{c=Math.max(0,Math.min(1,c));return Math.round(255*(c<=0.0031308?12.92*c:1.055*Math.pow(c,1/2.4)-0.055));};
+  return [g(R),g(G),g(B)];}
+function applyDelta(base,sBase,sVar){const[Lb,ab,bb]=srgbToOklab(...base),[Ls,as_,bs]=srgbToOklab(...sBase),[Lv,av,bv]=srgbToOklab(...sVar);
+  const Cb=Math.hypot(ab,bb),Cs=Math.hypot(as_,bs),Cv=Math.hypot(av,bv);
+  const hb=Math.atan2(bb,ab),hs=Math.atan2(bs,as_),hv=Math.atan2(bv,av);
+  const L=Lb+(Lv-Ls),C=Cs>1e-6?Cb*(Cv/Cs):Cv,h=hb+(hv-hs);
+  return oklabToSrgb(L,C*Math.cos(h),C*Math.sin(h));}
+function hexToRgb(hex){let h=hex.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];const n=parseInt(h.slice(0,6),16);return[(n>>16)&255,(n>>8)&255,n&255];}
+function rgbCss(c){return 'rgb('+c[0]+','+c[1]+','+c[2]+')';}
+
+// Recolored sheet cache keyed by base hex.
+const recolorCache = new Map();
+let SHEET = null;
+function recoloredSheet(baseHex){
+  if(recolorCache.has(baseHex)) return recolorCache.get(baseHex);
+  const baseRgb=hexToRgb(baseHex), shade=applyDelta(baseRgb,ART.base,ART.shade), glint=applyDelta(baseRgb,ART.base,ART.glint);
+  const c=document.createElement('canvas'); c.width=SHEET.width; c.height=SHEET.height;
+  const x=c.getContext('2d'); x.drawImage(SHEET,0,0);
+  const id=x.getImageData(0,0,c.width,c.height), d=id.data;
+  for(let i=0;i<d.length;i+=4){ if(!d[i+3])continue; const r=d[i],g=d[i+1],b=d[i+2];
+    if(r===0&&g===192&&(b===254||b===255)){d[i]=baseRgb[0];d[i+1]=baseRgb[1];d[i+2]=baseRgb[2];}
+    else if(r===40&&g===108&&b===202){d[i]=shade[0];d[i+1]=shade[1];d[i+2]=shade[2];}
+    else if(r===44&&g===148&&b===152){d[i]=glint[0];d[i+1]=glint[1];d[i+2]=glint[2];} }
+  x.putImageData(id,0,0); recolorCache.set(baseHex,c); return c;
+}
+
+// ── Compose (mirrors SpriteButton compose) ──────────────────
+// parts: {shade,glint,fill,hi,stroke}. Draws at sprite res into octx.
+function compose(octx, W, H, depth, baseHex, pressed, parts, label){
+  const sheet = recoloredSheet(baseHex);
+  const faceH = H - depth;
+  const baseRgb = hexToRgb(baseHex), shadeRgb = applyDelta(baseRgb,ART.base,ART.shade);
+  octx.imageSmoothingEnabled=false; octx.clearRect(0,0,W,H);
+  const blit=(t,dx,dy,mir)=>{ if(!mir){octx.drawImage(sheet,t[0],t[1],t[2],t[3],dx,dy,t[2],t[3]);return;} octx.save();octx.translate(dx+t[2],dy);octx.scale(-1,1);octx.drawImage(sheet,t[0],t[1],t[2],t[3],0,0,t[2],t[3]);octx.restore(); };
+  const run=(t,rx,ry,rw,rh,horiz,mir)=>{ if(rw<=0||rh<=0)return; octx.save();octx.beginPath();octx.rect(rx,ry,rw,rh);octx.clip(); if(horiz){for(let x=rx;x<rx+rw;x+=EDGE)blit(t,x,ry,mir);}else{for(let y=ry;y<ry+rh;y+=EDGE)blit(t,rx,y,mir);} octx.restore(); };
+  const layer=(set,y0,h)=>{ if(set.nw){blit(set.nw,0,y0);blit(set.nw,W-CORNER,y0,true);} if(set.n)run(set.n,CORNER,y0,W-CORNER*2,CORNER,true); if(set.w){run(set.w,0,y0+CORNER,CORNER,h-CORNER*2,false);run(set.w,W-CORNER,y0+CORNER,CORNER,h-CORNER*2,false,true);} if(set.sw){blit(set.sw,0,y0+h-CORNER);blit(set.sw,W-CORNER,y0+h-CORNER,true);} if(set.s)run(set.s,CORNER,y0+h-CORNER,W-CORNER*2,CORNER,true); };
+  const interior=(col,boxY,boxH)=>{ octx.fillStyle=col; octx.fillRect(CORNER,boxY+1,W-CORNER*2,boxH-2); const band=Math.max(0,boxH-CORNER*2); octx.fillRect(1,boxY+CORNER,CORNER-1,band); octx.fillRect(W-CORNER,boxY+CORNER,CORNER-1,band); };
+
+  // Shade / glint peek (bottom-anchored, starts under the face bottom curve)
+  if(parts.shade||parts.glint){
+    const sTop=faceH-CORNER;
+    if(parts.shade){
+      octx.fillStyle=rgbCss(shadeRgb);
+      octx.fillRect(CORNER,sTop,W-CORNER*2,H-CORNER-sTop);
+      octx.fillRect(1,sTop,CORNER-1,H-CORNER-sTop);
+      octx.fillRect(W-CORNER,sTop,CORNER-1,H-CORNER-sTop);
+      run(TILES.shade.w,0,sTop,CORNER,H-CORNER-sTop,false);
+      run(TILES.shade.w,W-CORNER,sTop,CORNER,H-CORNER-sTop,false,true);
+      blit(TILES.shade.sw,0,H-CORNER); blit(TILES.shade.sw,W-CORNER,H-CORNER,true);
+      run(TILES.shade.s,CORNER,H-CORNER,W-CORNER*2,CORNER,true);
+    }
+    if(parts.glint){
+      run(TILES.glint.w,0,sTop,CORNER,H-CORNER-sTop,false);
+      run(TILES.glint.w,W-CORNER,sTop,CORNER,H-CORNER-sTop,false,true);
+      blit(TILES.glint.sw,0,H-CORNER); blit(TILES.glint.sw,W-CORNER,H-CORNER,true);
+    }
+  }
+  const yOff = pressed ? depth : 0;
+  if(parts.fill){ interior(baseHex,yOff,faceH); layer(TILES.fill,yOff,faceH); }
+  if(parts.hi) layer(TILES.hi,yOff,faceH);
+  if(parts.stroke) layer(TILES.stroke,yOff,H-yOff);
+
+  if(label && parts.fill){
+    octx.fillStyle='#ffffff';
+    const fpx=Math.max(6,Math.round(faceH*0.5));
+    octx.font=fpx+"px 'LoRes9', monospace";
+    octx.textAlign='center'; octx.textBaseline='middle';
+    octx.fillText(label, Math.round(W/2), yOff+Math.round(faceH/2)+1);
+  }
+}
+
+// Render an offscreen composition into a display canvas at integer scale (crisp, dpr-aware).
+function renderInto(canvas, W, H, scale, drawFn){
+  const dpr = window.devicePixelRatio||1;
+  const off = document.createElement('canvas'); off.width=W; off.height=H;
+  drawFn(off.getContext('2d'));
+  canvas.width=Math.round(W*scale*dpr); canvas.height=Math.round(H*scale*dpr);
+  canvas.style.width=(W*scale)+'px'; canvas.style.height=(H*scale)+'px';
+  const ctx=canvas.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(off,0,0,W,H,0,0,canvas.width,canvas.height);
+}
+
+// A single source tile → its own crisp canvas.
+function tileCanvas(tile, scale, mirror){
+  const c=document.createElement('canvas'); const dpr=window.devicePixelRatio||1;
+  c.width=Math.round(tile[2]*scale*dpr); c.height=Math.round(tile[3]*scale*dpr);
+  c.style.width=(tile[2]*scale)+'px'; c.style.height=(tile[3]*scale)+'px';
+  c.className='tc-canvas';
+  const ctx=c.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  if(mirror){ ctx.translate(c.width,0); ctx.scale(-1,1); }
+  ctx.drawImage(SHEET,tile[0],tile[1],tile[2],tile[3],0,0,c.width,c.height);
+  return c;
+}
+
+// ── Build the page once the sheet loads ─────────────────────
+const PRIMARY='#38bdf8';
+const LAYER_DEFS=[
+  {key:'stroke', label:'Stroke', desc:'dark outline · wraps whole silhouette', parts:{stroke:1}},
+  {key:'hi',     label:'Highlight', desc:'soft white inner rim', parts:{hi:1}},
+  {key:'fill',   label:'Fill', desc:'face body · recolored to base', parts:{fill:1}},
+  {key:'shade',  label:'Shade', desc:'peek body · derived tone', parts:{shade:1}},
+  {key:'glint',  label:'Glint', desc:'peek edge highlight', parts:{glint:1}},
+];
+const PALETTE=[
+  {nm:'Fill', role:'face body → base color', hex:'#00C0FE', dyn:true},
+  {nm:'Shade', role:'peek body', hex:'#286CCA', dyn:true},
+  {nm:'Glint', role:'peek edge light', hex:'#2C9498', dyn:true},
+  {nm:'Stroke', role:'outline', hex:'#1F263E', dyn:false},
+  {nm:'Highlight', role:'inner rim (semi-white)', hex:'#FFFFFF', dyn:false},
+];
+const PRESETS=['#38bdf8','#f472b6','#facc15','#4ade80','#a78bfa','#fb923c'];
+
+const img=new Image();
+img.onload=()=>{ SHEET=img; buildAll(); };
+img.onerror=()=>{ document.body.insertAdjacentHTML('afterbegin','<p style="padding:20px;color:#f66">Sprite failed to load.</p>'); };
+img.src=IMG_SRC;
+
+let showGrid=false, showRegions=false;
+function buildAll(){
+  drawSheet();
+  buildLegend();
+  buildLayers();
+  buildStages();
+  buildPlayground();
+
+  document.getElementById('gridToggle').addEventListener('click', e=>{ showGrid=!showGrid; e.currentTarget.setAttribute('aria-pressed',showGrid); drawSheet(); });
+  document.getElementById('regionToggle').addEventListener('click', e=>{ showRegions=!showRegions; e.currentTarget.setAttribute('aria-pressed',showRegions); drawSheet(); });
+}
+
+const REGIONS=[
+  {x:0,y:1,w:8,h:13,c:'#9aa4bd',t:'drag'},
+  {x:8,y:0,w:5,h:15,c:'#9aa4bd',t:'textbox'},
+  {x:13,y:0,w:9,h:28,c:'#8b93d6',t:'stroke'},
+  {x:22,y:0,w:9,h:28,c:'#e8e8ee',t:'highlight'},
+  {x:31,y:0,w:9,h:28,c:'#00c0fe',t:'fill'},
+  {x:41,y:20,w:6,h:8,c:'#2c9498',t:'glint'},
+  {x:49,y:20,w:9,h:8,c:'#286cca',t:'shade'},
+];
+function drawSheet(){
+  const scale=10; const canvas=document.getElementById('sheet');
+  renderInto(canvas, SHEET.width, SHEET.height, scale, ctx=>{
+    ctx.imageSmoothingEnabled=false; ctx.drawImage(SHEET,0,0);
+  });
+  // overlays drawn at display resolution on top
+  const dpr=window.devicePixelRatio||1; const ctx=canvas.getContext('2d'); const S=scale*dpr;
+  if(showRegions){
+    ctx.lineWidth=Math.max(1,dpr); ctx.font=(7*dpr)+"px ui-monospace, monospace"; ctx.textBaseline='top';
+    for(const r of REGIONS){ ctx.strokeStyle=r.c; ctx.globalAlpha=0.9; ctx.strokeRect(r.x*S+0.5,r.y*S+0.5,r.w*S-1,r.h*S-1);
+      ctx.globalAlpha=1; ctx.fillStyle=r.c; ctx.fillText(r.t, r.x*S+2*dpr, r.y*S+2*dpr); }
+  }
+  if(showGrid){
+    ctx.strokeStyle='rgba(128,140,170,0.28)'; ctx.lineWidth=1;
+    for(let x=0;x<=SHEET.width;x++){ctx.beginPath();ctx.moveTo(Math.round(x*S)+0.5,0);ctx.lineTo(Math.round(x*S)+0.5,SHEET.height*S);ctx.stroke();}
+    for(let y=0;y<=SHEET.height;y++){ctx.beginPath();ctx.moveTo(0,Math.round(y*S)+0.5);ctx.lineTo(SHEET.width*S,Math.round(y*S)+0.5);ctx.stroke();}
+  }
+}
+
+function buildLegend(){
+  const el=document.getElementById('legend');
+  el.innerHTML=PALETTE.map(p=>`
+    <div class="swatch-row">
+      <span class="chip" style="background:${p.hex}"></span>
+      <div>
+        <div class="nm">${p.nm}</div>
+        <div class="role">${p.role}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto">
+        <span class="tag ${p.dyn?'dyn':'fix'}">${p.dyn?'dynamic':'fixed'}</span>
+        <span class="hex mono">${p.hex}</span>
+      </div>
+    </div>`).join('');
+}
+
+function buildLayers(){
+  const host=document.getElementById('layers'); host.innerHTML='';
+  for(const L of LAYER_DEFS){
+    const wrap=document.createElement('div'); wrap.className='layer';
+    const head=document.createElement('div'); head.className='layer-head';
+    head.innerHTML=`<span class="k">${L.label}</span><span class="desc">${L.desc}</span>`;
+    wrap.appendChild(head);
+
+    const zone=document.createElement('div'); zone.className='layer-framezone checker';
+    const frame=document.createElement('canvas');
+    const FW=40, FH=(L.key==='shade'||L.key==='glint')?18:22;
+    renderInto(frame, FW, FH, 5, ctx=>compose(ctx, FW, FH, (L.key==='shade'||L.key==='glint')?4:0, PRIMARY, false, L.parts, ''));
+    zone.appendChild(frame); wrap.appendChild(zone);
+
+    const strip=document.createElement('div'); strip.className='tiles-strip';
+    const set=TILES[L.key];
+    const order=['nw','n','w','sw','s'].filter(k=>set[k]);
+    for(const k of order){
+      const cell=document.createElement('div'); cell.className='tile-cell';
+      cell.appendChild(tileCanvas(set[k], 9, false));
+      const nm=document.createElement('span'); nm.className='tc-name'; nm.textContent=k.toUpperCase();
+      const xy=document.createElement('span'); xy.className='tc-xy'; xy.textContent=`${set[k][0]},${set[k][1]} · ${set[k][2]}×${set[k][3]}`;
+      cell.appendChild(nm); cell.appendChild(xy); strip.appendChild(cell);
+    }
+    wrap.appendChild(strip);
+
+    const note=document.createElement('div'); note.className='mirror-note';
+    const hasTop = !!set.nw;
+    note.innerHTML=`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 2v10M4 5L2 7l2 2M10 5l2 2-2 2"/></svg> East side mirrors the west${hasTop?' — corners NE/SE mirror NW/SW':''}.`;
+    wrap.appendChild(note);
+    host.appendChild(wrap);
+  }
+}
+
+function buildStages(){
+  const host=document.getElementById('stages'); host.innerHTML='';
+  const W=54, H=40, depth=4;
+  const steps=[
+    {n:'01', t:'Shade + glint peek', parts:{shade:1,glint:1}, label:''},
+    {n:'02', t:'+ Fill face', parts:{shade:1,glint:1,fill:1}, label:''},
+    {n:'03', t:'+ Highlight rim', parts:{shade:1,glint:1,fill:1,hi:1}, label:''},
+    {n:'04', t:'+ Stroke (whole box)', parts:{shade:1,glint:1,fill:1,hi:1,stroke:1}, label:''},
+    {n:'05', t:'+ Label', parts:{shade:1,glint:1,fill:1,hi:1,stroke:1}, label:'SPIN'},
+  ];
+  for(const s of steps){
+    const st=document.createElement('div'); st.className='stage';
+    const view=document.createElement('div'); view.className='stage-view checker';
+    const cv=document.createElement('canvas');
+    renderInto(cv, W, H, 5, ctx=>compose(ctx, W, H, depth, PRIMARY, false, s.parts, s.label));
+    view.appendChild(cv); st.appendChild(view);
+    const cap=document.createElement('div'); cap.className='stage-cap';
+    cap.innerHTML=`<div class="n">${s.n}</div><div class="t">${s.t}</div>`;
+    st.appendChild(cap); host.appendChild(st);
+  }
+}
+
+function buildPlayground(){
+  const colorInput=document.getElementById('colorInput');
+  const widthInput=document.getElementById('widthInput');
+  const depthInput=document.getElementById('depthInput');
+  const fillHeight=document.getElementById('fillHeight');
+  const scaleInput=document.getElementById('scaleInput');
+  const presetsEl=document.getElementById('presets');
+
+  presetsEl.innerHTML=PRESETS.map(c=>`<button class="preset" data-c="${c}" style="background:${c}" aria-pressed="${c===PRIMARY}" title="${c}"></button>`).join('');
+  presetsEl.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',()=>{ colorInput.value=b.dataset.c; render(); }));
+
+  [colorInput,widthInput,depthInput,fillHeight,scaleInput].forEach(el=>el.addEventListener('input',render));
+
+  function render(){
+    const base=colorInput.value;
+    const cssW=+widthInput.value, depth=+depthInput.value, faceH=+fillHeight.value, scale=+scaleInput.value;
+    const H=faceH+depth;
+    const W=Math.max(CORNER*2+1, Math.round(cssW/scale));
+    document.getElementById('colorVal').textContent=base.toUpperCase();
+    document.getElementById('widthVal').textContent=cssW+' px';
+    document.getElementById('depthVal').textContent=depth+' px';
+    document.getElementById('fillVal').textContent=faceH+' px';
+    document.getElementById('scaleVal').textContent=scale+'×';
+    document.getElementById('dimReadout').textContent=`${W}×${H} sprite · ${scale}× · ${W*scale}×${H*scale}px`;
+    presetsEl.querySelectorAll('.preset').forEach(b=>b.setAttribute('aria-pressed', b.dataset.c.toLowerCase()===base.toLowerCase()));
+    const full={shade:1,glint:1,fill:1,hi:1,stroke:1};
+    renderInto(document.getElementById('liveRest'), W, H, scale, ctx=>compose(ctx,W,H,depth,base,false,full,'SPIN'));
+    renderInto(document.getElementById('livePressed'), W, H, scale, ctx=>compose(ctx,W,H,depth,base,true,full,'SPIN'));
+    renderInto(document.getElementById('liveZoom'), W, H, Math.max(scale+3,10), ctx=>compose(ctx,W,H,depth,base,false,full,'SPIN'));
+  }
+  render();
+}
+</script>
