@@ -1902,7 +1902,11 @@ export default function RouletteScreen({
                   roughAmp={2.2}
                   radiusRatio={0.42}
                   taper={2}
-                  style={{ position: 'absolute', inset: '0 -16px', zIndex: 0 }}
+                  // Outset = the row's 16px side padding PLUS ~8px slack for
+                  // RoughPanel's internal edge pad + wobble amplitude (its
+                  // outline starts a few px inside its own box), so the flat
+                  // side edges land past the screen edge and clip flush.
+                  style={{ position: 'absolute', inset: '0 -20px', zIndex: 0 }}
                 />
                 {/* Explicit margins instead of a flex gap: the pill keeps a
                     12px gap to the wheels button but only 3px to the edit
