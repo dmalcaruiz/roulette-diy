@@ -152,6 +152,33 @@ export default function RouletteScreen({
   const [showWinAnimation, setShowWinAnimation] = useState(true);
   const [showSegmentHeader, setShowSegmentHeader] = useState(false);
   const [showSpinButton, setShowSpinButton] = useState(true);
+  // Wheel spin in flight — pauses the SPIN label's idle letter bob.
+  const [wheelSpinning, setWheelSpinning] = useState(false);
+  // Balatro-style screen shake on spin launch: a short burst of whole-pixel
+  // jitter with a fast quadratic decay, written straight to the shake
+  // wrapper's transform (no React state → no re-renders at 60fps). The
+  // wrapper sits INSIDE the animated root shell — the mount slide's
+  // `forwards` fill owns that element's transform, so the shake needs its
+  // own layer.
+  const shakeRef = useRef<HTMLDivElement>(null);
+  const shakeRafRef = useRef(0);
+  const shakeScreen = useCallback(() => {
+    const el = shakeRef.current;
+    if (!el) return;
+    cancelAnimationFrame(shakeRafRef.current);
+    const t0 = performance.now();
+    const DUR = 300, AMP = 4;
+    const tick = (now: number) => {
+      const t = (now - t0) / DUR;
+      if (t >= 1) { el.style.transform = ''; return; }
+      const a = AMP * (1 - t) * (1 - t);
+      const ang = Math.random() * Math.PI * 2;
+      el.style.transform = `translate(${Math.round(a * Math.cos(ang))}px, ${Math.round(a * Math.sin(ang))}px)`;
+      shakeRafRef.current = requestAnimationFrame(tick);
+    };
+    shakeRafRef.current = requestAnimationFrame(tick);
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(shakeRafRef.current), []);
   // When the X is pressed we set this to true to play the slide-out-down
   // animation before actually navigating. The screen unmounts after the
   // animation finishes so the user sees the editor slide off the bottom.
@@ -1496,6 +1523,11 @@ export default function RouletteScreen({
         ? 'slide-out-down 0.26s cubic-bezier(0.32, 0.72, 0, 1) forwards'
         : 'slide-in-up 0.26s cubic-bezier(0.32, 0.72, 0, 1) both',
     }}>
+    {/* Shake layer — everything below jitters as one on spin launch (see
+        shakeScreen). Own element because the root's mount-slide animation
+        fill owns the root's transform. Same flex row as the root so the
+        sidebar + main column lay out unchanged. */}
+    <div ref={shakeRef} style={{ display: 'flex', flex: 1, minWidth: 0 }}>
       {/* Desktop sidebar editor */}
       {isEditMode && !isMobile && (
         <div style={{
@@ -1753,6 +1785,7 @@ export default function RouletteScreen({
               items={activeConfig.items}
               roughSeed={roughSeedFromId(activeConfig.id)}
               onFinished={onWheelFinished}
+              onSpinStateChange={setWheelSpinning}
               size={effectiveWheelSize}
               textSizeMultiplier={activeConfig.textSize}
               headerTextSizeMultiplier={activeConfig.headerTextSize}
@@ -1845,7 +1878,7 @@ export default function RouletteScreen({
                   variant="bottomSheet"
                   color="#FFFFFF"
                   pixelScale={buttonArtScale}
-                  seed={5}
+                  seed={13}
                   roughAmp={2.2}
                   radiusRatio={0.42}
                   taper={2}
@@ -1857,7 +1890,7 @@ export default function RouletteScreen({
                     padding). Pill renders 1.1× and nudged down a touch. */}
                 <div style={{ position: 'relative', zIndex: 1, display: 'flex', height: buttonH, width: '100%', alignItems: 'center' }}>
                   <SpriteIconButton src="/images/wheels.png" onTap={() => setPickerOpen(v => !v)} box={buttonH} pixelScale={buttonArtScale} zoom={1.15} offsetY={Math.round(4 * buttonArtScale)} style={{ flexShrink: 0 }} />
-                  <SpritePillButton color={PRIMARY} onTap={() => wheelRef.current?.spin()} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.56)} pixelScale={buttonArtScale} zoom={1} offsetY={Math.round(6 * buttonArtScale)} style={{ flex: 1, minWidth: 0, margin: '0 3px 0 12px' }} />
+                  <SpritePillButton color={PRIMARY} onTap={() => { shakeScreen(); wheelRef.current?.spin(); }} height={buttonH} label="SPIN" fontSize={Math.round(buttonH * 0.7)} letterSpacing={Math.round(6 * buttonArtScale)} waveLabel={!wheelSpinning} pixelScale={buttonArtScale} zoom={1} offsetY={Math.round(6 * buttonArtScale)} style={{ flex: 1, minWidth: 0, margin: '0 3px 0 12px' }} />
                   <SpriteIconButton
                     src="/images/edit.png"
                     // Toggle the edit sheet at its TOP scroll position — same
@@ -2464,6 +2497,7 @@ export default function RouletteScreen({
         </DraggableSheet>
       )}
 
+    </div>
     </div>
   );
 }

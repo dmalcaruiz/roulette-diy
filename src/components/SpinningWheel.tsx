@@ -387,6 +387,10 @@ const PULLBACK_EASE_FN = makeCubicBezier(0.45, 0, 0.55, 1);
 export interface SpinningWheelProps {
   items: WheelItem[];
   onFinished: (index: number) => void;
+  /** Fires whenever the wheel starts/stops spinning (spin, decay settle,
+   *  reset) — lets the screen pause ambient chrome (e.g. the SPIN label's
+   *  letter bob) while a spin is in flight. */
+  onSpinStateChange?: (spinning: boolean) => void;
   size?: number;
   textSizeMultiplier?: number;
   headerTextSizeMultiplier?: number;
@@ -460,6 +464,7 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const {
     items,
     onFinished,
+    onSpinStateChange,
     size = 300,
     textSizeMultiplier = 1,
     headerTextSizeMultiplier = 1,
@@ -523,6 +528,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
   const gpuSpinActiveRef = useRef(false);
   const spinStartPerfRef = useRef<number>(0);
   const [isSpinning, setIsSpinning] = useState(false);
+  // Mirror spin state to the parent (see SpinningWheelProps.onSpinStateChange).
+  useEffect(() => { onSpinStateChange?.(isSpinning); }, [isSpinning, onSpinStateChange]);
   // The tick generator is resolved ONCE whenever the sound changes (not per
   // tick), so firing a tick is a plain call with no branching/table lookup.
   const tickSoundRef = useRef<string>('click');

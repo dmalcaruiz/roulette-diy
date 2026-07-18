@@ -33,7 +33,7 @@ function Row({ wheelSize, screenWidth }) {
         h(RoughPanel, { variant: 'bottomSheet', color: '#FFFFFF', pixelScale: artScale, seed: 5, roughAmp: 2.2, radiusRatio: 0.42, taper: 2, style: { position: 'absolute', inset: '0 -16px', zIndex: 0 } }),
         h('div', { style: { position: 'relative', zIndex: 1, display: 'flex', height: buttonH, width: '100%', alignItems: 'center' } },
           h(SpriteIconButton, { src: '/images/wheels.png', onTap: () => {}, box: buttonH, pixelScale: artScale, zoom: 1.2, style: { flexShrink: 0 } }),
-          h(SpritePillButton, { color: PRIMARY, onTap: () => {}, height: buttonH, label: 'SPIN', fontSize: Math.round(buttonH * 0.56), pixelScale: artScale, zoom: 1.1, offsetY: Math.round(6 * artScale), style: { flex: 1, minWidth: 0, margin: '0 3px 0 12px' } }),
+          h(SpritePillButton, { color: PRIMARY, onTap: () => {}, height: buttonH, label: 'SPIN', fontSize: Math.round(buttonH * 0.7), pixelScale: artScale, zoom: 1.1, offsetY: Math.round(6 * artScale), style: { flex: 1, minWidth: 0, margin: '0 3px 0 12px' } }),
           h(SpriteIconButton, { src: '/images/edit.png', onTap: () => {}, box: buttonH, pixelScale: artScale, zoom: 1.2, style: { flexShrink: 0 } }),
         ),
       ),

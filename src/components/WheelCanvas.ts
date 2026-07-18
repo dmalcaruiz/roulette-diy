@@ -555,8 +555,10 @@ function computeFittedText(
 // Font for the wheel's crisp label pass (the app's default pixel face).
 // WHEEL_FONT_FAMILY alone is what fonts.load()/check() need; WHEEL_FONT is the
 // full ctx.font stack with fallbacks for while it loads.
-export const WHEEL_FONT_FAMILY = "'LoRes12OT-Bold'";
-export const WHEEL_FONT = `${WHEEL_FONT_FAMILY}, Inter, sans-serif`;
+// SV — the app's default face (see index.css); segment labels draw at weight
+// 600, which maps to the svbold cut. LoRes stays as the loading fallback.
+export const WHEEL_FONT_FAMILY = "'SV'";
+export const WHEEL_FONT = `${WHEEL_FONT_FAMILY}, 'LoRes12OT-Bold', Inter, sans-serif`;
 
 // Memoize-last: only one wheel animates at a time, so a single-entry cache hits
 // every spin frame (key omits rotation). Thumbnails draw no text, so they

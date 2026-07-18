@@ -29,6 +29,17 @@
 @font-face { font-family: 'LoRes9PlusOTWide-Bold'; src: url('/fonts/LoRes9PlusOTWide-Bold.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWide-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
 @font-face { font-family: 'LoRes9PlusOTWide-Regular'; src: url('/fonts/LoRes9PlusOTWide-Regular.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWide-Regular.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
 @font-face { font-family: 'LoRes9PlusOTWideAlt-Bold'; src: url('/fonts/LoRes9PlusOTWideAlt-Bold.woff2') format('woff2'), url('/fonts/LoRes9PlusOTWideAlt-Bold.woff') format('woff'); font-weight: 100 900; font-style: normal; font-display: swap; }
+/* Cozy rounded faces for the sprite SPIN label (self-hosted from Google Fonts;
+   drawn at sprite res + palette-snapped, so they render as hard pixels). */
+@font-face { font-family: 'Baloo 2'; src: url('/fonts/Baloo2-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Chewy'; src: url('/fonts/Chewy-Regular.woff2') format('woff2'); font-weight: normal; font-style: normal; font-display: swap; }
+/* SV — the app's default UI face: thin at normal weight, bold at 600+. The
+   inner/outline variants are decorative layers, registered as their own
+   families for layered lockups. (NOT used by the sprite SPIN label.) */
+@font-face { font-family: 'SV'; src: url('/fonts/svthin.otf') format('opentype'); font-weight: 100 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'SV'; src: url('/fonts/svbold.otf') format('opentype'); font-weight: 600 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'SV Inner'; src: url('/fonts/svbold-inner.otf') format('opentype'); font-weight: normal; font-style: normal; font-display: swap; }
+@font-face { font-family: 'SV Outline'; src: url('/fonts/svbold-outline.otf') format('opentype'); font-weight: normal; font-style: normal; font-display: swap; }
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -47,7 +58,7 @@
 }
 
 body {
-  font-family: 'LoRes12OT-Bold', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'SV', 'LoRes12OT-Bold', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--on-surface);
   background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
