@@ -167,11 +167,25 @@ export default function RouletteScreen({
     if (!el) return;
     cancelAnimationFrame(shakeRafRef.current);
     const t0 = performance.now();
+    // One chain, two phases: the press IMPULSE (AMP px decaying over DUR),
+    // then a SUSTAIN rumble whose amplitude tracks the wheel's live angular
+    // speed — subtle at ≤1-2px, fading out on its own as the spin decays.
     const DUR = 300, AMP = 4;
+    const SUSTAIN_AMP = 2;      // px at/above full launch speed
+    const FULL_SPEED = 0.06;    // rad/ms that maps to SUSTAIN_AMP
     const tick = (now: number) => {
       const t = (now - t0) / DUR;
-      if (t >= 1) { el.style.transform = ''; return; }
-      const a = AMP * (1 - t) * (1 - t);
+      let a: number;
+      if (t < 1) {
+        const impulse = AMP * (1 - t) * (1 - t);
+        // Blend toward the sustain level so the phases hand off smoothly.
+        const v = wheelRef.current?.getVelocity() ?? 0;
+        a = Math.max(impulse, Math.min(1, v / FULL_SPEED) * SUSTAIN_AMP);
+      } else {
+        const v = wheelRef.current?.getVelocity() ?? 0;
+        a = Math.min(1, v / FULL_SPEED) * SUSTAIN_AMP;
+        if (a < 0.4) { el.style.transform = ''; return; } // spin wound down — chain ends
+      }
       const ang = Math.random() * Math.PI * 2;
       el.style.transform = `translate(${Math.round(a * Math.cos(ang))}px, ${Math.round(a * Math.sin(ang))}px)`;
       shakeRafRef.current = requestAnimationFrame(tick);

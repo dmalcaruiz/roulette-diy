@@ -384,16 +384,11 @@ const DECAY_EASE_FN = makeCubicBezier(0.22, 0.66, 0.4, 1);
 const PULLBACK_EASE_CSS = 'cubic-bezier(0.45, 0, 0.55, 1)';
 const PULLBACK_EASE_FN = makeCubicBezier(0.45, 0, 0.55, 1);
 
-// Tap-spin anticipation. When OFF (current setting) the spin launches the
-// instant SPIN is pressed — but SPIN_EASE starts at ~6.5× average speed
-// (decel-only; the wind-up used to sell that jump as a "release"), so a
-// bare instant launch reads fake. LAUNCH_EASE therefore replaces it in
-// no-wind-up mode: starts at zero velocity, accelerates hard over the first
-// ~15% and keeps the same long gentle settle. Flip WINDUP_ENABLED to restore
-// the old pullback + SPIN_EASE pairing.
+// Tap-spin anticipation. OFF (current setting): the spin launches the instant
+// SPIN is pressed, straight into SPIN_EASE's punchy full-speed start — an
+// accelerating "launch ramp" curve was tried here and read soft. Flip to
+// restore the old pullback anticipation.
 const WINDUP_ENABLED = false;
-const LAUNCH_EASE_CSS = 'cubic-bezier(0.3, 0, 0.16, 1)';
-const LAUNCH_EASE_FN = makeCubicBezier(0.3, 0, 0.16, 1);
 
 
 export interface SpinningWheelProps {
@@ -470,6 +465,8 @@ export interface SpinningWheelHandle {
   /** Rotate so segment `idx`'s centre lands under the marker (top centre). */
   focusSegment: (idx: number) => void;
   isSpinning: boolean;
+  /** Live angular speed (rad/ms) while spinning, 0 at rest. */
+  getVelocity: () => number;
 }
 
 const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props, ref) => {
@@ -1260,10 +1257,11 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const segOffset = Math.random() * winningSegmentSize;
     const finalRotation = totalRotations * 2 * Math.PI + (2 * Math.PI - winningAngle + segOffset);
 
-    // Duration (ms) — scales with intensity.
+    // Duration (ms) — scales with intensity. (~13% shorter than the original
+    // 2000+4000 / 1500+5500 so the same revolutions read a bit faster.)
     const baseDuration = isRandomIntensity
-      ? 2000 + effectiveIntensity * 4000
-      : 1500 + effectiveIntensity * 5500;
+      ? 1750 + effectiveIntensity * 3500
+      : 1300 + effectiveIntensity * 4800;
     const durationOffset = isRandomIntensity ? Math.random() * 500 - 250 : Math.random() * 100 - 50;
     const durationMs = baseDuration + durationOffset;
 
@@ -1280,8 +1278,8 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     const pullbackDurationMs = !WINDUP_ENABLED ? 1 : (isRandomIntensity
       ? 200 + effectiveIntensity * 100
       : 150 + effectiveIntensity * 200);
-    const spinEaseCss = WINDUP_ENABLED ? SPIN_EASE_CSS : LAUNCH_EASE_CSS;
-    const spinEaseFn = WINDUP_ENABLED ? SPIN_EASE_FN : LAUNCH_EASE_FN;
+    const spinEaseCss = SPIN_EASE_CSS;
+    const spinEaseFn = SPIN_EASE_FN;
     const totalMs = pullbackDurationMs + durationMs;
 
     const startRotation = rotationRef.current;
@@ -1911,6 +1909,9 @@ const SpinningWheel = forwardRef<SpinningWheelHandle, SpinningWheelProps>((props
     reset,
     focusSegment,
     get isSpinning() { return isSpinningRef.current; },
+    // Live angular speed (rad/ms) while a spin is in flight, 0 at rest —
+    // drives the screen's sustained spin shake (see RouletteScreen).
+    getVelocity() { return isSpinningRef.current ? Math.abs(momentumVelocityRef.current) : 0; },
   }), [spin, reset, focusSegment]);
 
   // Cleanup animations + audio on unmount — cancels both the spin/decay
