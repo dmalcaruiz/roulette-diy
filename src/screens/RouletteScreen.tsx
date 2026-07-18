@@ -1877,7 +1877,9 @@ export default function RouletteScreen({
                 <RoughPanel
                   variant="bottomSheet"
                   color="#FFFFFF"
-                  pixelScale={buttonArtScale}
+                  // Slightly finer than the button art's grid — at the full
+                  // 1 css/px the sheet's edge read too low-res on phones.
+                  pixelScale={buttonArtScale * 0.75}
                   seed={13}
                   roughAmp={2.2}
                   radiusRatio={0.42}
