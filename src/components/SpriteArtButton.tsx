@@ -30,15 +30,16 @@ const PILL_SHADOW_URL = '/images/spinshadow.png';
 const PILL_W = 211;
 const PILL_H = 84;
 const CAP = 24;         // 3-slice end-cap width, art px
-// The pill composes on a grid DOWNSAMPLED from the art by this factor, then
-// upscales by the same factor extra — SAME on-screen size, pixels twice as
-// chunky. Without it the pill (flat fill + label) read noticeably finer than
-// the zoomed icon sprites beside it.
-const PILL_DOWN = 2;
-const R_PILL_H = PILL_H / PILL_DOWN;  // 42
-const R_FACE_H = 39;    // face art rows 0..77 → 39 render px
-const R_PRESS = 3;      // face drop — pressed face bottom = shadow bottom
-const R_CAP = CAP / PILL_DOWN;        // 12
+// Extra chunking for the PILL (art + letters): compose on a grid downsampled
+// from the art by this factor, upscale by the same factor extra — same
+// on-screen size, chunkier pixels. Native (1) read too high-res next to the
+// icons, 2 was too crunchy; 1.5 splits the difference. Icons render native
+// (ICON_DOWN below).
+const PILL_DOWN = 1.5;
+const R_PILL_H = PILL_H / PILL_DOWN;              // 56
+const R_FACE_H = Math.round(78 / PILL_DOWN);      // face art rows 0..77 → 52
+const R_PRESS = Math.round(6 / PILL_DOWN);        // face drop — pressed face bottom = shadow bottom
+const R_CAP = CAP / PILL_DOWN;                    // 16
 // Label face: cozy rounded Baloo 2 (self-hosted, see index.css). Drawn at
 // sprite res and palette-snapped, so it pixellates with the art; the LoRes
 // pixel face is the fallback while it loads. Used only for labels that have
@@ -59,7 +60,7 @@ const LETTER_SPRITES: Record<string, string> = {
 // Per-pair kerning tweaks for the sprite letters (render px added to the base
 // gap between the pair) — the I art carries left padding, so it tucks in
 // closer after the P.
-const PAIR_KERN: Record<string, number> = { SP: -1, PI: -2 };
+const PAIR_KERN: Record<string, number> = { SP: -1, PI: -3 };
 
 // ── Image loading (module-wide, once per URL) ─────────────────────────────
 const imgCache = new Map<string, HTMLImageElement>();
@@ -162,7 +163,7 @@ interface SpritePillButtonProps {
 // label rests until the next burst. Each bob is a snappy up-flick of WAVE_AMP
 // render px with a small rebound dip past the baseline on the way down —
 // bouncy, but stepped to whole pixels so it stays pixel-art.
-const WAVE_AMP = 3;
+const WAVE_AMP = 4;
 const WAVE_INTERVAL = 4;
 const WAVE_PULSE = 0.75;
 const WAVE_STAGGER_S = 0.2;
@@ -417,8 +418,11 @@ export function SpritePillButton({
   );
 }
 
-// ── Square icon button — one multicolour sprite, 2× downsampled ───────────
-const ICON_PRESS = 2; // press nudge, sprite px
+// ── Square icon button — one multicolour sprite ───────────────────────────
+// Icons render NATIVE (no downsample — chunked variants read mangled); only
+// the pill takes the PILL_DOWN treatment.
+const ICON_DOWN = 1;
+const ICON_PRESS = 2; // press nudge, render px
 
 interface SpriteIconButtonProps {
   /** Sprite URL (e.g. /images/wheels.png) — native-res art, drawn 1:1. */
@@ -457,7 +461,8 @@ export function SpriteIconButton({ src, onTap, box, pixelScale = 0.65, zoom = 1,
     const canvas = canvasRef.current;
     const img = imgCache.get(src);
     if (!canvas || !img) return; // repaints via assetsTick once loaded
-    const W = img.width, H = img.height + ICON_PRESS;
+    // Render grid = art nearest-downsampled by ICON_DOWN (matches the pill).
+    const W = Math.round(img.width / ICON_DOWN), H = Math.round(img.height / ICON_DOWN) + ICON_PRESS;
 
     if (!composeRef.current) composeRef.current = document.createElement('canvas');
     const compose = composeRef.current;
@@ -466,9 +471,9 @@ export function SpriteIconButton({ src, onTap, box, pixelScale = 0.65, zoom = 1,
     ctx.imageSmoothingEnabled = false;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(img, 0, pressed ? ICON_PRESS : 0);
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, pressed ? ICON_PRESS : 0, W, H - ICON_PRESS);
 
-    const DW = Math.round(W * S * zoom), DH = Math.round(H * S * zoom);
+    const DW = Math.round(W * S * zoom * ICON_DOWN), DH = Math.round(H * S * zoom * ICON_DOWN);
     if (canvas.width !== DW || canvas.height !== DH) { canvas.width = DW; canvas.height = DH; }
     const dctx = canvas.getContext('2d')!;
     dctx.imageSmoothingEnabled = false;
@@ -479,8 +484,8 @@ export function SpriteIconButton({ src, onTap, box, pixelScale = 0.65, zoom = 1,
 
   const release = () => setPressed(false);
   const img = imgCache.get(src);
-  const cssW = img ? Math.round(img.width * S * zoom) / dpr : 0;
-  const cssH = img ? Math.round((img.height + ICON_PRESS) * S * zoom) / dpr : 0;
+  const cssW = img ? Math.round(Math.round(img.width / ICON_DOWN) * S * zoom * ICON_DOWN) / dpr : 0;
+  const cssH = img ? Math.round((Math.round(img.height / ICON_DOWN) + ICON_PRESS) * S * zoom * ICON_DOWN) / dpr : 0;
   const snap = (v: number) => Math.round(v * dpr) / dpr;
   const leftOff = snap(Math.max(0, (box - cssW) / 2));
   const topOff = snap(Math.max(0, (box - cssH) / 2) + offsetY);
