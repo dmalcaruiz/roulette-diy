@@ -489,14 +489,15 @@ export default function RouletteScreen({
   const idealWheelSize = 700;
   const availableWidth = isMobile ? (screenWidth - 16) : (screenWidth - 400 - 32);
   const effectiveWheelSize = Math.min(availableWidth, idealWheelSize);
-  // Spin-row art scale: the hand-drawn button sprites are drawn at 2× the
-  // wheel block grid — the pill face is 78 sprite px ≈ the legacy 40-block
-  // button box — so one sprite px = HALF a wheel block, device-pixel-snapped
-  // (the snap floors at 1 device px, which on dpr-1 windows lands the art at
-  // ~wheel-block chunkiness). Row height follows the pill sprite (84 sprite
-  // px incl. its peek), keeping the old ~40-block footprint.
-  const buttonArtScale = spriteScaleFor(effectiveWheelSize / 2);
-  const buttonH = Math.round(84 * buttonArtScale);
+  // Spin-row art scale: 1 sprite px = 1 CSS px (the components snap that to
+  // whole device px internally). The old half-wheel-block derivation only
+  // looked right on dpr-1 monitors because its 1-device-px floor clamped the
+  // scale UP to exactly 1 css px; dpr-3 phones honoured the true half-block
+  // (~0.62 css) and rendered the whole row ~1.5× smaller. Pinning the scale
+  // makes every screen match the approved dpr-1 look: the pill is 84 css
+  // tall (incl. peek) everywhere.
+  const buttonArtScale = 1;
+  const buttonH = 84;
   // Wheel-block pixel density for the procedural pixel chrome (cards, sheets).
   const buttonScale = spriteScaleFor(effectiveWheelSize);
 
