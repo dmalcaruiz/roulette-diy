@@ -47,6 +47,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Publish a signed-in user to state + fetch their profile doc. Called from
+  // the auth listener AND directly after popup sign-in flows: linking a
+  // Google account onto the current anonymous user keeps the same uid, and
+  // Firebase only notifies onAuthStateChanged when the uid CHANGES — so
+  // without the direct call the app never learns the link happened (the
+  // "signed in but still asks me to sign in / blank screen" bug).
+  const applySignedInUser = async (u: User) => {
+    setUser(u);
+    setAuthLoading(false);
+    if (u.isAnonymous) {
+      setProfile(null);
+      return;
+    }
+    setProfileLoading(true);
+    try {
+      setProfile(await getProfile(u.uid));
+    } catch (e) {
+      console.error('Failed to load profile:', e);
+      setProfile(null);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
   useEffect(() => {
     return onAuthStateChanged(auth, async (u) => {
       // Render the app immediately on the first auth event, regardless of
@@ -56,14 +80,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Instead we set the user (or null) right away, free the gating, and
       // sign in anonymously in the background; a second onAuthStateChanged
       // tick will populate the user once it resolves.
-      setUser(u);
-      setAuthLoading(false);
-
       // Anonymous-first: if Firebase has no user, kick off sign-in in the
       // background. Drafts/blocks key on uid; once the user later links a
       // Google account via linkWithPopup the same uid is kept, so no
       // migration is needed for their own data.
       if (!u) {
+        setUser(null);
+        setAuthLoading(false);
+        setProfile(null);
         if (anonSigningInRef.current) return;
         anonSigningInRef.current = true;
         // Fire-and-forget — we do NOT await this. The user sees the app
@@ -79,25 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setAnonymousAuthBlocked(true);
           })
           .finally(() => { anonSigningInRef.current = false; });
-        setProfile(null);
         return;
       }
 
-      // Anonymous users have no profile doc — skip the fetch entirely.
-      if (u.isAnonymous) {
-        setProfile(null);
-        return;
-      }
-
-      setProfileLoading(true);
-      try {
-        setProfile(await getProfile(u.uid));
-      } catch (e) {
-        console.error('Failed to load profile:', e);
-        setProfile(null);
-      } finally {
-        setProfileLoading(false);
-      }
+      await applySignedInUser(u);
     });
   }, []);
 
@@ -124,6 +133,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (current?.isAnonymous) {
       try {
         await linkWithPopup(current, googleProvider);
+        // Same uid before/after the link → onAuthStateChanged does NOT fire.
+        // Sync state explicitly or the app never notices the sign-in.
+        if (auth.currentUser) await applySignedInUser(auth.currentUser);
         return;
       } catch (e: any) {
         if (popupCancelled(e)) return;
@@ -159,6 +171,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               console.error('Failed to migrate anonymous drafts into the signed-in account:', mergeErr);
             }
           }
+          // The uid changed, so the listener fired too — this direct call is
+          // a cheap idempotent belt-and-braces to guarantee profile state.
+          if (auth.currentUser) await applySignedInUser(auth.currentUser);
           return;
         }
         throw e;
@@ -167,6 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       await signInWithPopup(auth, googleProvider);
+      // Covers the same-uid re-sign-in case, where no auth event fires.
+      if (auth.currentUser) await applySignedInUser(auth.currentUser);
     } catch (e: any) {
       if (popupCancelled(e)) return;
       throw e;

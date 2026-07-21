@@ -326,7 +326,18 @@ export default function App() {
   // stay open to everyone (the join loop's entry point).
   if (!user && anonymousAuthBlocked && !isPublicPlayRoute) return <LoginScreen onLoginSuccess={() => {}} />;
   // Profile setup is a permanent-user gate, not an anonymous-user gate.
-  if (user && !isAnonymous && profileLoading) return null;
+  // Visible spinner, never a blank page — this renders right after Google
+  // sign-in while the profile doc loads.
+  if (user && !isAnonymous && profileLoading) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: BG,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Loader2 size={32} color={PRIMARY} className="spin" />
+      </div>
+    );
+  }
   if (user && !isAnonymous && !profile) return <ProfileSetupScreen />;
 
   return (
