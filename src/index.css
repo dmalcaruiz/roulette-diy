@@ -165,3 +165,13 @@ a {
   to   { transform: translateY(0); }
 }
 
+/* Loading spinner — applied to lucide <Loader2 className="spin" /> across
+   the app (route loading, publish/report/upload busy states). */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+

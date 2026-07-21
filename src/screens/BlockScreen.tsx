@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Block } from '../models/types';
 import RouletteScreen from './RouletteScreen';
 import WheelThumbnail from '../components/WheelThumbnail';
@@ -16,12 +16,18 @@ import { dbg, sid, sids } from '../utils/debugLog';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  X, Trophy, CheckCircle, Circle, ImageIcon, Shuffle, Sparkles,
-  Share2, Lock, Trash2, Tag, FileText, Loader2, Compass,
+  X, Trophy, CheckCircle, Circle, ImageIcon,
+  Share2, Loader2, Compass,
   Link2, Copy, Check,
 } from 'lucide-react';
+import SignInSheet from '../components/SignInSheet';
 
 interface BlockScreenProps {
+  // Block resolved by the route (BlockRoute) — from navigation state when
+  // present, otherwise looked up by the URL's :id param. This is what makes
+  // deep links (pasted URLs, new tabs, shared links) work: route state is
+  // absent there, so the prop is the only source.
+  block?: Block;
   onBlockUpdated?: (block: Block) => void;
   onBlockDelete?: (id: string) => void;
 }
@@ -36,13 +42,13 @@ interface BlockRouteState {
   flowSteps?: CloudBlock[];
 }
 
-export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScreenProps) {
+export default function BlockScreen({ block: routeBlock, onBlockUpdated, onBlockDelete }: BlockScreenProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as BlockRouteState | null;
   const { user } = useAuth();
 
-  const [block, setBlock] = useState<Block | null>(state?.block ?? null);
+  const [block, setBlock] = useState<Block | null>(routeBlock ?? state?.block ?? null);
   // Publish is now the overlay on top of the always-visible editor. Default
   // closed — user opens it from RouletteScreen's app bar.
   const [showPublish, setShowPublish] = useState(false);
@@ -86,24 +92,30 @@ export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync local state when the route changes (e.g., switching between flow steps).
+  // Sync local state when the route changes (e.g., switching between flow
+  // steps, or a new /block/:id URL entered without navigation state). Keyed
+  // on ids, not object identity — the routeBlock prop gets a fresh identity
+  // on every drafts update and must not clobber local optimistic state
+  // (including onSwitchActive, which changes the active wheel without
+  // touching the router).
   useEffect(() => {
-    if (state?.block && state.block.id !== block?.id) {
+    const next = routeBlock ?? state?.block;
+    if (next && next.id !== block?.id) {
       dbg('BlockScreen', 'route-sync', {
         from: sid(block?.id ?? null),
-        to: sid(state.block.id),
-        editMode: !!state.editMode,
-        flowExp: sid(state.flowExperience?.id ?? null),
-        flowSteps: sids(state.flowSteps),
+        to: sid(next.id),
+        editMode: !!state?.editMode,
+        flowExp: sid(state?.flowExperience?.id ?? null),
+        flowSteps: sids(state?.flowSteps),
       });
-      setBlock(state.block);
+      setBlock(next);
       // Route changes (e.g. switching flow step) shouldn't force the publish
       // overlay open; keep whatever state it was in.
-      if (state.flowExperience !== undefined) setFlowExperience(state.flowExperience, 'route-sync');
-      if (state.flowSteps !== undefined) setFlowSteps(state.flowSteps, 'route-sync');
+      if (state?.flowExperience !== undefined) setFlowExperience(state.flowExperience, 'route-sync');
+      if (state?.flowSteps !== undefined) setFlowSteps(state.flowSteps, 'route-sync');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.block?.id]);
+  }, [state?.block?.id, routeBlock?.id]);
 
   // Refs mirror the latest flow state so the flow-load effect can skip
   // re-fetching when we already have the same experience in memory — that
@@ -240,7 +252,9 @@ export default function BlockScreen({ onBlockUpdated, onBlockDelete }: BlockScre
     onBlockUpdated?.(updated);
   }, [onBlockUpdated]);
 
-  if (!block) return <div>Block not found</div>;
+  // No resolvable block (should not happen — BlockRoute redirects before
+  // mounting us — but never dead-end on an error div; go home instead).
+  if (!block) return <Navigate to="/" replace />;
 
   return (
     <>
@@ -346,11 +360,11 @@ function BlockViewLayer({
     <div style={{
       height: '100dvh',
       overflowY: 'auto',
-      backgroundColor: '#F8F8F9',
+      backgroundColor: BG,
       paddingBottom: 40,
     }}>
       {/* Top bar — close lives on the right for parity with other sheets. */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', backgroundColor: '#F8F8F9' }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 8px', backgroundColor: BG }}>
         {/* Left spacer so the centered title stays centered. */}
         <div style={{ width: 42, height: 42 }} />
         <input
@@ -472,23 +486,25 @@ function BlockViewLayer({
         })}
       </div>
 
-      {/* Settings sections */}
+      {/* Share is this screen's single purpose: one card that walks
+          sign in → publish → live link. Description (public-page metadata)
+          sits below it for flows. Nothing else lives here. */}
       <div style={{ padding: '8px 16px' }}>
+        <ShareCard block={block} onBlockUpdated={onBlockUpdated} />
         {flowExperience && (
-          <Section title="Flow" icon={<Compass size={16} />}>
-            <FieldLabel>Description</FieldLabel>
+          <Section title="Description" icon={<Compass size={16} />}>
             <textarea
               value={flowDescDraft}
               onChange={e => setFlowDescDraft(e.target.value)}
               onBlur={commitFlowDesc}
-              placeholder="Describe this flow (optional)"
+              placeholder="What's this flow about? (optional)"
               rows={3}
               style={{
                 width: '100%',
                 padding: '10px 12px',
                 borderRadius: 12,
                 border: `1.5px solid ${BORDER}`,
-                backgroundColor: '#F8F8F9',
+                backgroundColor: SURFACE_ELEVATED,
                 fontSize: 14,
                 fontWeight: 500,
                 fontFamily: 'inherit',
@@ -498,33 +514,72 @@ function BlockViewLayer({
                 boxSizing: 'border-box',
               }}
             />
+            <p style={{ fontSize: 11, color: withAlpha(ON_SURFACE, 0.45), margin: '8px 4px 0' }}>
+              Shown on the public page once you publish.
+            </p>
           </Section>
         )}
-        <PublishingSection block={block} onBlockUpdated={onBlockUpdated} />
-        <SpinSection />
-        <MoreSection block={block} />
       </div>
     </div>
   );
 }
 
-// ── Publishing (extracted from PublishSheet + unpublish/sync controls) ───
+// ── Share card — the screen's single purpose ─────────────────────────────
+// Three states, one card:
+//   1. Anonymous → sign in (publish needs an author).
+//   2. Signed in, unpublished → publish. Publishing mints the public
+//      /e/:id/play link and copies it in the same tap — share IS the link.
+//   3. Published → copy/share/open the live link, push edits, unpublish.
+// Private /block/ editor URLs are never surfaced here.
 
-function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpdated: (b: Block) => void }) {
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback for browsers/contexts without the async clipboard API.
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function ShareCard({ block, onBlockUpdated }: { block: Block; onBlockUpdated: (b: Block) => void }) {
   const { profile } = useAuth();
-  const publishedWheelId = (block as Block & { publishedWheelId?: string | null }).publishedWheelId;
-  const isPublished = !!publishedWheelId;
+  const publishedWheelId = (block as Block & { publishedWheelId?: string | null }).publishedWheelId ?? null;
 
+  const [showSignIn, setShowSignIn] = useState(false);
   const [isChallenge, setIsChallenge] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState<'link' | 'obs' | null>(null);
+  const [pushed, setPushed] = useState(false);
   const [showUnpublishConfirm, setShowUnpublishConfirm] = useState(false);
 
-  // TODO: when isPublished, hydrate local state from the remote wheel doc so
-  // toggles reflect the live state. For now this section shows controls to
-  // (re-)publish or unpublish.
+  const origin = (typeof window !== 'undefined' && window.location.origin)
+    ? window.location.origin
+    : 'https://roulette.diy';
+  const playUrl = publishedWheelId ? `${origin}/e/${publishedWheelId}/play` : null;
+
+  const flashCopied = (which: 'link' | 'obs') => {
+    setCopied(which);
+    setTimeout(() => setCopied(c => (c === which ? null : c)), 1600);
+  };
+  const copy = async (text: string, which: 'link' | 'obs') => {
+    if (await copyToClipboard(text)) flashCopied(which);
+  };
 
   const onPublish = async () => {
     if (!profile || busy) return;
@@ -546,8 +601,9 @@ function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpd
         const coverUrl = await uploadImage({ purpose: 'wheel-cover', source: coverFile, wheelId: experienceId });
         await setDoc(doc(db, 'published_experiences', experienceId), { coverUrl, updatedAtServer: serverTimestamp() }, { merge: true });
       }
-      // Reflect the new published id in local state so the Share card appears
-      // immediately (no reload) and the rest of the app treats it as published.
+      // Copy the fresh link in the same action — the card flips to the
+      // published state with the "Copied!" flash already showing.
+      void copy(`${origin}/e/${experienceId}/play`, 'link');
       onBlockUpdated({ ...block, publishedWheelId: experienceId } as CloudBlock);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Publish failed.');
@@ -556,25 +612,29 @@ function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpd
     }
   };
 
-  const onResync = async () => {
+  const onPush = async () => {
     if (!profile || !publishedWheelId || busy) return;
     setBusy(true); setErr(null);
     try {
       await syncPublishedExperience({ uid: profile.uid, experienceId: publishedWheelId });
+      setPushed(true);
+      setTimeout(() => setPushed(false), 1600);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Sync failed.');
+      setErr(e instanceof Error ? e.message : 'Push failed.');
     } finally {
       setBusy(false);
     }
   };
-
-  const onUnpublish = () => setShowUnpublishConfirm(true);
 
   const doUnpublish = async () => {
     if (!profile || !publishedWheelId || busy) return;
     setBusy(true); setErr(null);
     try {
       await unpublishExperience({ uid: profile.uid, experienceId: publishedWheelId });
+      // Clear the local backpointer so the card flips back to the publish
+      // state immediately (previously it kept showing "Published" until a
+      // full reload).
+      onBlockUpdated({ ...block, publishedWheelId: null } as CloudBlock);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Unpublish failed.');
     } finally {
@@ -582,24 +642,34 @@ function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpd
     }
   };
 
-  return (
-    <>
-    {isPublished && publishedWheelId && <ShareSection experienceId={publishedWheelId} />}
-    <Section title="Publishing" icon={<Share2 size={16} />}>
-      {isPublished ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <InfoRow label="Status" value={<Pill color="#10B981">Published</Pill>} />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <SecondaryButton onClick={onResync} disabled={busy}>
-              Sync latest edits
-            </SecondaryButton>
-            <SecondaryButton onClick={onUnpublish} disabled={busy} danger>
-              Unpublish
-            </SecondaryButton>
-          </div>
+  // ── State 1: needs an account ──────────────────────────────────────────
+  if (!profile) {
+    return (
+      <Section title="Share" icon={<Share2 size={16} />}>
+        <p style={{ fontSize: 14, color: withAlpha(ON_SURFACE, 0.65), margin: '0 0 14px', lineHeight: 1.45 }}>
+          Publishing creates a public link anyone can open and play.
+          Sign in first so the link has an author and survives this browser.
+        </p>
+        {/* flow-root: PushDownButton's press animation collapses without a BFC parent. */}
+        <div style={{ display: 'flow-root' }}>
+          <PushDownButton color={PRIMARY} onTap={() => setShowSignIn(true)}>
+            <span style={{ color: '#FFF', fontWeight: 700, fontSize: 15 }}>Sign in to publish</span>
+          </PushDownButton>
         </div>
-      ) : (
+        {showSignIn && <SignInSheet reason="publish" onClose={() => setShowSignIn(false)} />}
+      </Section>
+    );
+  }
+
+  // ── State 2: publish → mint the link ───────────────────────────────────
+  if (!playUrl) {
+    return (
+      <Section title="Share" icon={<Share2 size={16} />}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ fontSize: 14, color: withAlpha(ON_SURFACE, 0.65), margin: 0, lineHeight: 1.45 }}>
+            Publish to get a public link anyone can play — no account needed on
+            their end. Your draft stays private until then.
+          </p>
           <ToggleRow
             label="Make it a challenge"
             subtitle="Others can upload photo responses to their spin result."
@@ -632,147 +702,104 @@ function PublishingSection({ block, onBlockUpdated }: { block: Block; onBlockUpd
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF' }}>
               {busy && <Loader2 size={16} className="spin" />}
               <span style={{ fontWeight: 700, fontSize: 15, opacity: busy ? 0.6 : 1 }}>
-                {busy ? 'Publishing…' : 'Publish'}
+                {busy ? 'Publishing…' : 'Publish & copy link'}
               </span>
             </div>
           </PushDownButton>
         </div>
-      )}
-      {err && <p style={{ color: '#EF4444', fontSize: 13, margin: '10px 0 0' }}>{err}</p>}
-    </Section>
-    {showUnpublishConfirm && (
-      <ConfirmSheet
-        title="Unpublish this Experience?"
-        message="It will no longer be playable at its public URL. Your draft stays untouched."
-        confirmLabel="Unpublish"
-        destructive
-        onConfirm={doUnpublish}
-        onClose={() => setShowUnpublishConfirm(false)}
-      />
-    )}
-    </>
-  );
-}
+        {err && <p style={{ color: '#EF4444', fontSize: 13, margin: '10px 0 0' }}>{err}</p>}
+      </Section>
+    );
+  }
 
-// ── Share — published play link + OBS overlay URL ────────────────────────
-// Shown once an Experience is published. Deliberately minimal and in the
-// editor's Section style: the link, one primary Copy button, and the
-// transparent OBS overlay URL for a Browser Source.
-function ShareSection({ experienceId }: { experienceId: string }) {
-  const origin = (typeof window !== 'undefined' && window.location.origin)
-    ? window.location.origin
-    : 'https://roulette.diy';
-  const playUrl = `${origin}/e/${experienceId}/play`;
+  // ── State 3: live — the link front and center ──────────────────────────
   const obsUrl = `${playUrl}?bg=transparent`;
-  const [copied, setCopied] = useState<'link' | 'obs' | null>(null);
-
-  const copy = async (text: string, which: 'link' | 'obs') => {
-    const flash = () => {
-      setCopied(which);
-      setTimeout(() => setCopied(c => (c === which ? null : c)), 1600);
-    };
-    try {
-      await navigator.clipboard.writeText(text);
-      flash();
-    } catch {
-      // Fallback for browsers/contexts without the async clipboard API.
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        flash();
-      } catch { /* clipboard unavailable — no-op */ }
-    }
-  };
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   return (
-    <Section title="Share" icon={<Link2 size={16} />}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '10px 12px', borderRadius: 12,
-        backgroundColor: SURFACE_ELEVATED, border: `1.5px solid ${BORDER}`,
-        marginBottom: 12,
-      }}>
-        <Link2 size={16} color={withAlpha(ON_SURFACE, 0.45)} style={{ flexShrink: 0 }} />
-        <span style={{
-          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          fontSize: 13, fontWeight: 600, color: ON_SURFACE,
-        }}>
-          {playUrl.replace(/^https?:\/\//, '')}
-        </span>
-      </div>
+    <>
+      <Section title="Share" icon={<Share2 size={16} />}>
+        <div
+          onClick={() => copy(playUrl, 'link')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 12px', borderRadius: 12,
+            backgroundColor: SURFACE_ELEVATED, border: `1.5px solid ${BORDER}`,
+            marginBottom: 12, cursor: 'pointer',
+          }}
+        >
+          <Link2 size={16} color={withAlpha(ON_SURFACE, 0.45)} style={{ flexShrink: 0 }} />
+          <span style={{
+            flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            fontSize: 13, fontWeight: 600, color: ON_SURFACE,
+          }}>
+            {playUrl.replace(/^https?:\/\//, '')}
+          </span>
+          <Pill color="#10B981">Live</Pill>
+        </div>
 
-      {/* flow-root: PushDownButton's press animation collapses without a BFC parent. */}
-      <div style={{ display: 'flow-root' }}>
-        <PushDownButton color={PRIMARY} onTap={() => copy(playUrl, 'link')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF' }}>
-            {copied === 'link' ? <Check size={18} /> : <Copy size={18} />}
-            <span style={{ fontWeight: 700, fontSize: 15 }}>{copied === 'link' ? 'Copied!' : 'Copy link'}</span>
+        {/* flow-root: PushDownButton's press animation collapses without a BFC parent. */}
+        <div style={{ display: 'flow-root' }}>
+          <PushDownButton color={PRIMARY} onTap={() => copy(playUrl, 'link')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#FFF' }}>
+              {copied === 'link' ? <Check size={18} /> : <Copy size={18} />}
+              <span style={{ fontWeight: 700, fontSize: 15 }}>{copied === 'link' ? 'Copied!' : 'Copy link'}</span>
+            </div>
+          </PushDownButton>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          {canShare && (
+            <SecondaryButton onClick={() => { void navigator.share({ title: block.name, url: playUrl }).catch(() => {}); }}>
+              Share…
+            </SecondaryButton>
+          )}
+          <SecondaryButton onClick={() => window.open(playUrl, '_blank', 'noopener')}>
+            Open
+          </SecondaryButton>
+        </div>
+
+        <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 14, paddingTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <SecondaryButton onClick={onPush} disabled={busy}>
+              {busy ? 'Pushing…' : pushed ? 'Updated!' : 'Push latest edits'}
+            </SecondaryButton>
+            <SecondaryButton onClick={() => copy(obsUrl, 'obs')}>
+              {copied === 'obs' ? 'Copied!' : 'Copy OBS link'}
+            </SecondaryButton>
           </div>
-        </PushDownButton>
-      </div>
+          <p style={{ fontSize: 11, color: withAlpha(ON_SURFACE, 0.45), margin: '10px 4px 0', lineHeight: 1.4 }}>
+            Edits stay private until you push them. The OBS link is a
+            transparent overlay for a streaming Browser Source.
+          </p>
+        </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-        <SecondaryButton onClick={() => copy(obsUrl, 'obs')}>
-          {copied === 'obs' ? 'Copied!' : 'Copy OBS overlay'}
-        </SecondaryButton>
-        <SecondaryButton onClick={() => window.open(playUrl, '_blank', 'noopener')}>
-          Open
-        </SecondaryButton>
-      </div>
+        {err && <p style={{ color: '#EF4444', fontSize: 13, margin: '10px 0 0' }}>{err}</p>}
 
-      <p style={{ fontSize: 11, color: withAlpha(ON_SURFACE, 0.45), margin: '10px 4px 0', lineHeight: 1.4 }}>
-        Drop the OBS overlay URL into a Browser Source — transparent background, no chrome.
-      </p>
-    </Section>
-  );
-}
-
-// ── Spin settings (extracted from old GearMenu) ──────────────────────────
-
-function SpinSection() {
-  // TODO: persist these per-block instead of per-session. Right now they're
-  // not wired to anything durable — only local runtime state within RouletteScreen.
-  const [randomIntensity, setRandomIntensity] = useState(true);
-  const [winEffects, setWinEffects] = useState(true);
-
-  return (
-    <Section title="Spin" icon={<Shuffle size={16} />}>
-      <ToggleRow
-        label="Random intensity"
-        icon={<Shuffle size={20} />}
-        value={randomIntensity}
-        onChange={setRandomIntensity}
-      />
-      <div style={{ height: 8 }} />
-      <ToggleRow
-        label="Win effects"
-        icon={<Sparkles size={20} />}
-        value={winEffects}
-        onChange={setWinEffects}
-      />
-      <p style={{ fontSize: 11, color: withAlpha(ON_SURFACE, 0.45), margin: '8px 4px 0' }}>
-        Not yet saved per-wheel — applies only in this session.
-      </p>
-    </Section>
-  );
-}
-
-// ── Placeholder "more" settings — not yet wired ──────────────────────────
-
-function MoreSection({ block: _block }: { block: Block }) {
-  return (
-    <Section title="More" icon={<FileText size={16} />}>
-      <ComingSoonRow icon={<FileText size={18} />} label="Description" />
-      <ComingSoonRow icon={<Tag size={18} />} label="Tags" />
-      <ComingSoonRow icon={<Lock size={18} />} label="Visibility" />
-      <ComingSoonRow icon={<Trash2 size={18} />} label="Delete wheel" danger />
-    </Section>
+        <button
+          onClick={() => setShowUnpublishConfirm(true)}
+          disabled={busy}
+          style={{
+            display: 'block', marginTop: 10, padding: '6px 4px',
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: '#EF4444', fontSize: 13, fontWeight: 700,
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          Unpublish…
+        </button>
+      </Section>
+      {showUnpublishConfirm && (
+        <ConfirmSheet
+          title="Unpublish this Experience?"
+          message="The public link stops working. Your draft stays untouched."
+          confirmLabel="Unpublish"
+          destructive
+          onConfirm={doUnpublish}
+          onClose={() => setShowUnpublishConfirm(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -857,31 +884,6 @@ function ToggleRow({ label, subtitle, icon, value, onChange }: {
   );
 }
 
-function ComingSoonRow({ icon, label, danger }: { icon: React.ReactNode; label: string; danger?: boolean }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-      padding: '12px 4px', borderBottom: `1px solid ${BORDER}`,
-      color: danger ? '#EF4444' : withAlpha(ON_SURFACE, 0.45),
-    }}>
-      {icon}
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{label}</span>
-      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 8, backgroundColor: withAlpha(ON_SURFACE, 0.06), color: withAlpha(ON_SURFACE, 0.45) }}>
-        Coming soon
-      </span>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', padding: '6px 4px' }}>
-      <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: withAlpha(ON_SURFACE, 0.65) }}>{label}</span>
-      {value}
-    </div>
-  );
-}
-
 function Pill({ color, children }: { color: string; children: React.ReactNode }) {
   return (
     <span style={{ padding: '3px 10px', borderRadius: 10, backgroundColor: withAlpha(color, 0.14), color, fontSize: 12, fontWeight: 700 }}>
@@ -934,6 +936,6 @@ const pickerStyle: React.CSSProperties = {
   padding: '12px 14px',
   borderRadius: 12,
   border: `1.5px dashed ${BORDER}`,
-  backgroundColor: '#F8F8F9',
+  backgroundColor: SURFACE_ELEVATED,
   cursor: 'pointer',
 };

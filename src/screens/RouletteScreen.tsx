@@ -1669,7 +1669,7 @@ export default function RouletteScreen({
               </CircleIconButton>
             )}
             {!isPlayMode && onRequestPublish && (
-              <SpriteBarButton ariaLabel="Publish & settings" src="/images/send.png" onClick={() => { flushAutoSave(); onRequestPublish(); }} />
+              <SpriteBarButton ariaLabel="Share" src="/images/send.png" onClick={() => { flushAutoSave(); onRequestPublish(); }} />
             )}
           </div>
         </div>

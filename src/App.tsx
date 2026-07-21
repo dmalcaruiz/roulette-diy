@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation, useParams, Navigate } from 'react-router-dom';
 import { Block, BlockType, newRouletteBlock, newListRandomizerBlock } from './models/types';
 import { selectedVibe, recolorWithVibe } from './components/editor/vibes';
 import { loadDrafts, saveDraft, deleteDraft, saveDraftOrder, migrateLocalBlocksIfNeeded, type CloudBlock } from './services/blockService';
@@ -18,8 +18,8 @@ import MyProfileScreen from './screens/MyProfileScreen';
 import DiagnosticsScreen from './screens/DiagnosticsScreen';
 import ExperiencePlayScreen from './screens/ExperiencePlayScreen';
 import { withAlpha } from './utils/colorUtils';
-import { ON_SURFACE, PRIMARY, BORDER, SURFACE } from './utils/constants';
-import { PlusCircle, Compass, User } from 'lucide-react';
+import { ON_SURFACE, PRIMARY, BORDER, SURFACE, BG } from './utils/constants';
+import { PlusCircle, Compass, User, Loader2 } from 'lucide-react';
 
 export default function App() {
   const { user, profile, authLoading, profileLoading, isAnonymous, anonymousAuthBlocked } = useAuth();
@@ -349,7 +349,7 @@ export default function App() {
         <Route path="/" element={null} />
         <Route path="/block/:id" element={
           <RouteOverlay>
-            <BlockRoute blocks={blocks} onBlockUpdated={handleBlockUpdated} onBlockDelete={handleBlockDelete} />
+            <BlockRoute blocks={blocks} blocksLoaded={blocksLoaded} onBlockUpdated={handleBlockUpdated} onBlockDelete={handleBlockDelete} />
           </RouteOverlay>
         } />
         <Route path="/wheel/:wheelId" element={<RouteOverlay><WheelDetailScreen /></RouteOverlay>} />
@@ -384,17 +384,42 @@ function RouteOverlay({ children }: { children: React.ReactNode }) {
   );
 }
 
-function BlockRoute({ blocks, onBlockUpdated, onBlockDelete }: { blocks: Block[]; onBlockUpdated: (b: Block) => void; onBlockDelete: (id: string) => void }) {
+function BlockRoute({ blocks, blocksLoaded, onBlockUpdated, onBlockDelete }: { blocks: Block[]; blocksLoaded: boolean; onBlockUpdated: (b: Block) => void; onBlockDelete: (id: string) => void }) {
+  const { id } = useParams();
   const location = useLocation();
   const state = location.state as { block: Block; editMode: boolean } | null;
 
-  if (!state?.block) return <div>Block not found</div>;
+  // The URL param is the source of truth; route state is a warm-start cache
+  // set by in-app navigate() calls. Deep links (pasted URLs, new tabs,
+  // cross-device shares, the GitHub Pages 404-fallback boot) arrive with no
+  // state, so resolve the id against the loaded drafts. Prefer the drafts
+  // copy even when state exists — history-restored state.block is a snapshot
+  // from navigation time and can be stale after later edits.
+  const block = blocks.find(b => b.id === (state?.block?.id ?? id)) ?? state?.block;
+  const editMode = state?.editMode ?? false;
 
-  const { block, editMode } = state;
+  if (!block) {
+    // Drafts still fetching — can't yet distinguish "missing" from "not
+    // loaded". Hold with a spinner instead of a premature not-found bounce.
+    if (!blocksLoaded) {
+      return (
+        <div style={{
+          position: 'absolute', inset: 0, background: BG,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Loader2 size={32} color={PRIMARY} className="spin" />
+        </div>
+      );
+    }
+    // Unknown id: deleted block, someone else's private draft link, or the
+    // same user under a different (e.g. anonymous) uid. Go home rather than
+    // dead-ending on an error screen.
+    return <Navigate to="/" replace />;
+  }
 
   switch (block.type) {
     case 'roulette':
-      return <BlockScreen onBlockUpdated={onBlockUpdated} onBlockDelete={onBlockDelete} />;
+      return <BlockScreen block={block} onBlockUpdated={onBlockUpdated} onBlockDelete={onBlockDelete} />;
     case 'listRandomizer':
       return <ListRandomizerScreen block={block} editMode={editMode} onBlockUpdated={onBlockUpdated} />;
     case 'experience':
