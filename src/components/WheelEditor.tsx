@@ -18,7 +18,7 @@ import { uploadImage } from '../services/uploadService';
 import { LUCIDE_ICON_NAMES } from '../utils/iconMap';
 import { ICON_NODES } from '../utils/iconNodes';
 import { HistoryControls } from '../hooks/useHistory';
-import { pixelRoundedClip, pixelRingClip, pixelSnap } from '../utils/pixelClip';
+import { pixelRingClip, pixelRoughClip, pixelSnap, roughSeedFrom } from '../utils/pixelClip';
 
 interface SegmentData {
   id: string;
@@ -142,6 +142,56 @@ interface WheelEditorProps {
 }
 
 let segmentIdCounter = 0;
+
+// Scroll tween that is robust to LATE layout. `resolve` runs every frame and
+// returns the scroll container + desired scrollTop (or null while not ready
+// — e.g. add-slice: the list only OVERFLOWS after the deferred row commit,
+// so resolving the container once upfront found nothing scrollable and the
+// whole scroll was a silent no-op). Once resolved: 110ms easeOutCubic to the
+// live-recomputed landing, then keep snapping until layout stabilizes
+// (≥6 identical frames). Hard cap 1200ms; bails out if something else (the
+// user's finger) moves the scroll.
+function tweenScroll(resolve: () => { el: HTMLElement; desired: number } | null, onDone?: () => void) {
+  const tStart = performance.now();
+  let el: HTMLElement | null = null;
+  let t0 = 0;
+  let startScroll = 0;
+  let last = -1;
+  let stable = 0;
+  let expected: number | null = null;
+  const tick = (now: number) => {
+    if (now - tStart > 1200) { onDone?.(); return; }
+    const r = resolve();
+    if (!r) { requestAnimationFrame(tick); return; }
+    if (el !== r.el) { el = r.el; t0 = now; startScroll = el.scrollTop; expected = null; stable = 0; }
+    if (expected != null && Math.abs(el.scrollTop - expected) > 2) { onDone?.(); return; }
+    const u = Math.min(1, (now - t0) / 110);
+    if (u < 1) {
+      el.scrollTop = startScroll + (r.desired - startScroll) * (1 - Math.pow(1 - u, 3));
+    } else {
+      el.scrollTop = r.desired;
+      stable = Math.abs(r.desired - last) < 1 ? stable + 1 : 0;
+      last = r.desired;
+      if (stable >= 6) { onDone?.(); return; }
+    }
+    expected = el.scrollTop;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// Nearest ancestor that actually scrolls vertically RIGHT NOW. Returns null
+// when nothing overflows yet — callers retry per-frame via tweenScroll.
+function findScrollAncestor(from: HTMLElement): HTMLElement | null {
+  let cur: HTMLElement | null = from.parentElement;
+  while (cur) {
+    const cs = getComputedStyle(cur);
+    const scrollable = /(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow);
+    if (scrollable && cur.scrollHeight > cur.clientHeight + 1) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
+}
 
 // ── Segment clipboard ──────────────────────────────────────────────────────
 // Copy/Paste of a single segment, persisted to localStorage so it survives
@@ -502,47 +552,38 @@ function WheelEditor({
   // ~25 on the first frame.
   const [segWindow, setSegWindow] = useState<{ start: number; end: number }>({ start: 0, end: 12 });
 
-  // Scroll the nearest scrollable ancestor of `anchorEl` so the anchor lands at
-  // the BOTTOM of the viewport over 110ms (easeOutCubic — same curve as the
-  // wheel's segment-add transition). NOT the bottom of the whole scroll content:
-  // in the stacked editor the Style/Settings sections sit below the slice list,
-  // so the content bottom is far past the Add button. Walks every ancestor;
-  // whichever has overflow-y auto/scroll AND real overflow content wins; falls
-  // back to document.scrollingElement.
+  // Scroll so `anchorEl` (the Add Slice button) lands at the BOTTOM of the
+  // scroll viewport (−12px gap). NOT the bottom of the whole scroll content:
+  // in the stacked editor other sections can sit below the slice list. The
+  // container is resolved LAZILY per frame inside tweenScroll — at call time
+  // (right after the add tap) the new row hasn't committed yet, so the list
+  // may not overflow and no scrollable ancestor exists yet.
   const scrollAnchorIntoView = (anchorEl: HTMLElement) => {
-    let scrollEl: HTMLElement | null = null;
-    let cur: HTMLElement | null = anchorEl.parentElement;
-    while (cur) {
-      const cs = getComputedStyle(cur);
-      const isScrollable = /(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow);
-      if (isScrollable && cur.scrollHeight > cur.clientHeight + 1) {
-        scrollEl = cur;
-        break;
-      }
-      cur = cur.parentElement;
-    }
-    if (!scrollEl) scrollEl = (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
-    if (!scrollEl) return;
-    const target = scrollEl;
-    const startScroll = target.scrollTop;
-    const t0 = performance.now();
     const BOTTOM_GAP = 12; // breathing room below the Add button
-    // Recompute the landing each frame: a freshly-added row grows the list and
-    // shifts the anchor down for a frame or two after React's commit. The
-    // anchor's bottom in CONTENT space (scrollTop + its viewport-relative
-    // bottom) is invariant to scrollTop, so this is stable mid-tween.
-    const tick = (now: number) => {
-      const u = Math.min(1, (now - t0) / 110);
-      const eased = 1 - Math.pow(1 - u, 3);
+    tweenScroll(() => {
+      const el = findScrollAncestor(anchorEl);
+      if (!el) return null;
       const aRect = anchorEl.getBoundingClientRect();
-      const rRect = target.getBoundingClientRect();
-      const anchorBottom = target.scrollTop + (aRect.bottom - rRect.top);
-      const maxScroll = target.scrollHeight - target.clientHeight;
-      const desired = Math.max(0, Math.min(maxScroll, anchorBottom - target.clientHeight + BOTTOM_GAP));
-      target.scrollTop = startScroll + (desired - startScroll) * eased;
-      if (u < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+      const rRect = el.getBoundingClientRect();
+      // The sheet's chip bar is OVERLAID on the container's bottom edge —
+      // landing at the geometric bottom hides the button under it. Probe
+      // what actually renders at the bottom edge; if it's an overlay (not
+      // our content), its top is the visible bottom.
+      let visBottom = rRect.bottom;
+      const probe = document.elementFromPoint(rRect.left + rRect.width / 2, rRect.bottom - 2);
+      if (probe && probe !== el && !el.contains(probe)) {
+        let occ: Element = probe;
+        while (occ.parentElement && !occ.parentElement.contains(el)) occ = occ.parentElement;
+        const oTop = occ.getBoundingClientRect().top;
+        if (oTop > rRect.top && oTop < rRect.bottom) visBottom = oTop;
+      }
+      // Anchor bottom in CONTENT space (scrollTop + viewport-relative
+      // bottom) — invariant to scrollTop, so it's stable mid-tween.
+      const anchorBottom = el.scrollTop + (aRect.bottom - rRect.top);
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      const desired = anchorBottom - (visBottom - rRect.top) + BOTTOM_GAP;
+      return { el, desired: Math.max(0, Math.min(maxScroll, desired)) };
+    });
   };
 
   // Keep a ref to current state for use in pointer handlers
@@ -629,36 +670,24 @@ function WheelEditor({
       // then renders the row as it comes into view.
       const listEl = listContainerRef.current;
       if (!listEl) { onScrollToSegmentConsumed?.(); return; }
-      let scrollEl: HTMLElement | null = listEl.parentElement;
-      while (scrollEl) {
-        const cs = getComputedStyle(scrollEl);
-        if (/(auto|scroll)/.test(cs.overflowY) || /(auto|scroll)/.test(cs.overflow)) {
-          if (scrollEl.scrollHeight > scrollEl.clientHeight + 1) break;
-        }
-        scrollEl = scrollEl.parentElement;
-      }
-      if (!scrollEl) { onScrollToSegmentConsumed?.(); return; }
-      const rowH = rowHeightRef.current;
-      const listRect = listEl.getBoundingClientRect();
-      const scRect = scrollEl.getBoundingClientRect();
-      const rowTopViewport = listRect.top + idx * rowH;
-      // Centre the row in the scroll viewport (or as close as the
-      // scrollable extent allows).
-      const targetCentre = rowTopViewport + rowH / 2 - scRect.top - scRect.height / 2;
-      const startScroll = scrollEl.scrollTop;
-      const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
-      const targetScroll = Math.max(0, Math.min(maxScroll, startScroll + targetCentre));
-      const delta = targetScroll - startScroll;
-      const target = scrollEl;
-      const t0 = performance.now();
-      const tick = (now: number) => {
-        const u = Math.min(1, (now - t0) / 110);
-        const eased = 1 - Math.pow(1 - u, 3);
-        target.scrollTop = startScroll + delta * eased;
-        if (u < 1) requestAnimationFrame(tick);
-        else onScrollToSegmentConsumed?.();
-      };
-      requestAnimationFrame(tick);
+      // Land the (now expanded) card's TOP at the top of the scroll
+      // viewport — the card's controls are below its header, so top-aligning
+      // shows the whole editor; centring on the collapsed row height left it
+      // half-off. tweenScroll resolves the scroll container lazily (the
+      // sheet may still be opening / the expansion may not have committed)
+      // and keeps snapping to the live landing until layout settles.
+      const TOP_GAP = 8;
+      tweenScroll(() => {
+        const el = findScrollAncestor(listEl);
+        if (!el) return null;
+        const rowH = rowHeightRef.current;
+        const listRect = listEl.getBoundingClientRect();
+        const scRect = el.getBoundingClientRect();
+        // Row top in CONTENT space — invariant to scrollTop mid-tween.
+        const rowTopContent = el.scrollTop + (listRect.top + idx * rowH - scRect.top);
+        const maxScroll = el.scrollHeight - el.clientHeight;
+        return { el, desired: Math.max(0, Math.min(maxScroll, rowTopContent - TOP_GAP)) };
+      }, () => onScrollToSegmentConsumed?.());
     });
     return () => cancelAnimationFrame(cancel);
   }, [scrollToSegmentIndex, onScrollToSegmentConsumed, renderRows]);
@@ -943,6 +972,9 @@ function WheelEditor({
     // Mark this gesture as a drag — the card's onClick will see the flag
     // on the post-release click and skip the expand toggle.
     didDragRef.current = true;
+    // If the press started on a name input (long-press from the field
+    // area), drop focus so the mobile keyboard doesn't sit under the drag.
+    (document.activeElement as HTMLElement | null)?.blur?.();
     // Synchronous notify — host (e.g. SnappingSheet's parent) can flip a
     // ref / state immediately so its pointer handlers see the locked
     // value on the very next pointermove. Doing this via useEffect would
@@ -1100,38 +1132,11 @@ function WheelEditor({
     window.addEventListener('pointercancel', onUp);
   }, [handleGrabStart]);
 
-  // Like handleGripPointerDown but for the text-field area of a COLLAPSED card:
-  // a vertical drag starts a reorder, while a plain tap still focuses the input.
-  // (So, unlike the grip, we must NOT preventDefault — that would block focus.)
-  const handleFieldPointerDown = useCallback((sourceIndex: number, e: React.PointerEvent) => {
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const target = e.target as HTMLElement;
-    let activated = false;
-    const onMove = (me: PointerEvent) => {
-      if (activated) return;
-      const dx = me.clientX - startX;
-      const dy = me.clientY - startY;
-      if (Math.abs(dy) > 8) {
-        activated = true;
-        cleanup();
-        target?.blur?.();              // drop focus/keyboard before the reorder
-        handleGrabStart(sourceIndex, startX, startY);
-      } else if (Math.abs(dx) > 8) {
-        cleanup();                      // horizontal → let the field handle it
-      }
-    };
-    const cleanup = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-    const onUp = () => cleanup();       // tap (no drag) → field focuses to edit
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-  }, [handleGrabStart]);
+  // NOTE: the old handleFieldPointerDown (vertical-move → instant reorder
+  // from the text-field area, with touchAction:none) is gone. It hijacked
+  // mobile scrolling — most of the card's width couldn't start a scroll.
+  // Reorder now activates from the field area only via the row's 300ms
+  // long-press; the grip rail keeps the instant path.
 
   // Recompute which rows fall inside the render window from the scroll
   // ancestor's live position. Uniform row height makes this exact; the
@@ -1257,10 +1262,16 @@ function WheelEditor({
     const cardBorderW = pixelSnap(3, pixelScale);
     const baseStrokeW = pixelSnap(6, pixelScale);
     const haloW = pixelSnap(3.5, pixelScale);
-    const clipBase = pixelRoundedClip(22, pixelScale);
-    const clipBaseInner = pixelRoundedClip(22 - baseStrokeW, pixelScale);
-    const clipCard = pixelRoundedClip(16, pixelScale);
-    const clipFace = pixelRoundedClip(16 - cardBorderW, pixelScale);
+    // Rough (hand-drawn) clips, seeded per segment so every card wobbles
+    // differently but stays stable across re-renders. Layer PAIRS share a
+    // seed (outer + its inset inner) so their edges wobble in near-parallel
+    // and stroke widths stay calm — the roughness lives in the silhouette,
+    // not in busy stroke-width noise.
+    const roughSeed = roughSeedFrom(segment.id);
+    const clipBase = pixelRoughClip(22, pixelScale, roughSeed);
+    const clipBaseInner = pixelRoughClip(22 - baseStrokeW, pixelScale, roughSeed);
+    const clipCard = pixelRoughClip(16, pixelScale, roughSeed + 13);
+    const clipFace = pixelRoughClip(16 - cardBorderW, pixelScale, roughSeed + 13);
     const clipHalo = pixelRingClip(16, haloW, pixelScale);
     // Every layer is derived from segment.color via OKLCh ops — bottom
     // face = base darkened, inner stroke = base darkened less, halo (on
@@ -1421,13 +1432,14 @@ function WheelEditor({
                 }} />
               </div>
               <div
-                // touchAction:none while collapsed so a vertical drag here can
-                // start a reorder (instead of the browser scrolling/selecting).
-                style={{ flex: 1, touchAction: isExpanded ? undefined : 'none' }}
-                // Tap edits inline (never toggles expand) in both states; while
-                // collapsed, a vertical DRAG from here grabs the card to reorder.
+                // No touchAction lock and no instant-drag here: a swipe over
+                // the field must SCROLL the list (mobile's dominant gesture).
+                // Reordering from the field area goes through the row's
+                // long-press path; instant drag is reserved for the grip rail.
+                style={{ flex: 1 }}
+                // Tap edits inline (never toggles expand) in both states.
                 onClick={(e) => e.stopPropagation()}
-                onPointerDown={isExpanded ? (e) => e.stopPropagation() : (e) => handleFieldPointerDown(index, e)}
+                onPointerDown={isExpanded ? (e) => e.stopPropagation() : undefined}
               >
                 {/* Always an active, visible field — same in the closed card as
                     the open one. */}

@@ -75,3 +75,75 @@ export function pixelRingClip(radiusPx: number, ringPx: number, block: number): 
 export function pixelSnap(widthPx: number, block: number): number {
   return Math.max(1, Math.round(widthPx / block)) * block;
 }
+
+// ── Rough variant — hand-drawn wobble on the block grid ────────────────────
+// Same seeded-hash recipe as RoughPanel/PixelButton, but emitted as a
+// size-agnostic polygon() so it works on dynamic-height DOM (segment cards):
+// corner stair rows jitter ±1 block, and the long horizontal edges get a
+// couple of 1-block-deep nicks at seeded fractional positions. Everything
+// carves INWARD (a clip-path can't paint outside its box), so layered chrome
+// stays safe: a nick just lets the layer behind show through — irregular
+// "ink" like a hand-drawn stroke.
+
+const rand01 = (seed: number, i: number) => {
+  const x = Math.sin(seed * 127.1 + i * 311.7 + 0.5) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+export function pixelRoughClip(radiusPx: number, block: number, seed: number): string {
+  const key = `rough|${radiusPx}|${block}|${seed}`;
+  let v = clipCache.get(key);
+  if (v) return v;
+
+  const n = Math.max(1, Math.round(radiusPx / block));
+  const base = cornerInsets(n);
+  // Per-corner jittered stair rows — sparse, so most rows stay clean and the
+  // wobble reads as a few deliberate hand-drawn irregularities, not noise.
+  // Only carve deeper or restore toward square (clamped ≥ 0) — never bulge
+  // past the straight edges.
+  const jitter = (c: number) => base.map((ins, i) => {
+    const r = rand01(seed, c * 97 + i);
+    if (r < 0.16) return ins + 1;
+    if (r > 0.93) return Math.max(0, ins - 1);
+    return ins;
+  });
+  // ONE wide nick per horizontal edge: [start, end, depthBlocks], kept clear
+  // of the corner zones. A single long dip (1–2 blocks deep) reads as a
+  // hand-drawn edge; several short shallow ones read as pixel noise.
+  // Vertical edges are short and corner-dominated on these cards, so they
+  // stay straight.
+  const nicks = (o: number): Array<[number, number, number]> => {
+    const a0 = 0.18 + rand01(seed, o) * 0.40;
+    const depth = rand01(seed, o + 4) < 0.5 ? 1 : 2;
+    return [[a0, a0 + 0.10 + rand01(seed, o + 1) * 0.14, depth]];
+  };
+
+  const px = (u: number) => `${round2(u)}px`;
+  const far = (u: number) => `calc(100% - ${round2(u)}px)`;
+  const pct = (f: number) => `${round2(f * 100)}%`;
+  const tl = jitter(0), tr = jitter(1), br = jitter(2), bl = jitter(3);
+  const pts: string[] = [];
+  // Top-left corner: up the left edge, stepping right toward the top edge.
+  for (let i = n - 1; i >= 0; i--) pts.push(`${px(tl[i] * block)} ${px((i + 1) * block)}`, `${px(tl[i] * block)} ${px(i * block)}`);
+  // Top edge nick (left → right).
+  for (const [f0, f1, d] of nicks(11)) pts.push(`${pct(f0)} 0px`, `${pct(f0)} ${px(d * block)}`, `${pct(f1)} ${px(d * block)}`, `${pct(f1)} 0px`);
+  // Top-right corner.
+  for (let i = 0; i < n; i++) pts.push(`${far(tr[i] * block)} ${px(i * block)}`, `${far(tr[i] * block)} ${px((i + 1) * block)}`);
+  // Bottom-right corner.
+  for (let i = n - 1; i >= 0; i--) pts.push(`${far(br[i] * block)} ${far((i + 1) * block)}`, `${far(br[i] * block)} ${far(i * block)}`);
+  // Bottom edge nick (right → left).
+  for (const [f0, f1, d] of nicks(29)) pts.push(`${pct(1 - f0)} 100%`, `${pct(1 - f0)} ${far(d * block)}`, `${pct(1 - f1)} ${far(d * block)}`, `${pct(1 - f1)} 100%`);
+  // Bottom-left corner.
+  for (let i = 0; i < n; i++) pts.push(`${px(bl[i] * block)} ${far(i * block)}`, `${px(bl[i] * block)} ${far((i + 1) * block)}`);
+
+  v = `polygon(${pts.join(', ')})`;
+  clipCache.set(key, v);
+  return v;
+}
+
+/** Small stable hash for per-card seeds (e.g. from a segment id). */
+export function roughSeedFrom(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return (h >>> 0) % 9973;
+}
